@@ -62,8 +62,8 @@ Server names are arbitrary — they're what agents refer to under `mcp_tools`.
 | Field     | Type       | Required | Notes |
 |-----------|------------|----------|-------|
 | `command` | string     | yes      | Executable to run. |
-| `args`    | list<str>  | no       | Command-line arguments. |
-| `env`     | map<str,str> | no     | Environment variables for the child. |
+| `args`    | `list<str>` | no      | Command-line arguments. |
+| `env`     | `map<str,str>` | no   | Environment variables for the child. |
 
 ### `transport: http`
 
@@ -123,17 +123,17 @@ See [Memory configuration](../configuration/memory.md) for the full walkthrough 
 | `provider`   | string                | yes      | Key under `providers`. |
 | `model`      | string                | yes      | Upstream model identifier. |
 | `preamble`   | string                | no       | System prompt. Default: empty. |
-| `judges`     | list<string>          | no       | Names of judges (from top-level `judges:`) that evaluate this agent's replies. Empty = no evaluation. |
-| `mcp_tools`  | list<mcp_tool_access> | no       | Tools this agent may use. |
+| `judges`     | `list<string>`        | no       | Names of judges (from top-level `judges:`) that evaluate this agent's replies. Empty = no evaluation. |
+| `mcp_tools`  | `list<mcp_tool_access>` | no     | Tools this agent may use. |
 | `purpose`    | string                | no       | Tool description when this agent is exposed via another agent's `subagents`. Omit for standalone agents; add a concrete one-line description when this agent is meant to be called as a specialist. |
-| `subagents`  | list<string>          | no       | Names of other agents exposed as callable tools. Each entry must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. |
+| `subagents`  | `list<string>`        | no       | Names of other agents exposed as callable tools. Each entry must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. |
 
 ### `mcp_tools` entry
 
 | Field   | Type       | Required | Notes |
 |---------|------------|----------|-------|
 | `server`| string     | yes      | Key under `mcp`. |
-| `only`  | list<str>  | no       | Allowed tool names. Omit for full access. |
+| `only`  | `list<str>` | no      | Allowed tool names. Omit for full access. |
 
 ### Complete agent example
 
@@ -187,7 +187,7 @@ Judges are background LLM-as-judge evaluators. An agent opts in by listing judge
 | `name`          | string            | yes      | —       | Unique judge identifier; agents refer to it here. |
 | `provider`      | string            | yes      | —       | Must match a key under `providers`. |
 | `model`         | string            | yes      | —       | Upstream model identifier for the judge call. |
-| `rubrics`       | map<string,string>| yes      | —       | `criterion: short description of what to assess`. One score row per criterion per scored turn. Must declare at least one entry. |
+| `rubrics`       | `map<string,string>` | yes   | —       | `criterion: short description of what to assess`. One score row per criterion per scored turn. Must declare at least one entry. |
 | `sampling_rate` | float             | no       | `1.0`   | In `[0.0, 1.0]`. `1.0` = every turn, `0.1` ≈ 10%, `0.0` = never. |
 
 Rubric descriptions should say **what** to evaluate — don't include scale, JSON, or format instructions. Coulisse forces the output shape internally (integer 0-10 per criterion with a one-sentence reasoning).
