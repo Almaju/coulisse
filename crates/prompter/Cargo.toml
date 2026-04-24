@@ -1,6 +1,8 @@
 [package]
 name = "prompter"
 edition.workspace = true
+license.workspace = true
+version.workspace = true
 
 [dependencies]
 async-stream.workspace = true

@@ -11,7 +11,7 @@ WORKDIR /build
 COPY Cargo.toml ./
 COPY crates ./crates
 
-RUN cargo build --release --bin cli
+RUN cargo build --release --bin coulisse
 
 # --- Runtime stage -------------------------------------------------------
 FROM debian:bookworm-slim
@@ -24,7 +24,7 @@ RUN useradd --system --user-group --home-dir /var/lib/coulisse coulisse \
  && mkdir -p /var/lib/coulisse /etc/coulisse \
  && chown -R coulisse:coulisse /var/lib/coulisse /etc/coulisse
 
-COPY --from=builder /build/target/release/cli /usr/local/bin/coulisse
+COPY --from=builder /build/target/release/coulisse /usr/local/bin/coulisse
 
 USER coulisse
 WORKDIR /var/lib/coulisse
