@@ -13,7 +13,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use memory::{
-    Memory, MemoryError, MemoryId, MemoryKind, Role, Score, StoredMessage, UserId, UserSummary,
+    Memory, MemoryError, MemoryId, MemoryKind, Role, Score, StoredMessage, StoredToolCall,
+    ToolCallKind, UserId, UserSummary,
 };
 use prompter::Prompter;
 use serde::Serialize;
@@ -46,13 +47,35 @@ async fn user_messages<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
 ) -> Result<Json<MessagesResponse>, AdminError> {
+    use std::collections::HashMap;
+
     let user_id = parse_user_id(&user_id)?;
     let um = state.memory.for_user(user_id);
-    let messages = um
-        .messages()
-        .await?
+    let messages = um.messages().await?;
+    let tool_calls = um.tool_calls().await?;
+
+    // Group tool calls by message so the UI can render them inline with
+    // the assistant turn they belong to, in fire order.
+    let mut by_message: HashMap<String, Vec<ToolCallView>> = HashMap::new();
+    for tc in tool_calls {
+        by_message
+            .entry(tc.message_id.0.to_string())
+            .or_default()
+            .push(ToolCallView::from(tc));
+    }
+    for calls in by_message.values_mut() {
+        calls.sort_by_key(|t| t.ordinal);
+    }
+
+    let messages: Vec<MessageView> = messages
         .into_iter()
-        .map(MessageView::from)
+        .map(|m| {
+            let id = m.id.0.to_string();
+            let tool_calls = by_message.remove(&id).unwrap_or_default();
+            let mut view = MessageView::from(m);
+            view.tool_calls = tool_calls;
+            view
+        })
         .collect();
     Ok(Json(MessagesResponse { messages }))
 }
@@ -165,6 +188,7 @@ pub struct UserView {
     pub memory_count: u32,
     pub message_count: u32,
     pub score_count: u32,
+    pub tool_call_count: u32,
     pub user_id: UserId,
 }
 
@@ -175,6 +199,7 @@ impl From<UserSummary> for UserView {
             memory_count: s.memory_count,
             message_count: s.message_count,
             score_count: s.score_count,
+            tool_call_count: s.tool_call_count,
             user_id: s.user_id,
         }
     }
@@ -192,6 +217,10 @@ pub struct MessageView {
     pub id: String,
     pub role: Role,
     pub token_count: u32,
+    /// Tool invocations that fired during this assistant turn, in the order
+    /// rig dispatched them. Always empty for user/system messages.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallView>,
 }
 
 impl From<StoredMessage> for MessageView {
@@ -202,6 +231,36 @@ impl From<StoredMessage> for MessageView {
             id: m.id.0.to_string(),
             role: m.role,
             token_count: m.token_count.0,
+            tool_calls: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolCallView {
+    pub args: String,
+    pub created_at: u64,
+    pub error: Option<String>,
+    pub id: String,
+    pub kind: ToolCallKind,
+    pub message_id: String,
+    pub ordinal: u32,
+    pub result: Option<String>,
+    pub tool_name: String,
+}
+
+impl From<StoredToolCall> for ToolCallView {
+    fn from(t: StoredToolCall) -> Self {
+        Self {
+            args: t.args,
+            created_at: t.created_at,
+            error: t.error,
+            id: t.id.0.to_string(),
+            kind: t.kind,
+            message_id: t.message_id.0.to_string(),
+            ordinal: t.ordinal,
+            result: t.result,
+            tool_name: t.tool_name,
         }
     }
 }

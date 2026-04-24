@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use crate::{
     BackendConfig, BundledEmbedder, ConfigError, Memory, MemoryConfig, MemoryError, MemoryId,
-    MemoryKind, Message, MessageId, Role, Score, ScoreId, StoredMessage, TokenCount, UserId,
+    MemoryKind, Message, MessageId, Role, Score, ScoreId, StoredMessage, StoredToolCall,
+    TokenCount, ToolCallId, ToolCallKind, UserId,
 };
 
 const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
@@ -75,6 +76,7 @@ impl Store {
                     COALESCE((SELECT COUNT(*) FROM messages m WHERE m.user_id = u.user_id), 0) AS message_count, \
                     COALESCE((SELECT COUNT(*) FROM memories mm WHERE mm.user_id = u.user_id), 0) AS memory_count, \
                     COALESCE((SELECT COUNT(*) FROM scores s WHERE s.user_id = u.user_id), 0) AS score_count, \
+                    COALESCE((SELECT COUNT(*) FROM tool_calls tc WHERE tc.user_id = u.user_id), 0) AS tool_call_count, \
                     COALESCE(( \
                         SELECT MAX(created_at) FROM ( \
                             SELECT created_at FROM messages WHERE user_id = u.user_id \
@@ -82,6 +84,8 @@ impl Store {
                             SELECT created_at FROM memories WHERE user_id = u.user_id \
                             UNION ALL \
                             SELECT created_at FROM scores WHERE user_id = u.user_id \
+                            UNION ALL \
+                            SELECT created_at FROM tool_calls WHERE user_id = u.user_id \
                         ) \
                     ), 0) AS last_activity_at \
              FROM ( \
@@ -90,6 +94,8 @@ impl Store {
                  SELECT DISTINCT user_id FROM memories \
                  UNION \
                  SELECT DISTINCT user_id FROM scores \
+                 UNION \
+                 SELECT DISTINCT user_id FROM tool_calls \
              ) u \
              ORDER BY last_activity_at DESC",
         )
@@ -101,12 +107,14 @@ impl Store {
             let message_count: i64 = row.try_get("message_count")?;
             let memory_count: i64 = row.try_get("memory_count")?;
             let score_count: i64 = row.try_get("score_count")?;
+            let tool_call_count: i64 = row.try_get("tool_call_count")?;
             let last_activity_at: i64 = row.try_get("last_activity_at")?;
             out.push(UserSummary {
                 last_activity_at: last_activity_at as u64,
                 memory_count: clamp_u32(memory_count),
                 message_count: clamp_u32(message_count),
                 score_count: clamp_u32(score_count),
+                tool_call_count: clamp_u32(tool_call_count),
                 user_id: UserId(parse_uuid(&user_id, "user id")?),
             });
         }
@@ -277,6 +285,55 @@ impl<'a> UserMemory<'a> {
         Ok(row.0 as usize)
     }
 
+    /// Record one tool invocation attached to an assistant message. Called
+    /// once per tool call from the streaming path — callers know the final
+    /// `message_id` by the time the stream completes, and the `ordinal`
+    /// reflects the order rig fired the tools within the turn.
+    pub async fn append_tool_call(
+        &self,
+        tool_call: StoredToolCall,
+    ) -> Result<ToolCallId, MemoryError> {
+        sqlx::query(
+            "INSERT INTO tool_calls (args, created_at, error, id, kind, \
+             message_id, ordinal, result, tool_name, user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&tool_call.args)
+        .bind(tool_call.created_at as i64)
+        .bind(tool_call.error.as_deref())
+        .bind(tool_call.id.0.to_string())
+        .bind(tool_call_kind_as_str(tool_call.kind))
+        .bind(tool_call.message_id.0.to_string())
+        .bind(tool_call.ordinal as i64)
+        .bind(tool_call.result.as_deref())
+        .bind(&tool_call.tool_name)
+        .bind(self.user_id.0.to_string())
+        .execute(&self.store.pool)
+        .await?;
+        Ok(tool_call.id)
+    }
+
+    /// Every tool call this user has ever triggered, oldest first.
+    pub async fn tool_calls(&self) -> Result<Vec<StoredToolCall>, MemoryError> {
+        let rows = sqlx::query(
+            "SELECT args, created_at, error, id, kind, message_id, ordinal, \
+             result, tool_name, user_id \
+             FROM tool_calls WHERE user_id = ? ORDER BY rowid ASC",
+        )
+        .bind(self.user_id.0.to_string())
+        .fetch_all(&self.store.pool)
+        .await?;
+        rows.into_iter().map(row_to_tool_call).collect()
+    }
+
+    pub async fn tool_call_count(&self) -> Result<usize, MemoryError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tool_calls WHERE user_id = ?")
+            .bind(self.user_id.0.to_string())
+            .fetch_one(&self.store.pool)
+            .await?;
+        Ok(row.0 as usize)
+    }
+
     /// Assemble a context window for an upcoming prompt. Takes the new user
     /// message (used for semantic recall) and a total token budget. Returns
     /// recalled memories and the most-recent conversation messages that fit
@@ -355,6 +412,7 @@ pub struct UserSummary {
     pub memory_count: u32,
     pub message_count: u32,
     pub score_count: u32,
+    pub tool_call_count: u32,
     pub user_id: UserId,
 }
 
@@ -589,6 +647,48 @@ fn role_as_str(role: Role) -> &'static str {
         Role::Assistant => "assistant",
         Role::System => "system",
         Role::User => "user",
+    }
+}
+
+fn row_to_tool_call(row: SqliteRow) -> Result<StoredToolCall, MemoryError> {
+    let args: String = row.try_get("args")?;
+    let created_at: i64 = row.try_get("created_at")?;
+    let error: Option<String> = row.try_get("error")?;
+    let id: String = row.try_get("id")?;
+    let kind: String = row.try_get("kind")?;
+    let message_id: String = row.try_get("message_id")?;
+    let ordinal: i64 = row.try_get("ordinal")?;
+    let result: Option<String> = row.try_get("result")?;
+    let tool_name: String = row.try_get("tool_name")?;
+    let user_id: String = row.try_get("user_id")?;
+    Ok(StoredToolCall {
+        args,
+        created_at: created_at as u64,
+        error,
+        id: ToolCallId(parse_uuid(&id, "tool_call id")?),
+        kind: parse_tool_call_kind(&kind)?,
+        message_id: MessageId(parse_uuid(&message_id, "message id")?),
+        ordinal: clamp_u32(ordinal),
+        result,
+        tool_name,
+        user_id: UserId(parse_uuid(&user_id, "user id")?),
+    })
+}
+
+fn parse_tool_call_kind(s: &str) -> Result<ToolCallKind, MemoryError> {
+    match s {
+        "mcp" => Ok(ToolCallKind::Mcp),
+        "subagent" => Ok(ToolCallKind::Subagent),
+        other => Err(MemoryError::RowDecode(format!(
+            "unknown tool_call kind '{other}'"
+        ))),
+    }
+}
+
+fn tool_call_kind_as_str(kind: ToolCallKind) -> &'static str {
+    match kind {
+        ToolCallKind::Mcp => "mcp",
+        ToolCallKind::Subagent => "subagent",
     }
 }
 

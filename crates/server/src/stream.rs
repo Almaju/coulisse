@@ -6,8 +6,13 @@ use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use futures::StreamExt;
 use judge::spawn_score;
-use memory::{Role as MemRole, UserId};
-use prompter::{CompletionStream, Prompter, StreamEvent, Usage as ProviderUsage};
+use memory::{
+    Role as MemRole, StoredToolCall, ToolCallInvocation, ToolCallKind as MemToolCallKind, UserId,
+};
+use prompter::{
+    CompletionStream, Prompter, StreamEvent, ToolCallKind as PromptToolCallKind,
+    Usage as ProviderUsage,
+};
 
 use crate::chat::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
@@ -33,12 +38,14 @@ pub fn sse_response<P: Prompter + 'static>(
     let id = response_id(created);
     let accumulated: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let final_usage: Arc<Mutex<ProviderUsage>> = Arc::new(Mutex::new(ProviderUsage::default()));
+    let tool_calls: Arc<Mutex<Vec<PendingToolCall>>> = Arc::new(Mutex::new(Vec::new()));
 
     let flush = MemoryFlush {
         accumulated: Arc::clone(&accumulated),
         final_usage: Arc::clone(&final_usage),
         model: model.clone(),
         state,
+        tool_calls: Arc::clone(&tool_calls),
         tracker_key,
         user_id,
         user_message,
@@ -64,6 +71,30 @@ pub fn sse_response<P: Prompter + 'static>(
                 Ok(StreamEvent::Done { usage }) => {
                     *final_usage.lock().unwrap() = usage;
                 }
+                Ok(StreamEvent::ToolCall { args, call_id, kind, tool_name }) => {
+                    let mut buf = tool_calls.lock().unwrap();
+                    let ordinal = buf.len() as u32;
+                    buf.push(PendingToolCall {
+                        args,
+                        call_id,
+                        kind: to_mem_tool_kind(kind),
+                        ordinal,
+                        result: None,
+                        tool_name,
+                    });
+                }
+                Ok(StreamEvent::ToolResult { call_id, error, result }) => {
+                    let mut buf = tool_calls.lock().unwrap();
+                    if let Some(pc) = buf.iter_mut().find(|p| p.call_id == call_id) {
+                        pc.result = result;
+                        if error.is_some() {
+                            pc.result = error;
+                        }
+                    }
+                    // An orphan ToolResult (no matching call) is dropped; it
+                    // can only happen if rig emits a result without the
+                    // paired call, which would be an upstream bug.
+                }
                 Err(err) => {
                     yield Ok(error_chunk(&id, &model, created, &err.to_string()));
                     errored = true;
@@ -86,6 +117,28 @@ pub fn sse_response<P: Prompter + 'static>(
     Sse::new(body).keep_alive(KeepAlive::default())
 }
 
+/// Tool invocation captured from the stream. `result` is filled when the
+/// paired ToolResult event arrives; left `None` if the stream ended first
+/// (e.g. client disconnect), so the admin view can still see that a call
+/// was attempted.
+struct PendingToolCall {
+    args: String,
+    call_id: String,
+    kind: MemToolCallKind,
+    ordinal: u32,
+    result: Option<String>,
+    tool_name: String,
+}
+
+/// Cross-crate conversion — orphan rules forbid a `From` impl here, so a
+/// free helper does the translation at the prompter → memory boundary.
+fn to_mem_tool_kind(k: PromptToolCallKind) -> MemToolCallKind {
+    match k {
+        PromptToolCallKind::Mcp => MemToolCallKind::Mcp,
+        PromptToolCallKind::Subagent => MemToolCallKind::Subagent,
+    }
+}
+
 /// Drop guard: persists the conversation to memory and records token usage
 /// when the SSE stream ends, regardless of whether it ended normally or the
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
@@ -94,6 +147,7 @@ struct MemoryFlush<P: Prompter + 'static> {
     final_usage: Arc<Mutex<ProviderUsage>>,
     model: String,
     state: Arc<AppState<P>>,
+    tool_calls: Arc<Mutex<Vec<PendingToolCall>>>,
     tracker_key: String,
     user_id: UserId,
     user_message: String,
@@ -105,6 +159,7 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
         let usage = *self.final_usage.lock().unwrap();
         let model = std::mem::take(&mut self.model);
         let state = Arc::clone(&self.state);
+        let tool_calls = std::mem::take(&mut *self.tool_calls.lock().unwrap());
         let tracker_key = std::mem::take(&mut self.tracker_key);
         let user_id = self.user_id;
         let user_message = std::mem::take(&mut self.user_message);
@@ -127,6 +182,23 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
                     None
                 }
             };
+            if let Some(assistant_message_id) = assistant_message_id {
+                for pc in tool_calls {
+                    let stored = StoredToolCall::new(ToolCallInvocation {
+                        args: pc.args,
+                        error: None,
+                        kind: pc.kind,
+                        message_id: assistant_message_id,
+                        ordinal: pc.ordinal,
+                        result: pc.result,
+                        tool_name: pc.tool_name,
+                        user_id,
+                    });
+                    if let Err(err) = um.append_tool_call(stored).await {
+                        eprintln!("memory append failed for tool call: {err}");
+                    }
+                }
+            }
             if let Some(extractor) = state.extractor.clone() {
                 spawn_extract(
                     extractor,

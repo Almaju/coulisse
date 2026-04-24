@@ -10,5 +10,5 @@ pub use error::{ConfigError, EmbedError, MemoryError};
 pub use store::{AssembledContext, Store, UserMemory, UserSummary};
 pub use types::{
     Memory, MemoryId, MemoryKind, Message, MessageId, Role, Score, ScoreId, StoredMessage,
-    TokenCount, UserId,
+    StoredToolCall, TokenCount, ToolCallId, ToolCallInvocation, ToolCallKind, UserId,
 };

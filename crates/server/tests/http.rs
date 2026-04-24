@@ -19,7 +19,7 @@ use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, MemoryConfig, Role as MemRole, Store, UserId};
 use prompter::testing::{ScriptedPrompter, ScriptedReply};
-use prompter::{AgentConfig, JudgeConfig, ProviderKind, Usage};
+use prompter::{AgentConfig, JudgeConfig, ProviderKind, ToolCallKind, Usage};
 use server::{AppState, Server};
 use tower::ServiceExt;
 
@@ -482,6 +482,58 @@ async fn judge_sampling_rate_zero_records_nothing() {
 
     let um = state.memory.for_user(UserId::from_string("alice"));
     assert_eq!(um.scores().await.unwrap().len(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn streaming_persists_tool_calls_attached_to_assistant_message() {
+    let reply = ScriptedReply::text("Found it.")
+        .with_tool_call(
+            "web_search",
+            r#"{"q":"capital of France"}"#,
+            ToolCallKind::Mcp,
+            Some("Paris is the capital of France.".into()),
+        )
+        .with_tool_call(
+            "specialist_agent",
+            r#"{"message":"verify"}"#,
+            ToolCallKind::Subagent,
+            Some("Verified: Paris.".into()),
+        );
+    let (app, state) = make_app(vec![reply]).await;
+    let req = json_request(serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "capital of France?"}],
+        "stream": true,
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(collect(resp.into_body()).await);
+
+    // Drop guard spawns the persistence task; give it time to complete.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    let messages = um.messages().await.unwrap();
+    assert_eq!(messages.len(), 2);
+    let assistant = &messages[1];
+    assert_eq!(assistant.role, MemRole::Assistant);
+
+    let mut tool_calls = um.tool_calls().await.unwrap();
+    tool_calls.sort_by_key(|t| t.ordinal);
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0].tool_name, "web_search");
+    assert_eq!(tool_calls[0].ordinal, 0);
+    assert_eq!(tool_calls[0].kind, memory::ToolCallKind::Mcp);
+    assert_eq!(tool_calls[0].args, r#"{"q":"capital of France"}"#);
+    assert_eq!(
+        tool_calls[0].result.as_deref(),
+        Some("Paris is the capital of France.")
+    );
+    assert_eq!(tool_calls[0].message_id, assistant.id);
+    assert_eq!(tool_calls[1].tool_name, "specialist_agent");
+    assert_eq!(tool_calls[1].ordinal, 1);
+    assert_eq!(tool_calls[1].kind, memory::ToolCallKind::Subagent);
 }
 
 #[tokio::test(flavor = "current_thread")]

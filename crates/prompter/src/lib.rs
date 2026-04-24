@@ -5,7 +5,9 @@ mod lang;
 pub mod testing;
 mod usage;
 
-pub use backend::{CompletionStream, Message, Prompter, RigPrompter, Role, StreamEvent};
+pub use backend::{
+    CompletionStream, Message, Prompter, RigPrompter, Role, StreamEvent, ToolCallKind,
+};
 pub use config::{
     AgentConfig, Config, JudgeConfig, McpServerConfig, McpToolAccess, ProviderConfig, ProviderKind,
 };

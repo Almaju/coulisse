@@ -7,7 +7,7 @@ use async_stream::stream;
 
 use crate::{
     AgentConfig, Completion, CompletionStream, Message, Prompter, PrompterError, ProviderKind,
-    StreamEvent, Usage,
+    StreamEvent, ToolCallKind, Usage,
 };
 
 /// A `Prompter` that replays a scripted reply. Each call to `complete` or
@@ -22,13 +22,27 @@ pub struct ScriptedPrompter {
 #[derive(Clone)]
 pub struct ScriptedReply {
     pub deltas: Vec<String>,
+    pub tool_calls: Vec<ScriptedToolCall>,
     pub usage: Usage,
+}
+
+/// One scripted tool invocation emitted during a streaming reply. Fires
+/// before the text deltas so tests can assert that the server correlates
+/// call + result into the admin trail.
+#[derive(Clone)]
+pub struct ScriptedToolCall {
+    pub args: String,
+    pub call_id: String,
+    pub kind: ToolCallKind,
+    pub result: Option<String>,
+    pub tool_name: String,
 }
 
 impl ScriptedReply {
     pub fn text(s: impl Into<String>) -> Self {
         Self {
             deltas: vec![s.into()],
+            tool_calls: Vec::new(),
             usage: Usage {
                 output_tokens: 1,
                 total_tokens: 1,
@@ -44,6 +58,7 @@ impl ScriptedReply {
     {
         Self {
             deltas: deltas.into_iter().map(Into::into).collect(),
+            tool_calls: Vec::new(),
             usage: Usage {
                 output_tokens: 1,
                 total_tokens: 1,
@@ -54,6 +69,28 @@ impl ScriptedReply {
 
     pub fn with_usage(mut self, usage: Usage) -> Self {
         self.usage = usage;
+        self
+    }
+
+    /// Attach a scripted tool call to this reply. In the streaming path, the
+    /// call event is emitted before the text deltas, followed by the paired
+    /// result event (when `result` is `Some`). The non-streaming `complete`
+    /// path ignores tool calls — capture is streaming-only for now.
+    pub fn with_tool_call(
+        mut self,
+        tool_name: impl Into<String>,
+        args: impl Into<String>,
+        kind: ToolCallKind,
+        result: Option<String>,
+    ) -> Self {
+        let call_id = format!("scripted-{}", self.tool_calls.len());
+        self.tool_calls.push(ScriptedToolCall {
+            args: args.into(),
+            call_id,
+            kind,
+            result,
+            tool_name: tool_name.into(),
+        });
         self
     }
 
@@ -119,6 +156,21 @@ impl Prompter for ScriptedPrompter {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
+            for tc in reply.tool_calls {
+                yield Ok(StreamEvent::ToolCall {
+                    args: tc.args,
+                    call_id: tc.call_id.clone(),
+                    kind: tc.kind,
+                    tool_name: tc.tool_name,
+                });
+                if let Some(result) = tc.result {
+                    yield Ok(StreamEvent::ToolResult {
+                        call_id: tc.call_id,
+                        error: None,
+                        result: Some(result),
+                    });
+                }
+            }
             for d in reply.deltas {
                 yield Ok(StreamEvent::Delta(d));
             }

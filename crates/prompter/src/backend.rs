@@ -9,7 +9,7 @@ use rig::completion::{
     CompletionModel, GetTokenUsage, Message as RigMessage, PromptError, ToolDefinition,
 };
 use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
-use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
+use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingPrompt};
 use rig::tool::rmcp::McpTool;
 use rig::tool::{ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
@@ -73,12 +73,34 @@ pub enum Role {
 
 /// One event in a streamed completion. `Delta` carries an incremental piece of
 /// the assistant's response; `Done` is yielded at the end with cumulative
-/// token usage. Tool-call internals are intentionally not surfaced — they
-/// happen inside `rig`'s multi-turn loop and the OpenAI client never sees them.
+/// token usage. `ToolCall` and `ToolResult` expose rig's multi-turn tool
+/// dispatch so callers (the admin UI, observability sinks) can record what
+/// the agent tried and what came back. Correlate the pair by `call_id`.
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
     Delta(String),
-    Done { usage: Usage },
+    Done {
+        usage: Usage,
+    },
+    ToolCall {
+        args: String,
+        call_id: String,
+        kind: ToolCallKind,
+        tool_name: String,
+    },
+    ToolResult {
+        call_id: String,
+        error: Option<String>,
+        result: Option<String>,
+    },
+}
+
+/// How a tool invocation was serviced — an MCP server, or another agent
+/// exposed as a tool (subagent).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolCallKind {
+    Mcp,
+    Subagent,
 }
 
 pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, PrompterError>> + Send>>;
@@ -641,6 +663,8 @@ impl Conversation {
         C::CompletionModel: 'static,
         <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
     {
+        use std::collections::HashSet;
+
         let mut builder = client.agent(model);
         if !self.preamble.is_empty() {
             builder = builder.preamble(&self.preamble);
@@ -654,6 +678,11 @@ impl Conversation {
                 })
             })
             .collect();
+        // Snapshot subagent names before handing the boxes to rig — we need
+        // them inside the stream map to classify each ToolCall event as
+        // either MCP or Subagent.
+        let subagent_names: Arc<HashSet<String>> =
+            Arc::new(subagent_tools.iter().map(|t| t.name()).collect());
         tools.extend(subagent_tools);
         let agent = if tools.is_empty() {
             builder.build()
@@ -665,18 +694,70 @@ impl Conversation {
             .with_history(self.history)
             .multi_turn(MAX_TURNS)
             .await;
-        let mapped = inner.filter_map(|item| async move {
-            match item {
-                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    Some(Ok(StreamEvent::Delta(t.text)))
+        let mapped = inner.filter_map(move |item| {
+            let subagent_names = Arc::clone(&subagent_names);
+            async move {
+                match item {
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(
+                        StreamedAssistantContent::Text(t),
+                    )) => Some(Ok(StreamEvent::Delta(t.text))),
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(
+                        StreamedAssistantContent::ToolCall {
+                            tool_call,
+                            internal_call_id,
+                        },
+                    )) => {
+                        let tool_name = tool_call.function.name.clone();
+                        let kind = if subagent_names.contains(&tool_name) {
+                            ToolCallKind::Subagent
+                        } else {
+                            ToolCallKind::Mcp
+                        };
+                        let args = tool_call.function.arguments.to_string();
+                        Some(Ok(StreamEvent::ToolCall {
+                            args,
+                            call_id: internal_call_id,
+                            kind,
+                            tool_name,
+                        }))
+                    }
+                    Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
+                        tool_result,
+                        internal_call_id,
+                    })) => {
+                        let result = flatten_tool_result(&tool_result);
+                        Some(Ok(StreamEvent::ToolResult {
+                            call_id: internal_call_id,
+                            error: None,
+                            result: Some(result),
+                        }))
+                    }
+                    Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
+                        usage: fr.usage().into(),
+                    })),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(PrompterError::Streaming(e.to_string()))),
                 }
-                Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
-                    usage: fr.usage().into(),
-                })),
-                Ok(_) => None,
-                Err(e) => Some(Err(PrompterError::Streaming(e.to_string()))),
             }
         });
         Ok(Box::pin(mapped))
     }
+}
+
+/// Collapse rig's `ToolResult.content` (a `OneOrMany<ToolResultContent>`) into
+/// a single plain-text string for persistence. Text parts are joined; images
+/// are rendered as a stable `"<image>"` placeholder so the admin UI at least
+/// shows that an image was returned. Lossy on purpose — the admin view is for
+/// human debugging, not verbatim replay.
+fn flatten_tool_result(tool_result: &rig::completion::message::ToolResult) -> String {
+    use rig::completion::message::ToolResultContent;
+    tool_result
+        .content
+        .iter()
+        .map(|part| match part {
+            ToolResultContent::Text(t) => t.text.clone(),
+            ToolResultContent::Image(_) => "<image>".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
