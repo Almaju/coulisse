@@ -26,12 +26,17 @@ impl LanguageTag {
     }
 
     /// A sentence suitable for appending to a system preamble, e.g.
-    /// `"Respond in French."` for `fr-FR`. Falls back to the raw tag when
-    /// the primary subtag isn't in the built-in name table; frontier models
-    /// handle BCP 47 tags directly.
+    /// `"Always reply in French, even when the user writes in a different language. Do not include translations in any other language."`
+    /// for `fr-FR`. Falls back to the raw tag when the primary subtag isn't
+    /// in the built-in name table; frontier models handle BCP 47 tags
+    /// directly. The instruction is phrased as a hard constraint so the
+    /// model doesn't helpfully mirror the user's language or append
+    /// parenthetical translations.
     pub fn instruction(&self) -> String {
         let name = display_name(self.0.primary_language()).unwrap_or_else(|| self.as_str());
-        format!("Respond in {name}.")
+        format!(
+            "Always reply in {name}, even when the user writes in a different language. Do not include translations in any other language."
+        )
     }
 }
 
@@ -143,11 +148,11 @@ mod tests {
     fn instruction_uses_english_name_for_known_tags() {
         assert_eq!(
             LanguageTag::parse("fr").unwrap().instruction(),
-            "Respond in French."
+            "Always reply in French, even when the user writes in a different language. Do not include translations in any other language."
         );
         assert_eq!(
             LanguageTag::parse("ja-JP").unwrap().instruction(),
-            "Respond in Japanese."
+            "Always reply in Japanese, even when the user writes in a different language. Do not include translations in any other language."
         );
     }
 
@@ -155,13 +160,16 @@ mod tests {
     fn instruction_falls_back_to_raw_tag_when_unknown() {
         assert_eq!(
             LanguageTag::parse("cy").unwrap().instruction(),
-            "Respond in cy."
+            "Always reply in cy, even when the user writes in a different language. Do not include translations in any other language."
         );
     }
 
     #[test]
     fn instruction_preserves_region_in_fallback() {
         let tag = LanguageTag::parse("br-FR").unwrap();
-        assert_eq!(tag.instruction(), "Respond in br-FR.");
+        assert_eq!(
+            tag.instruction(),
+            "Always reply in br-FR, even when the user writes in a different language. Do not include translations in any other language."
+        );
     }
 }

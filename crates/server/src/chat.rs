@@ -287,7 +287,10 @@ mod tests {
         let req = request_with_metadata(metadata);
         let tag = req.language().unwrap().expect("language present");
         assert_eq!(tag.as_str(), "fr-FR");
-        assert_eq!(tag.instruction(), "Respond in French.");
+        assert_eq!(
+            tag.instruction(),
+            "Always reply in French, even when the user writes in a different language. Do not include translations in any other language."
+        );
     }
 
     #[test]

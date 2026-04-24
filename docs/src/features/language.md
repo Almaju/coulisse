@@ -25,7 +25,7 @@ Any valid BCP 47 tag works: `en`, `fr`, `fr-FR`, `es-MX`, `zh-Hant`, `ja-JP`. Th
 
 ## How it reaches the model
 
-Coulisse appends a short instruction to the system preamble before calling the provider — something like `Respond in French.`. For tags in the built-in language-name table (common ISO 639-1 subtags: en, fr, es, de, it, pt, ja, zh, ko, ar, nl, pl, ru, sv, tr, hi), the instruction uses the English name. For anything else, the raw tag is passed through — frontier models understand BCP 47 directly, so `Respond in cy.` (Welsh) works fine.
+Coulisse appends a short instruction to the system preamble before calling the provider — something like `Always reply in French, even when the user writes in a different language. Do not include translations in any other language.`. The instruction is phrased as a hard constraint so the model doesn't mirror the user's language or append a parenthetical translation. For tags in the built-in language-name table (common ISO 639-1 subtags: en, fr, es, de, it, pt, ja, zh, ko, ar, nl, pl, ru, sv, tr, hi), the instruction uses the English name. For anything else, the raw tag is passed through — frontier models understand BCP 47 directly, so `cy` (Welsh) works fine.
 
 The instruction is added once per request, as the first system message. Your own `system` messages in the `messages` array still apply, and agent preambles from `coulisse.yaml` are preserved.
 
