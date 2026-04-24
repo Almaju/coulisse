@@ -123,6 +123,8 @@ See [Memory configuration](../configuration/memory.md) for the full walkthrough 
 | `model`      | string                | yes      | Upstream model identifier. |
 | `preamble`   | string                | no       | System prompt. Default: empty. |
 | `mcp_tools`  | list<mcp_tool_access> | no       | Tools this agent may use. |
+| `purpose`    | string                | no       | Tool description when this agent is exposed via another agent's `subagents`. Omit for standalone agents; add a concrete one-line description when this agent is meant to be called as a specialist. |
+| `subagents`  | list<string>          | no       | Names of other agents exposed as callable tools. Each entry must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. |
 
 ### `mcp_tools` entry
 
@@ -147,6 +149,28 @@ agents:
       - server: hello
 ```
 
+### Subagent example
+
+```yaml
+agents:
+  - name: resume_critic
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Critique and rewrite a resume for a target role.
+    preamble: |
+      Given a resume and a target role, return a revised resume
+      and a bullet list of the biggest gaps.
+
+  - name: coach
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    subagents: [resume_critic]
+    preamble: |
+      Delegate resume work to `resume_critic` when relevant.
+```
+
+See [Multi-agent routing](../features/multi-agent.md) for the full subagent walkthrough.
+
 ## Validation
 
 On startup, Coulisse checks:
@@ -155,5 +179,8 @@ On startup, Coulisse checks:
 - Agent names are unique.
 - Every agent's `provider` is configured.
 - Every referenced MCP server is configured.
+- Every name in `subagents` refers to another defined agent.
+- No agent lists itself under `subagents`.
+- `subagents` entries are unique within an agent (no duplicates).
 
 Any violation fails fast with an error message that names the offending agent and field.

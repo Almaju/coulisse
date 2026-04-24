@@ -14,6 +14,8 @@ pub enum PrompterError {
     BlankDefaultUserId,
     #[error("duplicate agent name in config: {0}")]
     DuplicateAgent(String),
+    #[error("agent '{agent}' lists subagent '{subagent}' more than once")]
+    DuplicateSubagent { agent: String, subagent: String },
     #[error("conversation has no user or assistant messages")]
     EmptyConversation,
     #[error("failed to connect to MCP server '{server}': {source}")]
@@ -61,8 +63,14 @@ pub enum PrompterError {
         #[source]
         source: std::io::Error,
     },
+    #[error("agent '{0}' cannot list itself as a subagent")]
+    SelfSubagent(String),
+    #[error("subagent hop limit exceeded ({limit}) invoking '{subagent}'")]
+    SubagentDepthExceeded { limit: usize, subagent: String },
     #[error("unknown agent: {0}")]
     UnknownAgent(String),
+    #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
+    UnknownSubagent { agent: String, subagent: String },
 }
 
 impl std::fmt::Display for ProviderKind {

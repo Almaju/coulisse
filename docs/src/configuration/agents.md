@@ -57,6 +57,24 @@ mcp_tools:
       - multiply
 ```
 
+### `subagents` (optional)
+
+A list of other agent names exposed to this agent as callable tools. When the agent's model decides to invoke one, Coulisse starts a fresh conversation against that agent and returns its final message as the tool result.
+
+```yaml
+subagents: [onboarder, resume_critic]
+```
+
+Each name must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. Nested invocations are capped at depth 4 to prevent runaway loops. See [Multi-agent routing](../features/multi-agent.md#subagents-agents-as-tools) for the full walkthrough.
+
+### `purpose` (optional)
+
+A short tool description shown to other agents when this one is listed under their `subagents`. Keep it concrete — it's how a calling agent's model decides when to invoke this specialist. Omit it for agents that are only used directly by clients (never as subagents); fall back is `"Invoke the '<name>' subagent."` but a hand-written `purpose` is what makes multi-agent orchestration reliable.
+
+```yaml
+purpose: Critique and rewrite a resume for a target role.
+```
+
 ## Several agents, one config
 
 Define as many agents as you want. A common pattern is having variants of the same model with different preambles:

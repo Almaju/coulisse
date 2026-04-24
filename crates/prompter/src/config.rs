@@ -67,6 +67,27 @@ impl Config {
                 }
             }
         }
+        let agent_names: HashSet<&str> = self.agents.iter().map(|a| a.name.as_str()).collect();
+        for agent in &self.agents {
+            let mut sub_seen = HashSet::new();
+            for sub in &agent.subagents {
+                if sub == &agent.name {
+                    return Err(PrompterError::SelfSubagent(agent.name.clone()));
+                }
+                if !agent_names.contains(sub.as_str()) {
+                    return Err(PrompterError::UnknownSubagent {
+                        agent: agent.name.clone(),
+                        subagent: sub.clone(),
+                    });
+                }
+                if !sub_seen.insert(sub) {
+                    return Err(PrompterError::DuplicateSubagent {
+                        agent: agent.name.clone(),
+                        subagent: sub.clone(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -80,6 +101,19 @@ pub struct AgentConfig {
     #[serde(default)]
     pub preamble: String,
     pub provider: ProviderKind,
+    /// Short description used as the tool description when this agent is
+    /// exposed to other agents via `subagents:`. If absent, the agent's
+    /// `name` is used as a fallback — but clear prose here helps the caller
+    /// LLM decide when to invoke this agent.
+    #[serde(default)]
+    pub purpose: Option<String>,
+    /// Other agents exposed to this agent as tools. Names must match entries
+    /// in the top-level `agents:` list. Self-reference is rejected; duplicate
+    /// entries are rejected. Calling a subagent runs a fresh conversation
+    /// against that agent's preamble + MCP tools; the subagent's final
+    /// message is returned as the tool result.
+    #[serde(default)]
+    pub subagents: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -141,6 +175,119 @@ impl ProviderKind {
             "groq" => Some(Self::Groq),
             "openai" => Some(Self::Openai),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(yaml: &str) -> Result<Config, PrompterError> {
+        let config: Config = serde_yaml::from_str(yaml).map_err(PrompterError::ParseConfig)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    const BASE_PROVIDERS: &str = r#"
+providers:
+  openai:
+    api_key: test
+"#;
+
+    #[test]
+    fn subagents_and_purpose_parse_and_validate() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}agents:
+  - name: coach
+    provider: openai
+    model: gpt-4
+    subagents: [onboarder]
+  - name: onboarder
+    provider: openai
+    model: gpt-4
+    purpose: Gather profile fields.
+"
+        );
+        let config = parse(&yaml).expect("valid config");
+        let coach = config.agents.iter().find(|a| a.name == "coach").unwrap();
+        assert_eq!(coach.subagents, vec!["onboarder".to_string()]);
+        let onboarder = config
+            .agents
+            .iter()
+            .find(|a| a.name == "onboarder")
+            .unwrap();
+        assert_eq!(onboarder.purpose.as_deref(), Some("Gather profile fields."));
+    }
+
+    #[test]
+    fn agents_without_subagents_or_purpose_still_parse() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}agents:
+  - name: solo
+    provider: openai
+    model: gpt-4
+"
+        );
+        let config = parse(&yaml).expect("minimal agent config");
+        assert_eq!(config.agents[0].subagents.len(), 0);
+        assert!(config.agents[0].purpose.is_none());
+    }
+
+    #[test]
+    fn self_subagent_is_rejected() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}agents:
+  - name: loopy
+    provider: openai
+    model: gpt-4
+    subagents: [loopy]
+"
+        );
+        match parse(&yaml) {
+            Err(PrompterError::SelfSubagent(name)) => assert_eq!(name, "loopy"),
+            other => panic!("expected SelfSubagent error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_subagent_is_rejected() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}agents:
+  - name: coach
+    provider: openai
+    model: gpt-4
+    subagents: [ghost]
+"
+        );
+        match parse(&yaml) {
+            Err(PrompterError::UnknownSubagent { agent, subagent }) => {
+                assert_eq!(agent, "coach");
+                assert_eq!(subagent, "ghost");
+            }
+            other => panic!("expected UnknownSubagent error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_subagent_is_rejected() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}agents:
+  - name: coach
+    provider: openai
+    model: gpt-4
+    subagents: [helper, helper]
+  - name: helper
+    provider: openai
+    model: gpt-4
+"
+        );
+        match parse(&yaml) {
+            Err(PrompterError::DuplicateSubagent { agent, subagent }) => {
+                assert_eq!(agent, "coach");
+                assert_eq!(subagent, "helper");
+            }
+            other => panic!("expected DuplicateSubagent error, got {other:?}"),
         }
     }
 }

@@ -1,24 +1,38 @@
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::stream::{Stream, StreamExt};
 use rig::agent::{MultiTurnStreamItem, PromptRequest};
 use rig::client::CompletionClient;
-use rig::completion::{CompletionModel, GetTokenUsage, Message as RigMessage, PromptError};
+use rig::completion::{
+    CompletionModel, GetTokenUsage, Message as RigMessage, PromptError, ToolDefinition,
+};
 use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
-use rig::tool::ToolDyn;
 use rig::tool::rmcp::McpTool;
+use rig::tool::{ToolDyn, ToolError};
+use rig::wasm_compat::WasmBoxedFuture;
 use rmcp::ServiceExt;
 use rmcp::service::{RoleClient, RunningService, ServerSink};
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
+use serde_json::json;
 use tokio::process::Command;
 
 use crate::{AgentConfig, Completion, Config, McpServerConfig, PrompterError, ProviderKind, Usage};
 
 const MAX_TURNS: usize = 8;
+/// How many nested subagent calls are allowed before the hop limit kicks in.
+/// A→B→A→… is cut off once the depth reaches this number. Four levels is
+/// deep enough for realistic orchestrator → specialist → sub-specialist
+/// patterns without letting pathological loops burn tokens.
+const MAX_SUBAGENT_DEPTH: usize = 4;
 
 pub struct RigPrompter {
+    inner: Arc<RigPrompterInner>,
+}
+
+struct RigPrompterInner {
     agents: Vec<AgentConfig>,
     backends: HashMap<ProviderKind, Backend>,
     mcp_servers: HashMap<String, McpServer>,
@@ -164,10 +178,52 @@ impl RigPrompter {
         }
 
         Ok(Self {
-            agents: config.agents,
-            backends,
-            mcp_servers,
+            inner: Arc::new(RigPrompterInner {
+                agents: config.agents,
+                backends,
+                mcp_servers,
+            }),
         })
+    }
+}
+
+impl Prompter for RigPrompter {
+    fn agents(&self) -> &[AgentConfig] {
+        &self.inner.agents
+    }
+
+    async fn complete(
+        &self,
+        agent_name: &str,
+        messages: Vec<Message>,
+    ) -> Result<Completion, PrompterError> {
+        RigPrompterInner::complete_with_depth(&self.inner, agent_name, messages, 0).await
+    }
+
+    async fn complete_streaming(
+        &self,
+        agent_name: &str,
+        messages: Vec<Message>,
+    ) -> Result<CompletionStream, PrompterError> {
+        RigPrompterInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0).await
+    }
+
+    async fn prompt_with(
+        &self,
+        provider: ProviderKind,
+        model: &str,
+        preamble: &str,
+        messages: Vec<Message>,
+    ) -> Result<Completion, PrompterError> {
+        self.inner
+            .prompt_with(provider, model, preamble, messages)
+            .await
+    }
+}
+
+impl RigPrompterInner {
+    fn find_agent(&self, name: &str) -> Option<&AgentConfig> {
+        self.agents.iter().find(|a| a.name == name)
     }
 
     fn collect_mcp_attachments(
@@ -207,21 +263,47 @@ impl RigPrompter {
         Ok(attachments)
     }
 
-    fn find_agent(&self, name: &str) -> Option<&AgentConfig> {
-        self.agents.iter().find(|a| a.name == name)
+    /// Build one `SubagentTool` per entry in `agent.subagents`. The `depth`
+    /// parameter is the current agent's depth; each tool it hands out
+    /// captures that depth and invokes the target at `depth + 1`.
+    fn collect_subagent_tools(
+        self: &Arc<Self>,
+        agent: &AgentConfig,
+        depth: usize,
+    ) -> Vec<Box<dyn ToolDyn>> {
+        agent
+            .subagents
+            .iter()
+            .map(|sub_name| {
+                let target = self
+                    .find_agent(sub_name)
+                    .expect("subagent existence is validated at config load");
+                let purpose = target
+                    .purpose
+                    .clone()
+                    .unwrap_or_else(|| format!("Invoke the '{}' subagent.", target.name));
+                Box::new(SubagentTool {
+                    inner: Arc::clone(self),
+                    target_name: target.name.clone(),
+                    purpose,
+                    depth,
+                }) as Box<dyn ToolDyn>
+            })
+            .collect()
     }
-}
 
-impl Prompter for RigPrompter {
-    fn agents(&self) -> &[AgentConfig] {
-        &self.agents
-    }
-
-    async fn complete(
-        &self,
+    async fn complete_with_depth(
+        self: &Arc<Self>,
         agent_name: &str,
         messages: Vec<Message>,
+        depth: usize,
     ) -> Result<Completion, PrompterError> {
+        if depth > MAX_SUBAGENT_DEPTH {
+            return Err(PrompterError::SubagentDepthExceeded {
+                limit: MAX_SUBAGENT_DEPTH,
+                subagent: agent_name.to_string(),
+            });
+        }
         let agent = self
             .find_agent(agent_name)
             .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
@@ -231,24 +313,56 @@ impl Prompter for RigPrompter {
                 provider: agent.provider,
             }
         })?;
-        let attachments = self.collect_mcp_attachments(agent)?;
+        let mcp_attachments = self.collect_mcp_attachments(agent)?;
+        let subagent_tools = self.collect_subagent_tools(agent, depth);
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         let result = match backend {
-            Backend::Anthropic(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Cohere(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Deepseek(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Gemini(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Groq(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Openai(c) => conversation.send(c, &agent.model, attachments).await,
+            Backend::Anthropic(c) => {
+                conversation
+                    .send(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Cohere(c) => {
+                conversation
+                    .send(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Deepseek(c) => {
+                conversation
+                    .send(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Gemini(c) => {
+                conversation
+                    .send(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Groq(c) => {
+                conversation
+                    .send(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Openai(c) => {
+                conversation
+                    .send(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
         };
         result.map_err(PrompterError::from)
     }
 
-    async fn complete_streaming(
-        &self,
+    async fn complete_streaming_with_depth(
+        self: &Arc<Self>,
         agent_name: &str,
         messages: Vec<Message>,
+        depth: usize,
     ) -> Result<CompletionStream, PrompterError> {
+        if depth > MAX_SUBAGENT_DEPTH {
+            return Err(PrompterError::SubagentDepthExceeded {
+                limit: MAX_SUBAGENT_DEPTH,
+                subagent: agent_name.to_string(),
+            });
+        }
         let agent = self
             .find_agent(agent_name)
             .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
@@ -258,15 +372,40 @@ impl Prompter for RigPrompter {
                 provider: agent.provider,
             }
         })?;
-        let attachments = self.collect_mcp_attachments(agent)?;
+        let mcp_attachments = self.collect_mcp_attachments(agent)?;
+        let subagent_tools = self.collect_subagent_tools(agent, depth);
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         match backend {
-            Backend::Anthropic(c) => conversation.stream(c, &agent.model, attachments).await,
-            Backend::Cohere(c) => conversation.stream(c, &agent.model, attachments).await,
-            Backend::Deepseek(c) => conversation.stream(c, &agent.model, attachments).await,
-            Backend::Gemini(c) => conversation.stream(c, &agent.model, attachments).await,
-            Backend::Groq(c) => conversation.stream(c, &agent.model, attachments).await,
-            Backend::Openai(c) => conversation.stream(c, &agent.model, attachments).await,
+            Backend::Anthropic(c) => {
+                conversation
+                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Cohere(c) => {
+                conversation
+                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Deepseek(c) => {
+                conversation
+                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Gemini(c) => {
+                conversation
+                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Groq(c) => {
+                conversation
+                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
+            Backend::Openai(c) => {
+                conversation
+                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .await
+            }
         }
     }
 
@@ -286,14 +425,82 @@ impl Prompter for RigPrompter {
             })?;
         let conversation = Conversation::from_messages(messages, preamble)?;
         let result = match backend {
-            Backend::Anthropic(c) => conversation.send(c, model, vec![]).await,
-            Backend::Cohere(c) => conversation.send(c, model, vec![]).await,
-            Backend::Deepseek(c) => conversation.send(c, model, vec![]).await,
-            Backend::Gemini(c) => conversation.send(c, model, vec![]).await,
-            Backend::Groq(c) => conversation.send(c, model, vec![]).await,
-            Backend::Openai(c) => conversation.send(c, model, vec![]).await,
+            Backend::Anthropic(c) => conversation.send(c, model, vec![], vec![]).await,
+            Backend::Cohere(c) => conversation.send(c, model, vec![], vec![]).await,
+            Backend::Deepseek(c) => conversation.send(c, model, vec![], vec![]).await,
+            Backend::Gemini(c) => conversation.send(c, model, vec![], vec![]).await,
+            Backend::Groq(c) => conversation.send(c, model, vec![], vec![]).await,
+            Backend::Openai(c) => conversation.send(c, model, vec![], vec![]).await,
         };
         result.map_err(PrompterError::from)
+    }
+}
+
+/// A rig tool that, when called, invokes another agent as a fresh
+/// conversation. The subagent runs under its own preamble, its own MCP tool
+/// list, and its own bounded tool loop; the final assistant text becomes
+/// this tool's return value. Hop depth is captured at construction so
+/// pathological A→B→A→B chains are bounded by `MAX_SUBAGENT_DEPTH`.
+struct SubagentTool {
+    inner: Arc<RigPrompterInner>,
+    target_name: String,
+    purpose: String,
+    depth: usize,
+}
+
+impl ToolDyn for SubagentTool {
+    fn name(&self) -> String {
+        self.target_name.clone()
+    }
+
+    fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+        let name = self.target_name.clone();
+        let description = self.purpose.clone();
+        Box::pin(async move {
+            ToolDefinition {
+                name,
+                description,
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "Natural-language message or instruction to send to the subagent. The subagent starts with a fresh context and sees only this message.",
+                        }
+                    },
+                    "required": ["message"],
+                }),
+            }
+        })
+    }
+
+    fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
+        let inner = Arc::clone(&self.inner);
+        let target = self.target_name.clone();
+        let depth = self.depth;
+        Box::pin(async move {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&args).map_err(ToolError::JsonError)?;
+            let message = parsed
+                .get("message")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ToolError::ToolCallError(Box::<dyn std::error::Error + Send + Sync>::from(
+                        "subagent tool call is missing required 'message' field",
+                    ))
+                })?
+                .to_string();
+            let messages = vec![Message {
+                role: Role::User,
+                content: message,
+            }];
+            let next_depth = depth.saturating_add(1);
+            match RigPrompterInner::complete_with_depth(&inner, &target, messages, next_depth).await
+            {
+                Ok(completion) => Ok(completion.text),
+                Err(err) => Err(ToolError::ToolCallError(Box::new(err))),
+            }
+        })
     }
 }
 
@@ -386,6 +593,7 @@ impl Conversation {
         client: &C,
         model: &str,
         mcp: Vec<McpAttachment>,
+        subagent_tools: Vec<Box<dyn ToolDyn>>,
     ) -> Result<Completion, PromptError>
     where
         C: CompletionClient,
@@ -395,7 +603,7 @@ impl Conversation {
         if !self.preamble.is_empty() {
             builder = builder.preamble(&self.preamble);
         }
-        let mcp_tools: Vec<Box<dyn ToolDyn>> = mcp
+        let mut tools: Vec<Box<dyn ToolDyn>> = mcp
             .into_iter()
             .flat_map(|attach| {
                 let sink = attach.sink;
@@ -404,10 +612,11 @@ impl Conversation {
                 })
             })
             .collect();
-        let agent = if mcp_tools.is_empty() {
+        tools.extend(subagent_tools);
+        let agent = if tools.is_empty() {
             builder.build()
         } else {
-            builder.tools(mcp_tools).build()
+            builder.tools(tools).build()
         };
         let response = PromptRequest::from_agent(&agent, self.prompt)
             .with_history(self.history)
@@ -425,6 +634,7 @@ impl Conversation {
         client: &C,
         model: &str,
         mcp: Vec<McpAttachment>,
+        subagent_tools: Vec<Box<dyn ToolDyn>>,
     ) -> Result<CompletionStream, PrompterError>
     where
         C: CompletionClient,
@@ -435,7 +645,7 @@ impl Conversation {
         if !self.preamble.is_empty() {
             builder = builder.preamble(&self.preamble);
         }
-        let mcp_tools: Vec<Box<dyn ToolDyn>> = mcp
+        let mut tools: Vec<Box<dyn ToolDyn>> = mcp
             .into_iter()
             .flat_map(|attach| {
                 let sink = attach.sink;
@@ -444,10 +654,11 @@ impl Conversation {
                 })
             })
             .collect();
-        let agent = if mcp_tools.is_empty() {
+        tools.extend(subagent_tools);
+        let agent = if tools.is_empty() {
             builder.build()
         } else {
-            builder.tools(mcp_tools).build()
+            builder.tools(tools).build()
         };
         let inner = agent
             .stream_prompt(self.prompt)

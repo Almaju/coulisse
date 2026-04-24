@@ -28,6 +28,8 @@ fn make_agents() -> Vec<AgentConfig> {
         name: "assistant".into(),
         preamble: String::new(),
         provider: ProviderKind::Openai,
+        purpose: None,
+        subagents: vec![],
     }]
 }
 

@@ -5,6 +5,7 @@ What's in Coulisse today, and what's coming.
 ## Working today
 
 - Multi-agent routing via the `model` field.
+- Agents as tools — expose one agent to another under `subagents:` with a `purpose:` description. Nested invocations are bounded by a depth cap.
 - Per-user conversation history with isolation.
 - Long-term memory with semantic recall — **persistent via SQLite** and backed by a real embedder (OpenAI or Voyage AI; `hash` fallback for offline dev).
 - Auto-extraction — an optional background task pulls durable facts from each exchange and deduplicates them before storing.
