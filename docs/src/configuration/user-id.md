@@ -26,12 +26,12 @@ The identifier can be anything — an email, an internal user ID, a UUID, an opa
 
 By default, Coulisse **requires** every request to carry an identifier. Unidentified requests are rejected with an error. This is the safe default: memory only works if you know who you're talking to.
 
-## Turning it off
+## `default_user_id`: a single-user fallback
 
-If you're running Coulisse as a stateless proxy — no memory, no isolation — you can disable the requirement:
+For local development or single-user deployments, you can declare a `default_user_id` in `coulisse.yaml`. When a request arrives without `safety_identifier` or `user`, Coulisse acts as if that default had been passed.
 
 ```yaml
-require_user_id: false
+default_user_id: main        # everyone's anonymous requests bucket here
 
 providers:
   anthropic:
@@ -43,19 +43,17 @@ agents:
     model: claude-sonnet-4-5-20250929
 ```
 
-With `require_user_id: false`:
+With a `default_user_id` set:
 
-- Requests without an identifier are accepted.
-- Those requests **bypass per-user memory entirely** — nothing is stored, nothing is recalled.
-- Requests *with* an identifier still get memory as usual.
+- Requests that omit both `safety_identifier` and `user` fall back to the default. They get memory like any other user — just scoped to that shared bucket.
+- Requests that *do* include an identifier still get their own scope.
+- All anonymous requests share one memory bucket and one rate-limit counter, because they all map to the same id.
 
-## When to flip it off
+## When to set it
 
 Good reasons:
 
-- You're fronting an internal service that handles identity upstream and just wants routing.
-- You're prototyping and don't care about memory yet.
+- Local / single-user setups where you don't want to bother sending an identifier.
+- Small deployments behind an auth layer that handles identity upstream but doesn't want to plumb it through.
 
-Bad reasons:
-
-- You have a multi-tenant app and don't want to bother wiring identifiers. Don't do this — without identifiers, Coulisse can't isolate users, and you lose one of its main features.
+Don't set `default_user_id` in multi-tenant deployments — every user would share one bucket, which defeats isolation. Leave it unset so missing identifiers are rejected.

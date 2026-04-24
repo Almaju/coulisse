@@ -21,6 +21,7 @@
 - [Per-user memory](./features/memory.md)
 - [MCP tool integration](./features/tools.md)
 - [Multi-backend support](./features/backends.md)
+- [Rate limiting](./features/rate-limiting.md)
 
 # Reference
 

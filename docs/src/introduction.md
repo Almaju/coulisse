@@ -44,7 +44,7 @@ Coulisse collapses this plumbing into one configurable server. You describe the 
 | MCP tool integration    | ✅ Working (stdio + HTTP) |
 | Multi-backend support   | ✅ Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq |
 | OpenAI-compatible API   | ✅ `/v1/chat/completions`, `/v1/models` |
-| Rate limiting           | ⏳ Planned |
+| Rate limiting           | ✅ Per-user token quotas (hour / day / month) |
 | Workflow orchestration  | ⏳ Planned |
 | Streaming responses     | ⏳ Planned |
 

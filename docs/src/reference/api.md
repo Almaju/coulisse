@@ -20,12 +20,25 @@ The main chat endpoint. Accepts the standard OpenAI chat completion request shap
 
 | Field               | Required | Notes |
 |---------------------|----------|-------|
-| `model`             | yes      | Name of an agent from your config. |
 | `messages`          | yes      | The usual OpenAI message array. At least one `user` message is required. |
+| `metadata`          | no       | Optional map of strings. Used for per-request rate limits — see below. |
+| `model`             | yes      | Name of an agent from your config. |
 | `safety_identifier` | yes¹     | Identifies the user. Can be any stable string. |
 | `user`              | —        | Deprecated OpenAI field; accepted as a fallback. |
 
-¹ Required by default. Optional if you set `require_user_id: false` — see [User identification](../configuration/user-id.md).
+¹ Required unless a `default_user_id` is set in `coulisse.yaml` — see [User identification](../configuration/user-id.md).
+
+### Rate-limit metadata
+
+Send any of these keys in `metadata` to cap the user's token usage per window:
+
+| Key                 | Type                  | Meaning |
+|---------------------|-----------------------|---------|
+| `tokens_per_hour`   | integer (as string)   | Max tokens per rolling hour. |
+| `tokens_per_day`    | integer (as string)   | Max tokens per rolling day. |
+| `tokens_per_month`  | integer (as string)   | Max tokens per rolling 30-day window. |
+
+All optional. See [Rate limiting](../features/rate-limiting.md) for the full behavior.
 
 ### Response
 
@@ -63,7 +76,8 @@ Errors come back in OpenAI's error shape:
 
 Common cases:
 
-- **400** — missing `safety_identifier` (when required), no user message, unknown agent name.
+- **400** — missing `safety_identifier` (when required), no user message, unknown agent name, unparseable `metadata` values.
+- **429** — per-user token limit exceeded. Includes a `Retry-After` header with seconds until the window resets. See [Rate limiting](../features/rate-limiting.md).
 - **5xx** — upstream provider error, MCP server failure.
 
 ## `GET /v1/models`

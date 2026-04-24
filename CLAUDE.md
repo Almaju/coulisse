@@ -26,6 +26,10 @@ git config core.hooksPath .githooks
 
 Never bypass the hook with `--no-verify`. If it fails, fix the underlying issue — the hook is the project's floor for what lands in `main`.
 
+# Commit messages
+
+Do not add `Co-Authored-By` trailers — no Claude co-author line, no agent attribution, no tool signature. Commit messages are the subject and body only. The git history should read as the human author's work.
+
 # Code Principles
 
 Apply these principles when writing code.

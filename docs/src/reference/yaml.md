@@ -5,19 +5,19 @@ A complete reference for every field in `coulisse.yaml`.
 ## Top-level
 
 ```yaml
-require_user_id: <bool>       # optional, default: true
-providers: { ... }            # required
-mcp: { ... }                  # optional
 agents: [ ... ]               # required, non-empty
+default_user_id: <string>     # optional, unset by default
+mcp: { ... }                  # optional
+providers: { ... }            # required
 ```
 
-## `require_user_id`
+## `default_user_id`
 
-- **Type:** boolean
-- **Default:** `true`
-- **Purpose:** require every chat completion request to carry a user identifier.
+- **Type:** string
+- **Default:** unset
+- **Purpose:** fallback identifier for requests that don't supply `safety_identifier` (or the deprecated `user`).
 
-Set to `false` to allow anonymous stateless completions (which bypass per-user memory).
+Leave it unset for multi-tenant deployments — unidentified requests will be rejected. Set it to something like `"main"` for local or single-user setups so memory still works whether or not the client bothers to send an id. See [User identification](../configuration/user-id.md).
 
 ## `providers`
 

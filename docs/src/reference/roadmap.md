@@ -10,13 +10,14 @@ What's in Coulisse today, and what's coming.
 - Multi-backend support (Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq).
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
 - MCP tool integration over stdio and HTTP, with per-agent filtering.
+- Per-user token rate limiting (hour / day / month).
 - YAML-driven config with startup validation.
 
 ## Planned
 
-### Rate limiting
+### Durable rate-limit state
 
-Enforce per-user and per-agent request and token limits from the YAML. Today there's no limiter — run Coulisse behind a gateway if you need one.
+Current rate-limit counters live in memory — they reset on restart and don't span multiple instances. A durable, shared backend is planned so quotas survive reboots and horizontal scaling.
 
 ### Streaming responses
 
