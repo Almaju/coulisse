@@ -10,6 +10,18 @@ pub enum PrompterError {
         #[source]
         source: rig::http_client::Error,
     },
+    #[error("admin block must declare exactly one of `basic` or `oidc`, not both (remove one)")]
+    AdminBothAuthMethods,
+    #[error(
+        "admin block must declare one of `basic` or `oidc` (or remove the block to disable auth)"
+    )]
+    AdminWithoutAuth,
+    #[error("admin.oidc.{0} must be non-empty")]
+    BlankAdminOidcField(&'static str),
+    #[error("admin.basic.password must be non-empty")]
+    BlankAdminPassword,
+    #[error("admin.basic.username must be non-empty")]
+    BlankAdminUsername,
     #[error("default_user_id must be non-empty when set")]
     BlankDefaultUserId,
     #[error("duplicate agent name in config: {0}")]

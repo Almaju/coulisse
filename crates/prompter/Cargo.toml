@@ -14,5 +14,10 @@ rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+telemetry.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+sqlx.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }

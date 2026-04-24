@@ -34,6 +34,9 @@ impl IntoResponse for ApiError {
         let (status, kind) = match &self {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Language(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Self::Limit(LimitError::Database(_)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "rate_limit_error")
+            }
             Self::Limit(LimitError::Exceeded { retry_after: s, .. }) => {
                 retry_after = Some(*s);
                 (StatusCode::TOO_MANY_REQUESTS, "rate_limited")

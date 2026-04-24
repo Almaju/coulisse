@@ -2,25 +2,40 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::error_handling::HandleErrorLayer;
 use axum::extract::State;
+use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_oidc::error::MiddlewareError;
+use axum_oidc::{EmptyAdditionalClaims, OidcAuthLayer, OidcLoginLayer};
 use judge::{Judge, spawn_score};
 use limits::Tracker;
-use memory::{Memory, MemoryKind, Role as MemRole, Store, UserId};
+use memory::{Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use prompter::Prompter;
+use telemetry::{Ctx as TelemetryCtx, Event, EventKind, Sink as TelemetrySink, TurnId};
+use time::Duration;
 use tokio::net::TcpListener;
+use tower::ServiceBuilder;
+use tower_sessions::cookie::SameSite;
+use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
+use crate::admin_auth::{AdminAuth, require_basic_auth};
 use crate::chat::Message as ChatMessage;
 use crate::error::ApiError;
 use crate::extractor::{Extractor, spawn_extract};
-use crate::stream::sse_response;
+use crate::stream::{StreamContext, sse_response};
 use crate::{ChatCompletionRequest, ServerError};
 
 /// Shared state for the HTTP server. Held in an `Arc` so axum handlers can
 /// cheaply clone the reference.
 pub struct AppState<P: Prompter> {
+    /// Admin-auth configuration. `None` leaves `/admin/*` unauthenticated —
+    /// acceptable only on a loopback-only dev box or behind a reverse proxy
+    /// that handles auth upstream. When `Some`, the variant picks the
+    /// scheme: static Basic credentials or an OIDC login flow.
+    pub admin_auth: Option<AdminAuth>,
     /// Fallback user id applied to requests that don't supply their own.
     /// `None` means such requests are rejected (multi-tenant posture).
     pub default_user_id: Option<UserId>,
@@ -33,6 +48,7 @@ pub struct AppState<P: Prompter> {
     pub judges: Arc<HashMap<String, Arc<Judge>>>,
     pub memory: Arc<Store>,
     pub prompter: Arc<P>,
+    pub telemetry: Arc<TelemetrySink>,
     pub tracker: Tracker,
 }
 
@@ -86,13 +102,60 @@ impl<P: Prompter + 'static> Server<P> {
     /// Public so integration tests can drive the router via `tower::ServiceExt`
     /// without standing up a TCP listener.
     pub fn router(&self) -> Router {
+        let state = Arc::clone(&self.state);
+
+        // Assemble the full `/admin/*` subtree in one place so auth layers
+        // cover every route uniformly: `/api/*` for JSON, everything else
+        // for the Leptos SPA. Nested `/api` is more specific than the
+        // SPA's `/{*path}` fallback, so axum routes correctly.
+        let admin = Router::new()
+            .nest("/api", crate::admin::router::<P>())
+            .merge(crate::admin_ui::router::<P>());
+
+        let admin = match state.admin_auth.as_ref() {
+            None => admin,
+            Some(AdminAuth::Basic(_)) => admin.route_layer(from_fn_with_state(
+                Arc::clone(&state),
+                require_basic_auth::<P>,
+            )),
+            Some(AdminAuth::Oidc(runtime)) => {
+                // Session → auth (reads session, sets extensions) → login
+                // (forces redirect when no valid ID token). `.layer()` calls
+                // are applied outermost-last; session must wrap everything
+                // so the OIDC layers find it in request extensions.
+                // `HandleErrorLayer` converts the OIDC middlewares'
+                // `MiddlewareError` into axum-compatible `Infallible`
+                // responses.
+                let session = SessionManagerLayer::new(MemoryStore::default())
+                    .with_same_site(SameSite::Lax)
+                    .with_expiry(Expiry::OnInactivity(Duration::hours(8)));
+                let oidc_login = ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(handle_oidc_error))
+                    .layer(OidcLoginLayer::<EmptyAdditionalClaims>::new());
+                let oidc_auth = ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(handle_oidc_error))
+                    .layer(OidcAuthLayer::<EmptyAdditionalClaims>::new(
+                        runtime.client.clone(),
+                    ));
+                admin.layer(oidc_login).layer(oidc_auth).layer(session)
+            }
+        };
+
         Router::new()
-            .nest("/admin/api", crate::admin::router::<P>())
-            .nest("/admin", crate::admin_ui::router::<P>())
+            .nest("/admin", admin)
             .route("/v1/chat/completions", post(chat_completions::<P>))
             .route("/v1/models", get(models::<P>))
-            .with_state(Arc::clone(&self.state))
+            .with_state(state)
     }
+}
+
+/// Turn an OIDC middleware error into an axum response. Session lookups,
+/// token exchanges, and upstream discovery failures all funnel through
+/// here. `MiddlewareError` already implements `IntoResponse`; the
+/// wrapper exists only so the middleware stack resolves to axum's
+/// `Infallible` error type.
+async fn handle_oidc_error(err: MiddlewareError) -> Response {
+    err.into_response()
 }
 
 async fn chat_completions<P: Prompter + 'static>(
@@ -101,37 +164,70 @@ async fn chat_completions<P: Prompter + 'static>(
 ) -> Result<Response, ApiError> {
     let prepared = prepare_request(&state, &request).await?;
 
+    // Pre-generate the assistant message id so we can reuse its UUID as the
+    // telemetry turn correlation id. One value joins the stored message to
+    // the full event tree produced while generating it.
+    let assistant_message_id = MessageId::new();
+    let turn_id = TurnId(assistant_message_id.0);
+    let turn_start = Event::new(
+        turn_id,
+        prepared.user_id,
+        None,
+        EventKind::TurnStart,
+        serde_json::json!({
+            "agent": request.model,
+            "user_message": prepared.user_message,
+        }),
+    );
+    let turn_start_id = turn_start.id;
+    if let Err(err) = state.telemetry.emit(turn_start).await {
+        eprintln!("telemetry emit failed for turn_start: {err}");
+    }
+    let ctx = TelemetryCtx {
+        correlation_id: turn_id,
+        parent: Some(turn_start_id),
+        user_id: prepared.user_id,
+    };
+
     if request.is_streaming() {
         let inner = state
             .prompter
-            .complete_streaming(&request.model, prepared.messages)
+            .complete_streaming(&request.model, prepared.messages, ctx)
             .await?;
-        let response = sse_response(
-            Arc::clone(&state),
-            prepared.user_id,
-            prepared.tracker_key,
-            prepared.user_message,
-            request.model.clone(),
-            request.include_usage(),
+        let response = sse_response(StreamContext {
+            assistant_message_id,
+            include_usage: request.include_usage(),
             inner,
-        );
+            model: request.model.clone(),
+            state: Arc::clone(&state),
+            tracker_key: prepared.tracker_key,
+            user_id: prepared.user_id,
+            user_message: prepared.user_message,
+        });
         return Ok(response.into_response());
     }
 
     let completion = state
         .prompter
-        .complete(&request.model, prepared.messages)
+        .complete(&request.model, prepared.messages, ctx)
         .await?;
-    state
+    if let Err(err) = state
         .tracker
-        .record(&prepared.tracker_key, completion.usage.total_tokens);
+        .record(&prepared.tracker_key, completion.usage.total_tokens)
+        .await
+    {
+        eprintln!("rate limit record failed: {err}");
+    }
 
     let um = state.memory.for_user(prepared.user_id);
     um.append_message(MemRole::User, prepared.user_message.clone())
         .await?;
-    let assistant_message_id = um
-        .append_message(MemRole::Assistant, completion.text.clone())
-        .await?;
+    um.append_message_with_id(
+        MemRole::Assistant,
+        completion.text.clone(),
+        assistant_message_id,
+    )
+    .await?;
 
     if let Some(extractor) = state.extractor.clone() {
         spawn_extract(
@@ -201,7 +297,7 @@ async fn prepare_request<P: Prompter>(
     let limits = request.request_limits()?;
     let language = request.language()?;
     let tracker_key = user_id.0.to_string();
-    state.tracker.check(&tracker_key, limits)?;
+    state.tracker.check(&tracker_key, limits).await?;
 
     let last_user: &ChatMessage = request
         .last_user_message()

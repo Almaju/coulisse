@@ -18,6 +18,7 @@ use memory::{
 };
 use prompter::Prompter;
 use serde::Serialize;
+use telemetry::{Event as TelemetryEvent, EventKind, TelemetryError, TurnId};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -28,6 +29,10 @@ pub fn router<P: Prompter + 'static>() -> Router<Arc<AppState<P>>> {
         .route("/users/{user_id}/memories", get(user_memories::<P>))
         .route("/users/{user_id}/messages", get(user_messages::<P>))
         .route("/users/{user_id}/scores", get(user_scores::<P>))
+        .route(
+            "/users/{user_id}/turns/{turn_id}/events",
+            get(turn_events::<P>),
+        )
 }
 
 async fn list_users<P: Prompter>(
@@ -95,6 +100,22 @@ async fn user_memories<P: Prompter>(
     Ok(Json(MemoriesResponse { memories }))
 }
 
+async fn turn_events<P: Prompter>(
+    State(state): State<Arc<AppState<P>>>,
+    Path((user_id, turn_id)): Path<(String, String)>,
+) -> Result<Json<EventsResponse>, AdminError> {
+    let user_id = parse_user_id(&user_id)?;
+    let turn_id = parse_turn_id(&turn_id)?;
+    let events = state
+        .telemetry
+        .fetch_turn(user_id, turn_id)
+        .await?
+        .into_iter()
+        .map(EventView::from)
+        .collect();
+    Ok(Json(EventsResponse { events }))
+}
+
 async fn user_scores<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
@@ -149,10 +170,18 @@ fn parse_user_id(raw: &str) -> Result<UserId, AdminError> {
         .map_err(|_| AdminError::InvalidUserId)
 }
 
+fn parse_turn_id(raw: &str) -> Result<TurnId, AdminError> {
+    Uuid::parse_str(raw)
+        .map(TurnId)
+        .map_err(|_| AdminError::InvalidTurnId)
+}
+
 #[derive(Debug)]
 enum AdminError {
+    InvalidTurnId,
     InvalidUserId,
     Memory(MemoryError),
+    Telemetry(TelemetryError),
 }
 
 impl From<MemoryError> for AdminError {
@@ -161,14 +190,25 @@ impl From<MemoryError> for AdminError {
     }
 }
 
+impl From<TelemetryError> for AdminError {
+    fn from(err: TelemetryError) -> Self {
+        Self::Telemetry(err)
+    }
+}
+
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::InvalidTurnId => (
+                StatusCode::BAD_REQUEST,
+                "turn_id must be a valid UUID".to_string(),
+            ),
             Self::InvalidUserId => (
                 StatusCode::BAD_REQUEST,
                 "user_id must be a valid UUID".to_string(),
             ),
             Self::Memory(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            Self::Telemetry(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
         let body = Json(serde_json::json!({
             "error": { "message": message, "type": "admin_error" }
@@ -333,4 +373,46 @@ pub struct CriterionAverage {
     pub count: u32,
     pub criterion: String,
     pub judge_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventsResponse {
+    pub events: Vec<EventView>,
+}
+
+/// One telemetry row surfaced to the admin UI. `parent_id` is used to
+/// reconstruct the causal tree on the client — every event roots at the
+/// `turn_start` whose `id` matches the turn correlation id.
+#[derive(Clone, Debug, Serialize)]
+pub struct EventView {
+    pub correlation_id: String,
+    pub created_at: u64,
+    pub duration_ms: Option<u64>,
+    pub id: String,
+    pub kind: &'static str,
+    pub parent_id: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+impl From<TelemetryEvent> for EventView {
+    fn from(e: TelemetryEvent) -> Self {
+        Self {
+            correlation_id: e.correlation_id.0.to_string(),
+            created_at: e.created_at,
+            duration_ms: e.duration_ms,
+            id: e.id.0.to_string(),
+            kind: event_kind_str(e.kind),
+            parent_id: e.parent_id.map(|p| p.0.to_string()),
+            payload: e.payload,
+        }
+    }
+}
+
+fn event_kind_str(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::LlmCall => "llm_call",
+        EventKind::ToolCall => "tool_call",
+        EventKind::TurnFinish => "turn_finish",
+        EventKind::TurnStart => "turn_start",
+    }
 }

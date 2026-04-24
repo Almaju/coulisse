@@ -1,4 +1,5 @@
 mod admin;
+mod admin_auth;
 mod admin_ui;
 mod chat;
 mod error;
@@ -7,6 +8,7 @@ mod server;
 mod stream;
 mod tool;
 
+pub use admin_auth::{AdminAuth, AdminCredentials, OidcBuildError, OidcRuntime};
 pub use chat::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
     ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage,

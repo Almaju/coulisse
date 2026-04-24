@@ -186,3 +186,33 @@ pub async fn user_scores(user_id: Uuid) -> Result<ScoresResponse, ApiError> {
         .await?;
     Ok(resp)
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EventView {
+    pub correlation_id: String,
+    pub created_at: u64,
+    pub duration_ms: Option<u64>,
+    pub id: String,
+    pub kind: String,
+    pub parent_id: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct EventsResponse {
+    pub events: Vec<EventView>,
+}
+
+/// Fetch the telemetry event tree for one turn. The server uses the
+/// assistant message id as the turn correlation id, so callers pass the
+/// assistant `MessageView::id` as `turn_id`. Returns events in arrival
+/// order; the caller reconstructs the parent tree via `parent_id`.
+pub async fn turn_events(user_id: Uuid, turn_id: &str) -> Result<Vec<EventView>, ApiError> {
+    let url = format!("{BASE}/users/{user_id}/turns/{turn_id}/events");
+    let resp: EventsResponse = gloo_net::http::Request::get(&url)
+        .send()
+        .await?
+        .json()
+        .await?;
+    Ok(resp.events)
+}

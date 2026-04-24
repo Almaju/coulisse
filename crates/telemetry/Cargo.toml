@@ -1,12 +1,16 @@
 [package]
-name = "limits"
+name = "telemetry"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
+memory.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 tempfile = "3"

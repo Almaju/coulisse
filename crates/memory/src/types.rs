@@ -178,10 +178,17 @@ pub struct StoredMessage {
 
 impl StoredMessage {
     pub fn new(user_id: UserId, role: Role, content: String) -> Self {
+        Self::new_with_id(user_id, role, content, MessageId::new())
+    }
+
+    /// Build a `StoredMessage` with a caller-supplied id. Used by the chat
+    /// handler so the assistant message's id can be generated before the
+    /// prompter runs and reused as the telemetry turn correlation id.
+    pub fn new_with_id(user_id: UserId, role: Role, content: String, id: MessageId) -> Self {
         let token_count = TokenCount::estimate(&content);
         Self {
             created_at: now_secs(),
-            id: MessageId::new(),
+            id,
             role,
             token_count,
             user_id,

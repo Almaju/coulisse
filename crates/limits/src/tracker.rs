@@ -1,160 +1,154 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use sqlx::SqlitePool;
 
 use crate::error::WindowKind;
 use crate::{LimitError, RequestLimits};
 
-const SECS_PER_DAY: u64 = 86_400;
-const SECS_PER_HOUR: u64 = 3_600;
-const SECS_PER_MONTH: u64 = 30 * SECS_PER_DAY;
+const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
+const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
 
+/// Persistent per-user token-usage tracker. Stores the current hour/day/month
+/// counter for each user in SQLite so limits survive restarts. Shares a pool
+/// with [`memory::Store`] — there is one database per Coulisse process, with
+/// one table per crate that owns state.
 pub struct Tracker {
-    state: Mutex<HashMap<String, UserUsage>>,
-}
-
-impl Default for Tracker {
-    fn default() -> Self {
-        Self::new()
-    }
+    pool: SqlitePool,
 }
 
 impl Tracker {
-    pub fn new() -> Self {
-        Self {
-            state: Mutex::new(HashMap::new()),
+    /// Apply the tracker schema to `pool` and return a tracker that reads and
+    /// writes the `rate_limit_windows` table. Schema statements use
+    /// `CREATE IF NOT EXISTS`, so it is safe to call against a pool that
+    /// already carries other crates' tables.
+    pub async fn open(pool: SqlitePool) -> Result<Self, LimitError> {
+        for stmt in split_sql(SCHEMA_SQL)
+            .into_iter()
+            .chain(split_sql(MIGRATE_SQL))
+        {
+            sqlx::query(&stmt).execute(&pool).await?;
         }
+        Ok(Self { pool })
     }
 
-    pub fn check(&self, user: &str, limits: RequestLimits) -> Result<(), LimitError> {
+    /// Reject the request if any of the caller-supplied caps have already been
+    /// reached in the current window. Returns `Ok(())` when no limits apply or
+    /// every relevant bucket is below its cap.
+    pub async fn check(&self, user: &str, limits: RequestLimits) -> Result<(), LimitError> {
         if limits.is_empty() {
             return Ok(());
         }
-        let now = Self::now_secs();
-        let mut state = self.state.lock().expect("tracker mutex poisoned");
-        let usage = state.entry(user.to_string()).or_default();
-        usage.refresh(now);
-        usage.check(limits, now)
+        let now = now_secs();
+        for (cap, kind) in [
+            (limits.tokens_per_hour, WindowKind::Hour),
+            (limits.tokens_per_day, WindowKind::Day),
+            (limits.tokens_per_month, WindowKind::Month),
+        ] {
+            let Some(cap) = cap else { continue };
+            let size = kind.size_secs();
+            let start = now - (now % size);
+            let used = self.count(user, kind, start).await?;
+            if used >= cap {
+                return Err(LimitError::Exceeded {
+                    limit: cap,
+                    retry_after: (start + size).saturating_sub(now),
+                    used,
+                    window: kind,
+                });
+            }
+        }
+        Ok(())
     }
 
-    pub fn record(&self, user: &str, tokens: u64) {
+    /// Add `tokens` to every window-kind counter for `user`. If the stored
+    /// window for a kind has rolled over (new hour/day/month), the row is
+    /// replaced with a fresh `(start, tokens)` pair instead of accumulating
+    /// onto the stale value.
+    pub async fn record(&self, user: &str, tokens: u64) -> Result<(), LimitError> {
         if tokens == 0 {
-            return;
+            return Ok(());
         }
-        let now = Self::now_secs();
-        let mut state = self.state.lock().expect("tracker mutex poisoned");
-        let usage = state.entry(user.to_string()).or_default();
-        usage.refresh(now);
-        usage.add(tokens);
-    }
-
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    }
-}
-
-struct UserUsage {
-    day: Window,
-    hour: Window,
-    month: Window,
-}
-
-impl Default for UserUsage {
-    fn default() -> Self {
-        Self {
-            day: Window::new(WindowKind::Day),
-            hour: Window::new(WindowKind::Hour),
-            month: Window::new(WindowKind::Month),
-        }
-    }
-}
-
-impl UserUsage {
-    fn refresh(&mut self, now: u64) {
-        self.day.refresh(now);
-        self.hour.refresh(now);
-        self.month.refresh(now);
-    }
-
-    fn check(&self, limits: RequestLimits, now: u64) -> Result<(), LimitError> {
-        if let Some(cap) = limits.tokens_per_hour {
-            self.hour.check(cap, now)?;
-        }
-        if let Some(cap) = limits.tokens_per_day {
-            self.day.check(cap, now)?;
-        }
-        if let Some(cap) = limits.tokens_per_month {
-            self.month.check(cap, now)?;
+        let now = now_secs();
+        for kind in [WindowKind::Hour, WindowKind::Day, WindowKind::Month] {
+            let size = kind.size_secs();
+            let start = (now - (now % size)) as i64;
+            sqlx::query(
+                "INSERT INTO rate_limit_windows (count, kind, start, user_id) \
+                 VALUES (?, ?, ?, ?) \
+                 ON CONFLICT(user_id, kind) DO UPDATE SET \
+                   count = CASE WHEN start = excluded.start \
+                                THEN count + excluded.count \
+                                ELSE excluded.count END, \
+                   start = excluded.start",
+            )
+            .bind(tokens as i64)
+            .bind(kind.as_db_str())
+            .bind(start)
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
 
-    fn add(&mut self, tokens: u64) {
-        self.day.count = self.day.count.saturating_add(tokens);
-        self.hour.count = self.hour.count.saturating_add(tokens);
-        self.month.count = self.month.count.saturating_add(tokens);
+    async fn count(&self, user: &str, kind: WindowKind, start: u64) -> Result<u64, LimitError> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT count FROM rate_limit_windows \
+             WHERE user_id = ? AND kind = ? AND start = ?",
+        )
+        .bind(user)
+        .bind(kind.as_db_str())
+        .bind(start as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(c,)| c.max(0) as u64).unwrap_or(0))
     }
 }
 
-struct Window {
-    count: u64,
-    kind: WindowKind,
-    size: u64,
-    start: u64,
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
-impl Window {
-    fn new(kind: WindowKind) -> Self {
-        let size = match kind {
-            WindowKind::Day => SECS_PER_DAY,
-            WindowKind::Hour => SECS_PER_HOUR,
-            WindowKind::Month => SECS_PER_MONTH,
-        };
-        Self {
-            count: 0,
-            kind,
-            size,
-            start: 0,
-        }
-    }
-
-    fn refresh(&mut self, now: u64) {
-        let current = now - (now % self.size);
-        if current != self.start {
-            self.start = current;
-            self.count = 0;
-        }
-    }
-
-    fn check(&self, cap: u64, now: u64) -> Result<(), LimitError> {
-        if self.count >= cap {
-            return Err(LimitError::Exceeded {
-                limit: cap,
-                retry_after: (self.start + self.size).saturating_sub(now),
-                used: self.count,
-                window: self.kind,
-            });
-        }
-        Ok(())
-    }
+fn split_sql(sql: &str) -> Vec<String> {
+    let stripped: String = sql
+        .lines()
+        .map(|line| match line.find("--") {
+            Some(i) => &line[..i],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    stripped
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use std::str::FromStr;
 
-    #[test]
-    fn rejects_when_over_limit() {
-        let tracker = Tracker::new();
+    async fn tracker() -> Tracker {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        Tracker::open(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn rejects_when_over_limit() {
+        let tracker = tracker().await;
         let limits = RequestLimits {
             tokens_per_hour: Some(100),
             ..Default::default()
         };
-        tracker.record("alice", 100);
-        let err = tracker.check("alice", limits).unwrap_err();
+        tracker.record("alice", 100).await.unwrap();
+        let err = tracker.check("alice", limits).await.unwrap_err();
         match err {
             LimitError::Exceeded {
                 window,
@@ -170,33 +164,64 @@ mod tests {
         }
     }
 
-    #[test]
-    fn allows_under_limit() {
-        let tracker = Tracker::new();
+    #[tokio::test]
+    async fn allows_under_limit() {
+        let tracker = tracker().await;
         let limits = RequestLimits {
             tokens_per_hour: Some(100),
             ..Default::default()
         };
-        tracker.record("alice", 50);
-        tracker.check("alice", limits).unwrap();
+        tracker.record("alice", 50).await.unwrap();
+        tracker.check("alice", limits).await.unwrap();
     }
 
-    #[test]
-    fn no_limits_always_passes() {
-        let tracker = Tracker::new();
-        tracker.record("alice", 1_000_000_000);
-        tracker.check("alice", RequestLimits::default()).unwrap();
+    #[tokio::test]
+    async fn no_limits_always_passes() {
+        let tracker = tracker().await;
+        tracker.record("alice", 1_000_000_000).await.unwrap();
+        tracker
+            .check("alice", RequestLimits::default())
+            .await
+            .unwrap();
     }
 
-    #[test]
-    fn isolated_users() {
-        let tracker = Tracker::new();
+    #[tokio::test]
+    async fn isolated_users() {
+        let tracker = tracker().await;
         let limits = RequestLimits {
             tokens_per_hour: Some(10),
             ..Default::default()
         };
-        tracker.record("alice", 10);
-        tracker.check("alice", limits).unwrap_err();
-        tracker.check("bob", limits).unwrap();
+        tracker.record("alice", 10).await.unwrap();
+        tracker.check("alice", limits).await.unwrap_err();
+        tracker.check("bob", limits).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn survives_process_restart() {
+        // Share one backing database file between two tracker instances, just
+        // like Coulisse would across a restart. Verifies that the UPSERT path
+        // and the count lookup both see persisted rows.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("limits.db");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options.clone()).await.unwrap();
+        let first = Tracker::open(pool).await.unwrap();
+        first.record("alice", 42).await.unwrap();
+        drop(first);
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        let second = Tracker::open(pool).await.unwrap();
+        let limits = RequestLimits {
+            tokens_per_hour: Some(42),
+            ..Default::default()
+        };
+        let err = second.check("alice", limits).await.unwrap_err();
+        match err {
+            LimitError::Exceeded { used, .. } => assert_eq!(used, 42),
+            _ => panic!("expected Exceeded"),
+        }
     }
 }

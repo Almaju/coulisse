@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::stream::{Stream, StreamExt};
 use rig::agent::{MultiTurnStreamItem, PromptRequest};
@@ -17,6 +18,7 @@ use rmcp::ServiceExt;
 use rmcp::service::{RoleClient, RunningService, ServerSink};
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::json;
+use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
 use crate::{AgentConfig, Completion, Config, McpServerConfig, PrompterError, ProviderKind, Usage};
@@ -36,6 +38,11 @@ struct RigPrompterInner {
     agents: Vec<AgentConfig>,
     backends: HashMap<ProviderKind, Backend>,
     mcp_servers: HashMap<String, McpServer>,
+    /// Optional observability sink. When `Some`, every tool invocation
+    /// (MCP or subagent, at any depth) is recorded as a `ToolCall` event.
+    /// Kept off the hot path by short-circuiting when `None`, so tests and
+    /// internal prompter callers that don't care about telemetry pay no cost.
+    telemetry: Option<Arc<TelemetrySink>>,
 }
 
 enum Backend {
@@ -51,11 +58,6 @@ struct McpServer {
     _service: RunningService<RoleClient, ()>,
     sink: ServerSink,
     tools: HashMap<String, rmcp::model::Tool>,
-}
-
-struct McpAttachment {
-    sink: ServerSink,
-    tools: Vec<rmcp::model::Tool>,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +107,15 @@ pub enum ToolCallKind {
 
 pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, PrompterError>> + Send>>;
 
+/// Result of `RigPrompterInner::build_tools`: the full `ToolDyn` list to
+/// hand to rig, plus a snapshot of subagent names so the streaming
+/// classifier can tag outgoing tool events as Subagent vs Mcp. Aliased to
+/// dodge the `clippy::type_complexity` lint on the return type.
+type BuiltTools = (
+    Vec<Box<dyn ToolDyn>>,
+    Arc<std::collections::HashSet<String>>,
+);
+
 /// Abstraction over an LLM backend. Implementations answer completion
 /// requests — either as a single response or as a stream of incremental
 /// events. The server talks to this trait so tests can drive the HTTP
@@ -112,21 +123,29 @@ pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, Prompt
 pub trait Prompter: Send + Sync {
     fn agents(&self) -> &[AgentConfig];
 
+    /// Run the named agent and return its final reply. `ctx` carries the
+    /// per-request correlation id plus the parent `EventId` under which
+    /// this completion's tool invocations should nest. The `parent` field
+    /// typically points at the caller's `TurnStart` event for top-level
+    /// requests, or at a `ToolCall` event when a subagent recurses.
     fn complete(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
+        ctx: Ctx,
     ) -> impl std::future::Future<Output = Result<Completion, PrompterError>> + Send;
 
     fn complete_streaming(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
+        ctx: Ctx,
     ) -> impl std::future::Future<Output = Result<CompletionStream, PrompterError>> + Send;
 
     /// One-off prompt bypassing agent-config lookup. No MCP tools, no
     /// preamble merging — just `provider`, `model`, the supplied preamble
     /// and messages. Used for internal tasks like memory fact extraction.
+    /// Not tied to user-facing telemetry, hence no `ctx`.
     fn prompt_with(
         &self,
         provider: ProviderKind,
@@ -137,7 +156,15 @@ pub trait Prompter: Send + Sync {
 }
 
 impl RigPrompter {
-    pub async fn new(config: Config) -> Result<Self, PrompterError> {
+    /// Build a prompter from `config`, optionally wired to a telemetry
+    /// sink. When `telemetry` is `Some`, every tool invocation at any depth
+    /// (MCP or subagent) is recorded as a `ToolCall` event so the admin UI
+    /// can reconstruct nested subagent trees. Tests that don't care pass
+    /// `None` and pay no observability cost.
+    pub async fn new(
+        config: Config,
+        telemetry: Option<Arc<TelemetrySink>>,
+    ) -> Result<Self, PrompterError> {
         let mut backends = HashMap::with_capacity(config.providers.len());
         for (kind, provider) in config.providers {
             let backend = match kind {
@@ -204,6 +231,7 @@ impl RigPrompter {
                 agents: config.agents,
                 backends,
                 mcp_servers,
+                telemetry,
             }),
         })
     }
@@ -218,16 +246,19 @@ impl Prompter for RigPrompter {
         &self,
         agent_name: &str,
         messages: Vec<Message>,
+        ctx: Ctx,
     ) -> Result<Completion, PrompterError> {
-        RigPrompterInner::complete_with_depth(&self.inner, agent_name, messages, 0).await
+        RigPrompterInner::complete_with_depth(&self.inner, agent_name, messages, 0, ctx).await
     }
 
     async fn complete_streaming(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
+        ctx: Ctx,
     ) -> Result<CompletionStream, PrompterError> {
-        RigPrompterInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0).await
+        RigPrompterInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, ctx)
+            .await
     }
 
     async fn prompt_with(
@@ -248,11 +279,20 @@ impl RigPrompterInner {
         self.agents.iter().find(|a| a.name == name)
     }
 
-    fn collect_mcp_attachments(
-        &self,
+    /// Build the full tool list the agent will see: MCP tools (wrapped in
+    /// a `TelemetryTool` recorder) followed by subagent tools (which
+    /// record themselves). Also returns a snapshot of subagent names so the
+    /// streaming classifier in `Conversation::stream` can label outgoing
+    /// `ToolCall` events as `Subagent` vs `Mcp`.
+    fn build_tools(
+        self: &Arc<Self>,
         agent: &AgentConfig,
-    ) -> Result<Vec<McpAttachment>, PrompterError> {
-        let mut attachments = Vec::with_capacity(agent.mcp_tools.len());
+        depth: usize,
+        ctx: Ctx,
+    ) -> Result<BuiltTools, PrompterError> {
+        use std::collections::HashSet;
+
+        let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
         for access in &agent.mcp_tools {
             let server = self.mcp_servers.get(&access.server).ok_or_else(|| {
                 PrompterError::McpServerNotConfigured {
@@ -260,58 +300,53 @@ impl RigPrompterInner {
                     server: access.server.clone(),
                 }
             })?;
-            let tools = match &access.only {
-                Some(names) => {
-                    let mut picked = Vec::with_capacity(names.len());
-                    for name in names {
-                        let tool = server.tools.get(name).ok_or_else(|| {
+            let picked: Vec<_> = match &access.only {
+                Some(names) => names
+                    .iter()
+                    .map(|name| {
+                        server.tools.get(name).cloned().ok_or_else(|| {
                             PrompterError::McpToolNotFound {
                                 agent: agent.name.clone(),
                                 server: access.server.clone(),
                                 tool: name.clone(),
                             }
-                        })?;
-                        picked.push(tool.clone());
-                    }
-                    picked
-                }
+                        })
+                    })
+                    .collect::<Result<_, _>>()?,
                 None => server.tools.values().cloned().collect(),
             };
-            attachments.push(McpAttachment {
-                sink: server.sink.clone(),
-                tools,
-            });
+            for tool in picked {
+                let raw: Box<dyn ToolDyn> =
+                    Box::new(McpTool::from_mcp_server(tool, server.sink.clone()));
+                tools.push(Box::new(TelemetryTool {
+                    ctx,
+                    inner: raw,
+                    kind: ToolCallKind::Mcp,
+                    sink: self.telemetry.clone(),
+                }));
+            }
         }
-        Ok(attachments)
-    }
 
-    /// Build one `SubagentTool` per entry in `agent.subagents`. The `depth`
-    /// parameter is the current agent's depth; each tool it hands out
-    /// captures that depth and invokes the target at `depth + 1`.
-    fn collect_subagent_tools(
-        self: &Arc<Self>,
-        agent: &AgentConfig,
-        depth: usize,
-    ) -> Vec<Box<dyn ToolDyn>> {
-        agent
-            .subagents
-            .iter()
-            .map(|sub_name| {
-                let target = self
-                    .find_agent(sub_name)
-                    .expect("subagent existence is validated at config load");
-                let purpose = target
-                    .purpose
-                    .clone()
-                    .unwrap_or_else(|| format!("Invoke the '{}' subagent.", target.name));
-                Box::new(SubagentTool {
-                    inner: Arc::clone(self),
-                    target_name: target.name.clone(),
-                    purpose,
-                    depth,
-                }) as Box<dyn ToolDyn>
-            })
-            .collect()
+        let subagent_names: Arc<HashSet<String>> =
+            Arc::new(agent.subagents.iter().cloned().collect());
+        for sub_name in &agent.subagents {
+            let target = self
+                .find_agent(sub_name)
+                .expect("subagent existence is validated at config load");
+            let purpose = target
+                .purpose
+                .clone()
+                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", target.name));
+            tools.push(Box::new(SubagentTool {
+                ctx,
+                depth,
+                inner: Arc::clone(self),
+                purpose,
+                sink: self.telemetry.clone(),
+                target_name: target.name.clone(),
+            }));
+        }
+        Ok((tools, subagent_names))
     }
 
     async fn complete_with_depth(
@@ -319,6 +354,7 @@ impl RigPrompterInner {
         agent_name: &str,
         messages: Vec<Message>,
         depth: usize,
+        ctx: Ctx,
     ) -> Result<Completion, PrompterError> {
         if depth > MAX_SUBAGENT_DEPTH {
             return Err(PrompterError::SubagentDepthExceeded {
@@ -335,40 +371,15 @@ impl RigPrompterInner {
                 provider: agent.provider,
             }
         })?;
-        let mcp_attachments = self.collect_mcp_attachments(agent)?;
-        let subagent_tools = self.collect_subagent_tools(agent, depth);
+        let (tools, _) = self.build_tools(agent, depth, ctx)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         let result = match backend {
-            Backend::Anthropic(c) => {
-                conversation
-                    .send(c, &agent.model, mcp_attachments, subagent_tools)
-                    .await
-            }
-            Backend::Cohere(c) => {
-                conversation
-                    .send(c, &agent.model, mcp_attachments, subagent_tools)
-                    .await
-            }
-            Backend::Deepseek(c) => {
-                conversation
-                    .send(c, &agent.model, mcp_attachments, subagent_tools)
-                    .await
-            }
-            Backend::Gemini(c) => {
-                conversation
-                    .send(c, &agent.model, mcp_attachments, subagent_tools)
-                    .await
-            }
-            Backend::Groq(c) => {
-                conversation
-                    .send(c, &agent.model, mcp_attachments, subagent_tools)
-                    .await
-            }
-            Backend::Openai(c) => {
-                conversation
-                    .send(c, &agent.model, mcp_attachments, subagent_tools)
-                    .await
-            }
+            Backend::Anthropic(c) => conversation.send(c, &agent.model, tools).await,
+            Backend::Cohere(c) => conversation.send(c, &agent.model, tools).await,
+            Backend::Deepseek(c) => conversation.send(c, &agent.model, tools).await,
+            Backend::Gemini(c) => conversation.send(c, &agent.model, tools).await,
+            Backend::Groq(c) => conversation.send(c, &agent.model, tools).await,
+            Backend::Openai(c) => conversation.send(c, &agent.model, tools).await,
         };
         result.map_err(PrompterError::from)
     }
@@ -378,6 +389,7 @@ impl RigPrompterInner {
         agent_name: &str,
         messages: Vec<Message>,
         depth: usize,
+        ctx: Ctx,
     ) -> Result<CompletionStream, PrompterError> {
         if depth > MAX_SUBAGENT_DEPTH {
             return Err(PrompterError::SubagentDepthExceeded {
@@ -394,38 +406,37 @@ impl RigPrompterInner {
                 provider: agent.provider,
             }
         })?;
-        let mcp_attachments = self.collect_mcp_attachments(agent)?;
-        let subagent_tools = self.collect_subagent_tools(agent, depth);
+        let (tools, subagent_names) = self.build_tools(agent, depth, ctx)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         match backend {
             Backend::Anthropic(c) => {
                 conversation
-                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .stream(c, &agent.model, tools, subagent_names)
                     .await
             }
             Backend::Cohere(c) => {
                 conversation
-                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .stream(c, &agent.model, tools, subagent_names)
                     .await
             }
             Backend::Deepseek(c) => {
                 conversation
-                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .stream(c, &agent.model, tools, subagent_names)
                     .await
             }
             Backend::Gemini(c) => {
                 conversation
-                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .stream(c, &agent.model, tools, subagent_names)
                     .await
             }
             Backend::Groq(c) => {
                 conversation
-                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .stream(c, &agent.model, tools, subagent_names)
                     .await
             }
             Backend::Openai(c) => {
                 conversation
-                    .stream(c, &agent.model, mcp_attachments, subagent_tools)
+                    .stream(c, &agent.model, tools, subagent_names)
                     .await
             }
         }
@@ -447,12 +458,12 @@ impl RigPrompterInner {
             })?;
         let conversation = Conversation::from_messages(messages, preamble)?;
         let result = match backend {
-            Backend::Anthropic(c) => conversation.send(c, model, vec![], vec![]).await,
-            Backend::Cohere(c) => conversation.send(c, model, vec![], vec![]).await,
-            Backend::Deepseek(c) => conversation.send(c, model, vec![], vec![]).await,
-            Backend::Gemini(c) => conversation.send(c, model, vec![], vec![]).await,
-            Backend::Groq(c) => conversation.send(c, model, vec![], vec![]).await,
-            Backend::Openai(c) => conversation.send(c, model, vec![], vec![]).await,
+            Backend::Anthropic(c) => conversation.send(c, model, vec![]).await,
+            Backend::Cohere(c) => conversation.send(c, model, vec![]).await,
+            Backend::Deepseek(c) => conversation.send(c, model, vec![]).await,
+            Backend::Gemini(c) => conversation.send(c, model, vec![]).await,
+            Backend::Groq(c) => conversation.send(c, model, vec![]).await,
+            Backend::Openai(c) => conversation.send(c, model, vec![]).await,
         };
         result.map_err(PrompterError::from)
     }
@@ -463,11 +474,17 @@ impl RigPrompterInner {
 /// list, and its own bounded tool loop; the final assistant text becomes
 /// this tool's return value. Hop depth is captured at construction so
 /// pathological A→B→A→B chains are bounded by `MAX_SUBAGENT_DEPTH`.
+///
+/// When a telemetry `sink` is configured, this tool emits its own
+/// `ToolCall` event and passes a child context down so the subagent's
+/// inner tool calls nest under this one in the admin tree.
 struct SubagentTool {
-    inner: Arc<RigPrompterInner>,
-    target_name: String,
-    purpose: String,
+    ctx: Ctx,
     depth: usize,
+    inner: Arc<RigPrompterInner>,
+    purpose: String,
+    sink: Option<Arc<TelemetrySink>>,
+    target_name: String,
 }
 
 impl ToolDyn for SubagentTool {
@@ -497,10 +514,16 @@ impl ToolDyn for SubagentTool {
     }
 
     fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
-        let inner = Arc::clone(&self.inner);
-        let target = self.target_name.clone();
+        let ctx = self.ctx;
         let depth = self.depth;
+        let inner = Arc::clone(&self.inner);
+        let sink = self.sink.clone();
+        let target = self.target_name.clone();
         Box::pin(async move {
+            let event_id = EventId::new();
+            let child_ctx = ctx.child(event_id);
+            let started = Instant::now();
+
             let parsed: serde_json::Value =
                 serde_json::from_str(&args).map_err(ToolError::JsonError)?;
             let message = parsed
@@ -517,13 +540,116 @@ impl ToolDyn for SubagentTool {
                 content: message,
             }];
             let next_depth = depth.saturating_add(1);
-            match RigPrompterInner::complete_with_depth(&inner, &target, messages, next_depth).await
-            {
+            let outcome = RigPrompterInner::complete_with_depth(
+                &inner, &target, messages, next_depth, child_ctx,
+            )
+            .await;
+            let duration_ms = started.elapsed().as_millis() as u64;
+
+            if let Some(sink) = sink {
+                let payload = tool_call_payload(
+                    &target,
+                    ToolCallKind::Subagent,
+                    &args,
+                    outcome.as_ref().map(|c| c.text.as_str()).ok(),
+                    outcome.as_ref().err().map(|e| e.to_string()),
+                );
+                let event = Event::new(
+                    ctx.correlation_id,
+                    ctx.user_id,
+                    ctx.parent,
+                    EventKind::ToolCall,
+                    payload,
+                )
+                .with_id(event_id)
+                .with_duration_ms(duration_ms);
+                if let Err(err) = sink.emit(event).await {
+                    eprintln!("telemetry emit failed for subagent tool call: {err}");
+                }
+            }
+
+            match outcome {
                 Ok(completion) => Ok(completion.text),
                 Err(err) => Err(ToolError::ToolCallError(Box::new(err))),
             }
         })
     }
+}
+
+/// Tool decorator that records a `ToolCall` event around any inner
+/// `ToolDyn`. Used to instrument MCP tools so the admin UI can see what
+/// arguments were sent and what came back, including errors — the exact
+/// blind spot that let hallucinated "database error" replies hide real
+/// upstream failures.
+struct TelemetryTool {
+    ctx: Ctx,
+    inner: Box<dyn ToolDyn>,
+    kind: ToolCallKind,
+    sink: Option<Arc<TelemetrySink>>,
+}
+
+impl ToolDyn for TelemetryTool {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    fn definition(&self, prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+        self.inner.definition(prompt)
+    }
+
+    fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
+        let ctx = self.ctx;
+        let kind = self.kind;
+        let name = self.inner.name();
+        let sink = self.sink.clone();
+        let inner_call = self.inner.call(args.clone());
+        Box::pin(async move {
+            let started = Instant::now();
+            let result = inner_call.await;
+            let duration_ms = started.elapsed().as_millis() as u64;
+
+            if let Some(sink) = sink {
+                let payload = tool_call_payload(
+                    &name,
+                    kind,
+                    &args,
+                    result.as_ref().ok().map(|s| s.as_str()),
+                    result.as_ref().err().map(|e| e.to_string()),
+                );
+                let event = Event::new(
+                    ctx.correlation_id,
+                    ctx.user_id,
+                    ctx.parent,
+                    EventKind::ToolCall,
+                    payload,
+                )
+                .with_duration_ms(duration_ms);
+                if let Err(err) = sink.emit(event).await {
+                    eprintln!("telemetry emit failed for {name}: {err}");
+                }
+            }
+            result
+        })
+    }
+}
+
+fn tool_call_payload(
+    tool_name: &str,
+    kind: ToolCallKind,
+    args: &str,
+    result: Option<&str>,
+    error: Option<String>,
+) -> serde_json::Value {
+    json!({
+        "args": args,
+        "error": error,
+        "kind": match kind {
+            ToolCallKind::Mcp => "mcp",
+            ToolCallKind::Subagent => "subagent",
+        },
+        "result": result,
+        "tool_name": tool_name,
+    })
 }
 
 impl McpServer {
@@ -614,8 +740,7 @@ impl Conversation {
         self,
         client: &C,
         model: &str,
-        mcp: Vec<McpAttachment>,
-        subagent_tools: Vec<Box<dyn ToolDyn>>,
+        tools: Vec<Box<dyn ToolDyn>>,
     ) -> Result<Completion, PromptError>
     where
         C: CompletionClient,
@@ -625,16 +750,6 @@ impl Conversation {
         if !self.preamble.is_empty() {
             builder = builder.preamble(&self.preamble);
         }
-        let mut tools: Vec<Box<dyn ToolDyn>> = mcp
-            .into_iter()
-            .flat_map(|attach| {
-                let sink = attach.sink;
-                attach.tools.into_iter().map(move |t| {
-                    Box::new(McpTool::from_mcp_server(t, sink.clone())) as Box<dyn ToolDyn>
-                })
-            })
-            .collect();
-        tools.extend(subagent_tools);
         let agent = if tools.is_empty() {
             builder.build()
         } else {
@@ -655,35 +770,18 @@ impl Conversation {
         self,
         client: &C,
         model: &str,
-        mcp: Vec<McpAttachment>,
-        subagent_tools: Vec<Box<dyn ToolDyn>>,
+        tools: Vec<Box<dyn ToolDyn>>,
+        subagent_names: Arc<std::collections::HashSet<String>>,
     ) -> Result<CompletionStream, PrompterError>
     where
         C: CompletionClient,
         C::CompletionModel: 'static,
         <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
     {
-        use std::collections::HashSet;
-
         let mut builder = client.agent(model);
         if !self.preamble.is_empty() {
             builder = builder.preamble(&self.preamble);
         }
-        let mut tools: Vec<Box<dyn ToolDyn>> = mcp
-            .into_iter()
-            .flat_map(|attach| {
-                let sink = attach.sink;
-                attach.tools.into_iter().map(move |t| {
-                    Box::new(McpTool::from_mcp_server(t, sink.clone())) as Box<dyn ToolDyn>
-                })
-            })
-            .collect();
-        // Snapshot subagent names before handing the boxes to rig — we need
-        // them inside the stream map to classify each ToolCall event as
-        // either MCP or Subagent.
-        let subagent_names: Arc<HashSet<String>> =
-            Arc::new(subagent_tools.iter().map(|t| t.name()).collect());
-        tools.extend(subagent_tools);
         let agent = if tools.is_empty() {
             builder.build()
         } else {
@@ -760,4 +858,136 @@ fn flatten_tool_result(tool_result: &rig::completion::message::ToolResult) -> St
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod telemetry_tool_tests {
+    use super::*;
+    use memory::UserId;
+    use rig::completion::ToolDefinition;
+    use sqlx::SqlitePool;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use std::str::FromStr;
+    use telemetry::{Ctx, EventKind, Sink, TurnId};
+
+    /// Minimal `ToolDyn` that returns whatever result/error the test wires
+    /// in. Replaces `McpTool` in tests so the wrapper logic can be exercised
+    /// without a live MCP server.
+    struct FakeTool {
+        name: String,
+        outcome: Result<String, String>,
+    }
+
+    impl ToolDyn for FakeTool {
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+            let name = self.name.clone();
+            Box::pin(async move {
+                ToolDefinition {
+                    name,
+                    description: "fake".into(),
+                    parameters: json!({}),
+                }
+            })
+        }
+
+        fn call(&self, _args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
+            let outcome = self.outcome.clone();
+            Box::pin(async move {
+                outcome.map_err(|e| {
+                    ToolError::ToolCallError(Box::<dyn std::error::Error + Send + Sync>::from(e))
+                })
+            })
+        }
+    }
+
+    async fn fresh_sink() -> Arc<Sink> {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        Arc::new(Sink::open(pool).await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn wrapper_emits_event_on_success() {
+        let sink = fresh_sink().await;
+        let user = UserId::new();
+        let turn = TurnId::new();
+        let ctx = Ctx::new(user, turn);
+
+        let wrapper = TelemetryTool {
+            ctx,
+            inner: Box::new(FakeTool {
+                name: "search_jobs".into(),
+                outcome: Ok("hello".into()),
+            }),
+            kind: ToolCallKind::Mcp,
+            sink: Some(Arc::clone(&sink)),
+        };
+        let out = wrapper.call("{\"q\":\"x\"}".into()).await.unwrap();
+        assert_eq!(out, "hello");
+
+        let events = sink.fetch_turn(user, turn).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.kind, EventKind::ToolCall);
+        assert_eq!(e.payload["tool_name"], "search_jobs");
+        assert_eq!(e.payload["kind"], "mcp");
+        assert_eq!(e.payload["result"], "hello");
+        assert!(e.payload["error"].is_null());
+        assert!(e.duration_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn wrapper_captures_tool_error() {
+        let sink = fresh_sink().await;
+        let user = UserId::new();
+        let turn = TurnId::new();
+        let ctx = Ctx::new(user, turn);
+
+        let wrapper = TelemetryTool {
+            ctx,
+            inner: Box::new(FakeTool {
+                name: "search_jobs".into(),
+                outcome: Err("column j.search_vector does not exist".into()),
+            }),
+            kind: ToolCallKind::Mcp,
+            sink: Some(Arc::clone(&sink)),
+        };
+        let err = wrapper.call("{}".into()).await.unwrap_err();
+        // rig's ToolError renders to the underlying Display; assert that the
+        // error text flows through unchanged.
+        assert!(err.to_string().contains("search_vector"));
+
+        let events = sink.fetch_turn(user, turn).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let payload = &events[0].payload;
+        assert_eq!(payload["kind"], "mcp");
+        assert!(payload["result"].is_null());
+        assert!(
+            payload["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("search_vector"),
+            "expected error text in payload, got {}",
+            payload["error"]
+        );
+    }
+
+    #[tokio::test]
+    async fn wrapper_without_sink_is_transparent() {
+        let wrapper = TelemetryTool {
+            ctx: Ctx::synthetic(),
+            inner: Box::new(FakeTool {
+                name: "search_jobs".into(),
+                outcome: Ok("ok".into()),
+            }),
+            kind: ToolCallKind::Mcp,
+            sink: None,
+        };
+        let out = wrapper.call("{}".into()).await.unwrap();
+        assert_eq!(out, "ok");
+    }
 }

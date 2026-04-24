@@ -16,4 +16,5 @@ limits.workspace = true
 memory.workspace = true
 prompter.workspace = true
 server.workspace = true
+telemetry.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -5,14 +5,16 @@ use std::sync::Arc;
 use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Store, UserId};
-use prompter::{Config, JudgeConfig, Prompter, ProviderKind, RigPrompter};
-use server::{AppState, Extractor, Server};
+use prompter::{AdminConfig, Config, JudgeConfig, Prompter, ProviderKind, RigPrompter};
+use server::{AdminAuth, AdminCredentials, AppState, Extractor, OidcRuntime, Server};
+use telemetry::Sink as TelemetrySink;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path =
         std::env::var("COULISSE_CONFIG").unwrap_or_else(|_| "coulisse.yaml".to_string());
     let config = Config::from_path(&config_path)?;
+    let admin_auth = build_admin_auth(config.admin.as_ref()).await?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
     let embedder_fallback_key = embedder_fallback_key(&config);
@@ -29,20 +31,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let judges = build_judges(&judge_configs)?;
 
-    let prompter = Arc::new(RigPrompter::new(config).await?);
-    let tracker = Tracker::new();
+    let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
+    let prompter = Arc::new(RigPrompter::new(config, Some(Arc::clone(&telemetry))).await?);
+    let tracker = Tracker::open(memory.pool().clone()).await?;
     let state = Arc::new(AppState {
+        admin_auth,
         default_user_id,
         extractor,
         judges: Arc::new(judges),
         memory,
         prompter,
+        telemetry,
         tracker,
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
     println!("coulisse listening on http://{addr}");
     println!("  memory: {memory_summary}");
+    match state.admin_auth.as_ref() {
+        Some(AdminAuth::Basic(_)) => println!("  admin: basic auth enabled"),
+        Some(AdminAuth::Oidc(_)) => println!("  admin: OIDC login enabled"),
+        None => println!("  admin: unauthenticated (set `admin.basic` or `admin.oidc`)"),
+    }
     if let Some(cfg) = &extractor_config {
         println!(
             "  extractor: {} / {} (dedup_threshold={}, max_facts_per_turn={})",
@@ -82,6 +92,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Server::new(addr, state).run().await?;
     Ok(())
+}
+
+/// Resolve the YAML `admin` block into a runtime `AdminAuth`. Validation
+/// at config load already guarantees that at most one of `basic`/`oidc`
+/// is set when the block is present — so this function only needs to
+/// pick the branch that exists. OIDC builds an issuer-discovered client;
+/// any failure there surfaces as a fatal startup error.
+async fn build_admin_auth(
+    config: Option<&AdminConfig>,
+) -> Result<Option<AdminAuth>, Box<dyn std::error::Error>> {
+    let Some(cfg) = config else { return Ok(None) };
+    if let Some(basic) = &cfg.basic {
+        return Ok(Some(AdminAuth::Basic(AdminCredentials::new(
+            basic.username.clone(),
+            basic.password.clone(),
+        ))));
+    }
+    if let Some(oidc) = &cfg.oidc {
+        let runtime = OidcRuntime::discover(oidc).await?;
+        return Ok(Some(AdminAuth::Oidc(Box::new(runtime))));
+    }
+    Ok(None)
 }
 
 fn build_judges(

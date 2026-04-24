@@ -7,7 +7,10 @@ version.workspace = true
 [dependencies]
 async-stream.workspace = true
 axum.workspace = true
+axum-oidc = "0.6"
+base64 = "0.22"
 futures.workspace = true
+http = "1"
 judge.workspace = true
 limits.workspace = true
 memory.workspace = true
@@ -16,12 +19,15 @@ prompter.workspace = true
 rust-embed = "8"
 serde.workspace = true
 serde_json.workspace = true
+telemetry.workspace = true
 thiserror.workspace = true
+time = "0.3"
 tokio = { workspace = true, features = ["net", "rt"] }
+tower = { version = "0.5", features = ["util"] }
+tower-sessions = "0.14"
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 http-body-util = "0.1"
 tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
-tower = { version = "0.5", features = ["util"] }

@@ -7,7 +7,8 @@ use axum::response::sse::{Event, KeepAlive};
 use futures::StreamExt;
 use judge::spawn_score;
 use memory::{
-    Role as MemRole, StoredToolCall, ToolCallInvocation, ToolCallKind as MemToolCallKind, UserId,
+    MessageId, Role as MemRole, StoredToolCall, ToolCallInvocation,
+    ToolCallKind as MemToolCallKind, UserId,
 };
 use prompter::{
     CompletionStream, Prompter, StreamEvent, ToolCallKind as PromptToolCallKind,
@@ -25,15 +26,34 @@ use crate::server::{AppState, judges_for_agent};
 /// alive through `MemoryFlush`, which writes back to memory and the rate
 /// tracker on drop — so a client disconnect mid-stream still records the
 /// partial assistant reply rather than losing both messages.
+/// Parameters for `sse_response`. Bundled so the function's argument list
+/// stays under clippy's `too_many_arguments` lint, and so new per-request
+/// fields (telemetry turn id, future flags) can be added without breaking
+/// callers.
+pub struct StreamContext<P: Prompter + 'static> {
+    pub assistant_message_id: MessageId,
+    pub include_usage: bool,
+    pub inner: CompletionStream,
+    pub model: String,
+    pub state: Arc<AppState<P>>,
+    pub tracker_key: String,
+    pub user_id: UserId,
+    pub user_message: String,
+}
+
 pub fn sse_response<P: Prompter + 'static>(
-    state: Arc<AppState<P>>,
-    user_id: UserId,
-    tracker_key: String,
-    user_message: String,
-    model: String,
-    include_usage: bool,
-    inner: CompletionStream,
+    cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let StreamContext {
+        assistant_message_id,
+        include_usage,
+        inner,
+        model,
+        state,
+        tracker_key,
+        user_id,
+        user_message,
+    } = cx;
     let created = now_secs();
     let id = response_id(created);
     let accumulated: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -42,6 +62,7 @@ pub fn sse_response<P: Prompter + 'static>(
 
     let flush = MemoryFlush {
         accumulated: Arc::clone(&accumulated),
+        assistant_message_id,
         final_usage: Arc::clone(&final_usage),
         model: model.clone(),
         state,
@@ -144,6 +165,7 @@ fn to_mem_tool_kind(k: PromptToolCallKind) -> MemToolCallKind {
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
 struct MemoryFlush<P: Prompter + 'static> {
     accumulated: Arc<Mutex<String>>,
+    assistant_message_id: MessageId,
     final_usage: Arc<Mutex<ProviderUsage>>,
     model: String,
     state: Arc<AppState<P>>,
@@ -156,6 +178,7 @@ struct MemoryFlush<P: Prompter + 'static> {
 impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
         let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
+        let assistant_message_id = self.assistant_message_id;
         let usage = *self.final_usage.lock().unwrap();
         let model = std::mem::take(&mut self.model);
         let state = Arc::clone(&self.state);
@@ -164,7 +187,9 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
         let user_id = self.user_id;
         let user_message = std::mem::take(&mut self.user_message);
         tokio::spawn(async move {
-            state.tracker.record(&tracker_key, usage.total_tokens);
+            if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
+                eprintln!("rate limit record failed after streaming response: {err}");
+            }
             let um = state.memory.for_user(user_id);
             if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
                 warn_memory_append_failed("user", err);
@@ -172,31 +197,30 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
             if accumulated.is_empty() {
                 return;
             }
-            let assistant_message_id = match um
-                .append_message(MemRole::Assistant, accumulated.clone())
-                .await
-            {
-                Ok(id) => Some(id),
-                Err(err) => {
-                    warn_memory_append_failed("assistant", err);
-                    None
-                }
-            };
-            if let Some(assistant_message_id) = assistant_message_id {
-                for pc in tool_calls {
-                    let stored = StoredToolCall::new(ToolCallInvocation {
-                        args: pc.args,
-                        error: None,
-                        kind: pc.kind,
-                        message_id: assistant_message_id,
-                        ordinal: pc.ordinal,
-                        result: pc.result,
-                        tool_name: pc.tool_name,
-                        user_id,
-                    });
-                    if let Err(err) = um.append_tool_call(stored).await {
-                        eprintln!("memory append failed for tool call: {err}");
-                    }
+            let assistant_append = um
+                .append_message_with_id(
+                    MemRole::Assistant,
+                    accumulated.clone(),
+                    assistant_message_id,
+                )
+                .await;
+            if let Err(err) = assistant_append {
+                warn_memory_append_failed("assistant", err);
+                return;
+            }
+            for pc in tool_calls {
+                let stored = StoredToolCall::new(ToolCallInvocation {
+                    args: pc.args,
+                    error: None,
+                    kind: pc.kind,
+                    message_id: assistant_message_id,
+                    ordinal: pc.ordinal,
+                    result: pc.result,
+                    tool_name: pc.tool_name,
+                    user_id,
+                });
+                if let Err(err) = um.append_tool_call(stored).await {
+                    eprintln!("memory append failed for tool call: {err}");
                 }
             }
             if let Some(extractor) = state.extractor.clone() {
@@ -209,18 +233,16 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
                     accumulated.clone(),
                 );
             }
-            if let Some(assistant_message_id) = assistant_message_id {
-                let judges = judges_for_agent(&state, &model);
-                spawn_score(
-                    judges,
-                    Arc::clone(&state.memory),
-                    Arc::clone(&state.prompter),
-                    user_id,
-                    assistant_message_id,
-                    user_message,
-                    accumulated,
-                );
-            }
+            let judges = judges_for_agent(&state, &model);
+            spawn_score(
+                judges,
+                Arc::clone(&state.memory),
+                Arc::clone(&state.prompter),
+                user_id,
+                assistant_message_id,
+                user_message,
+                accumulated,
+            );
         });
     }
 }

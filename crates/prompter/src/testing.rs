@@ -139,6 +139,7 @@ impl Prompter for ScriptedPrompter {
         &self,
         agent_name: &str,
         messages: Vec<Message>,
+        _ctx: telemetry::Ctx,
     ) -> Result<Completion, PrompterError> {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
@@ -152,6 +153,7 @@ impl Prompter for ScriptedPrompter {
         &self,
         agent_name: &str,
         messages: Vec<Message>,
+        _ctx: telemetry::Ctx,
     ) -> Result<CompletionStream, PrompterError> {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;

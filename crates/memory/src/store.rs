@@ -59,6 +59,13 @@ impl Store {
         &self.embedder
     }
 
+    /// Shared SQLite pool. Exposed so sibling crates (e.g. `limits`) can
+    /// apply their own schema and write into the same database without each
+    /// opening its own connection to the same file.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Obtain a scoped handle for `user_id`. Does not create any rows until
     /// the caller writes something.
     pub fn for_user(&self, user_id: UserId) -> UserMemory<'_> {
@@ -140,7 +147,21 @@ impl<'a> UserMemory<'a> {
         role: Role,
         content: String,
     ) -> Result<MessageId, MemoryError> {
-        let stored = StoredMessage::new(self.user_id, role, content);
+        self.append_message_with_id(role, content, MessageId::new())
+            .await
+    }
+
+    /// Same as [`append_message`], but lets the caller supply the row's id
+    /// up front. Used by the chat handler so the assistant message's id can
+    /// double as the telemetry turn correlation id — one value identifies
+    /// both the stored message and the event tree that produced it.
+    pub async fn append_message_with_id(
+        &self,
+        role: Role,
+        content: String,
+        id: MessageId,
+    ) -> Result<MessageId, MemoryError> {
+        let stored = StoredMessage::new_with_id(self.user_id, role, content, id);
         sqlx::query(
             "INSERT INTO messages (content, created_at, id, role, token_count, user_id) \
              VALUES (?, ?, ?, ?, ?, ?)",

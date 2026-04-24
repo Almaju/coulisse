@@ -8,6 +8,11 @@ use crate::PrompterError;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    /// HTTP Basic auth for the admin UI and JSON API under `/admin`. Omit
+    /// to leave the admin surface unauthenticated — fine for local dev,
+    /// never for anything exposed beyond loopback.
+    #[serde(default)]
+    pub admin: Option<AdminConfig>,
     pub agents: Vec<AgentConfig>,
     /// Fallback user identifier for requests that don't carry a
     /// `safety_identifier` (or the deprecated `user` field). Unset means
@@ -31,6 +36,62 @@ pub struct Config {
     pub providers: HashMap<ProviderKind, ProviderConfig>,
 }
 
+/// Authentication for the admin UI and its JSON API. Exactly one of
+/// `basic` or `oidc` must be set — they are mutually exclusive so the
+/// server never has to choose between two competing session schemes.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdminConfig {
+    #[serde(default)]
+    pub basic: Option<AdminBasicConfig>,
+    #[serde(default)]
+    pub oidc: Option<AdminOidcConfig>,
+}
+
+/// Static HTTP Basic credentials. Appropriate for local dev or a
+/// single-operator deployment. Browsers prompt via the native login
+/// dialog; no session state.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdminBasicConfig {
+    pub password: String,
+    #[serde(default = "default_admin_username")]
+    pub username: String,
+}
+
+/// OIDC (OpenID Connect) login. Validated against any compliant IdP —
+/// Authentik, Keycloak, Auth0, Google, Microsoft, Okta. Access control
+/// (who may use the admin) is delegated to the IdP's application
+/// bindings, not configured here.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdminOidcConfig {
+    pub client_id: String,
+    /// Optional for public clients that use PKCE only. Authentik's default
+    /// "confidential" client type requires a secret.
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    /// OIDC issuer URL. For Authentik, typically
+    /// `https://authentik.example.com/application/o/<app-slug>/`.
+    pub issuer_url: String,
+    /// Absolute URL the IdP will redirect to after login. Must be
+    /// whitelisted in the IdP's client config. The callback handler is
+    /// served by Coulisse under this path; point it at a path inside
+    /// `/admin/` (e.g. `https://coulisse.example.com/admin/auth/callback`).
+    pub redirect_url: String,
+    /// Additional OAuth2 scopes beyond the implicit `openid`. Defaults to
+    /// `profile` and `email`; add `groups` if you want to surface group
+    /// membership claims from Authentik (currently unused for authz, but
+    /// available to future features).
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: Vec<String>,
+}
+
+fn default_admin_username() -> String {
+    "admin".to_string()
+}
+
+fn default_oidc_scopes() -> Vec<String> {
+    vec!["email".to_string(), "profile".to_string()]
+}
+
 impl Config {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, PrompterError> {
         let path = path.as_ref();
@@ -51,6 +112,31 @@ impl Config {
             && id.trim().is_empty()
         {
             return Err(PrompterError::BlankDefaultUserId);
+        }
+        if let Some(admin) = &self.admin {
+            match (&admin.basic, &admin.oidc) {
+                (None, None) => return Err(PrompterError::AdminWithoutAuth),
+                (Some(_), Some(_)) => return Err(PrompterError::AdminBothAuthMethods),
+                (Some(basic), None) => {
+                    if basic.password.is_empty() {
+                        return Err(PrompterError::BlankAdminPassword);
+                    }
+                    if basic.username.is_empty() {
+                        return Err(PrompterError::BlankAdminUsername);
+                    }
+                }
+                (None, Some(oidc)) => {
+                    if oidc.client_id.is_empty() {
+                        return Err(PrompterError::BlankAdminOidcField("client_id"));
+                    }
+                    if oidc.issuer_url.is_empty() {
+                        return Err(PrompterError::BlankAdminOidcField("issuer_url"));
+                    }
+                    if oidc.redirect_url.is_empty() {
+                        return Err(PrompterError::BlankAdminOidcField("redirect_url"));
+                    }
+                }
+            }
         }
         let mut judge_names = HashSet::new();
         for judge in &self.judges {
