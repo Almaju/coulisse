@@ -17,11 +17,14 @@
 
 # Features
 
+- [Admin UI](./features/admin-ui.md)
 - [Multi-agent routing](./features/multi-agent.md)
 - [Per-user memory](./features/memory.md)
 - [MCP tool integration](./features/tools.md)
 - [Multi-backend support](./features/backends.md)
+- [Streaming responses](./features/streaming.md)
 - [Rate limiting](./features/rate-limiting.md)
+- [Response language](./features/language.md)
 
 # Reference
 

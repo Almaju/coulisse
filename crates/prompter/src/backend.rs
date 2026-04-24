@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::pin::Pin;
 
-use rig::agent::PromptRequest;
+use futures::stream::{Stream, StreamExt};
+use rig::agent::{MultiTurnStreamItem, PromptRequest};
 use rig::client::CompletionClient;
-use rig::completion::{Message as RigMessage, PromptError};
+use rig::completion::{CompletionModel, GetTokenUsage, Message as RigMessage, PromptError};
 use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
+use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
 use rig::tool::ToolDyn;
 use rig::tool::rmcp::McpTool;
 use rmcp::ServiceExt;
@@ -11,11 +14,11 @@ use rmcp::service::{RoleClient, RunningService, ServerSink};
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use tokio::process::Command;
 
-use crate::{AgentConfig, Completion, Config, McpServerConfig, PrompterError, ProviderKind};
+use crate::{AgentConfig, Completion, Config, McpServerConfig, PrompterError, ProviderKind, Usage};
 
 const MAX_TURNS: usize = 8;
 
-pub struct Prompter {
+pub struct RigPrompter {
     agents: Vec<AgentConfig>,
     backends: HashMap<ProviderKind, Backend>,
     mcp_servers: HashMap<String, McpServer>,
@@ -54,7 +57,39 @@ pub enum Role {
     User,
 }
 
-impl Prompter {
+/// One event in a streamed completion. `Delta` carries an incremental piece of
+/// the assistant's response; `Done` is yielded at the end with cumulative
+/// token usage. Tool-call internals are intentionally not surfaced — they
+/// happen inside `rig`'s multi-turn loop and the OpenAI client never sees them.
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    Delta(String),
+    Done { usage: Usage },
+}
+
+pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, PrompterError>> + Send>>;
+
+/// Abstraction over an LLM backend. Implementations answer completion
+/// requests — either as a single response or as a stream of incremental
+/// events. The server talks to this trait so tests can drive the HTTP
+/// handler with a scripted implementation instead of a real provider.
+pub trait Prompter: Send + Sync {
+    fn agents(&self) -> &[AgentConfig];
+
+    fn complete(
+        &self,
+        agent_name: &str,
+        messages: Vec<Message>,
+    ) -> impl std::future::Future<Output = Result<Completion, PrompterError>> + Send;
+
+    fn complete_streaming(
+        &self,
+        agent_name: &str,
+        messages: Vec<Message>,
+    ) -> impl std::future::Future<Output = Result<CompletionStream, PrompterError>> + Send;
+}
+
+impl RigPrompter {
     pub async fn new(config: Config) -> Result<Self, PrompterError> {
         let mut backends = HashMap::with_capacity(config.providers.len());
         for (kind, provider) in config.providers {
@@ -124,37 +159,6 @@ impl Prompter {
         })
     }
 
-    pub fn agents(&self) -> &[AgentConfig] {
-        &self.agents
-    }
-
-    pub async fn complete(
-        &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, PrompterError> {
-        let agent = self
-            .find_agent(agent_name)
-            .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
-        let backend = self.backends.get(&agent.provider).ok_or_else(|| {
-            PrompterError::ProviderNotConfigured {
-                agent: agent.name.clone(),
-                provider: agent.provider,
-            }
-        })?;
-        let attachments = self.collect_mcp_attachments(agent)?;
-        let conversation = Conversation::from_messages(messages, &agent.preamble)?;
-        let result = match backend {
-            Backend::Anthropic(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Cohere(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Deepseek(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Gemini(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Groq(c) => conversation.send(c, &agent.model, attachments).await,
-            Backend::Openai(c) => conversation.send(c, &agent.model, attachments).await,
-        };
-        result.map_err(PrompterError::from)
-    }
-
     fn collect_mcp_attachments(
         &self,
         agent: &AgentConfig,
@@ -194,6 +198,65 @@ impl Prompter {
 
     fn find_agent(&self, name: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|a| a.name == name)
+    }
+}
+
+impl Prompter for RigPrompter {
+    fn agents(&self) -> &[AgentConfig] {
+        &self.agents
+    }
+
+    async fn complete(
+        &self,
+        agent_name: &str,
+        messages: Vec<Message>,
+    ) -> Result<Completion, PrompterError> {
+        let agent = self
+            .find_agent(agent_name)
+            .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
+        let backend = self.backends.get(&agent.provider).ok_or_else(|| {
+            PrompterError::ProviderNotConfigured {
+                agent: agent.name.clone(),
+                provider: agent.provider,
+            }
+        })?;
+        let attachments = self.collect_mcp_attachments(agent)?;
+        let conversation = Conversation::from_messages(messages, &agent.preamble)?;
+        let result = match backend {
+            Backend::Anthropic(c) => conversation.send(c, &agent.model, attachments).await,
+            Backend::Cohere(c) => conversation.send(c, &agent.model, attachments).await,
+            Backend::Deepseek(c) => conversation.send(c, &agent.model, attachments).await,
+            Backend::Gemini(c) => conversation.send(c, &agent.model, attachments).await,
+            Backend::Groq(c) => conversation.send(c, &agent.model, attachments).await,
+            Backend::Openai(c) => conversation.send(c, &agent.model, attachments).await,
+        };
+        result.map_err(PrompterError::from)
+    }
+
+    async fn complete_streaming(
+        &self,
+        agent_name: &str,
+        messages: Vec<Message>,
+    ) -> Result<CompletionStream, PrompterError> {
+        let agent = self
+            .find_agent(agent_name)
+            .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
+        let backend = self.backends.get(&agent.provider).ok_or_else(|| {
+            PrompterError::ProviderNotConfigured {
+                agent: agent.name.clone(),
+                provider: agent.provider,
+            }
+        })?;
+        let attachments = self.collect_mcp_attachments(agent)?;
+        let conversation = Conversation::from_messages(messages, &agent.preamble)?;
+        match backend {
+            Backend::Anthropic(c) => conversation.stream(c, &agent.model, attachments).await,
+            Backend::Cohere(c) => conversation.stream(c, &agent.model, attachments).await,
+            Backend::Deepseek(c) => conversation.stream(c, &agent.model, attachments).await,
+            Backend::Gemini(c) => conversation.stream(c, &agent.model, attachments).await,
+            Backend::Groq(c) => conversation.stream(c, &agent.model, attachments).await,
+            Backend::Openai(c) => conversation.stream(c, &agent.model, attachments).await,
+        }
     }
 }
 
@@ -318,5 +381,54 @@ impl Conversation {
             text: response.output,
             usage: response.usage.into(),
         })
+    }
+
+    async fn stream<C>(
+        self,
+        client: &C,
+        model: &str,
+        mcp: Vec<McpAttachment>,
+    ) -> Result<CompletionStream, PrompterError>
+    where
+        C: CompletionClient,
+        C::CompletionModel: 'static,
+        <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
+    {
+        let mut builder = client.agent(model);
+        if !self.preamble.is_empty() {
+            builder = builder.preamble(&self.preamble);
+        }
+        let mcp_tools: Vec<Box<dyn ToolDyn>> = mcp
+            .into_iter()
+            .flat_map(|attach| {
+                let sink = attach.sink;
+                attach.tools.into_iter().map(move |t| {
+                    Box::new(McpTool::from_mcp_server(t, sink.clone())) as Box<dyn ToolDyn>
+                })
+            })
+            .collect();
+        let agent = if mcp_tools.is_empty() {
+            builder.build()
+        } else {
+            builder.tools(mcp_tools).build()
+        };
+        let inner = agent
+            .stream_prompt(self.prompt)
+            .with_history(self.history)
+            .multi_turn(MAX_TURNS)
+            .await;
+        let mapped = inner.filter_map(|item| async move {
+            match item {
+                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
+                    Some(Ok(StreamEvent::Delta(t.text)))
+                }
+                Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
+                    usage: fr.usage().into(),
+                })),
+                Ok(_) => None,
+                Err(e) => Some(Err(PrompterError::Streaming(e.to_string()))),
+            }
+        });
+        Ok(Box::pin(mapped))
     }
 }

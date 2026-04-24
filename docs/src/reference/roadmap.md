@@ -9,6 +9,8 @@ What's in Coulisse today, and what's coming.
 - Long-term memory with semantic recall.
 - Multi-backend support (Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq).
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
+- Read-only admin UI at `/admin` for browsing conversations and memories.
+- Streaming responses over SSE (`stream: true`, with `stream_options.include_usage`).
 - MCP tool integration over stdio and HTTP, with per-agent filtering.
 - Per-user token rate limiting (hour / day / month).
 - YAML-driven config with startup validation.
@@ -18,10 +20,6 @@ What's in Coulisse today, and what's coming.
 ### Durable rate-limit state
 
 Current rate-limit counters live in memory — they reset on restart and don't span multiple instances. A durable, shared backend is planned so quotas survive reboots and horizontal scaling.
-
-### Streaming responses
-
-The request schema already accepts a `stream` flag, but streaming isn't wired to the transport layer yet. Planned for parity with the OpenAI SDK's streaming UX.
 
 ### Workflow orchestration
 

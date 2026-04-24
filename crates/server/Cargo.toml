@@ -3,11 +3,21 @@ name = "server"
 edition.workspace = true
 
 [dependencies]
+async-stream.workspace = true
 axum.workspace = true
+futures.workspace = true
 limits.workspace = true
 memory.workspace = true
+mime_guess = "2"
 prompter.workspace = true
+rust-embed = "8"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "rt"] }
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
+tower = { version = "0.5", features = ["util"] }

@@ -1,14 +1,20 @@
 [workspace]
 resolver = "3"
 members = ["crates/cli", "crates/limits", "crates/memory", "crates/prompter", "crates/server"]
+# `crates/admin` is a Leptos WASM app with its own lockfile. Kept out of the
+# workspace so `cargo test`/`cargo clippy` don't try to cross-compile it.
+exclude = ["crates/admin"]
 
 [workspace.package]
 edition = "2024"
 
 [workspace.dependencies]
+async-stream = "0.3"
 axum = "0.8"
+futures = "0.3"
 limits = { path = "crates/limits" }
 memory = { path = "crates/memory" }
+oxilangtag = "0.1"
 prompter = { path = "crates/prompter" }
 rig-core = { version = "0.35", features = ["rmcp"] }
 rmcp = { version = "1", features = [

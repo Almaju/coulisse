@@ -1,4 +1,7 @@
 /target
 Cargo.lock
 coulisse.yaml
+crates/admin/dist/*
+!crates/admin/dist/.gitkeep
+crates/admin/target/
 docs/book/

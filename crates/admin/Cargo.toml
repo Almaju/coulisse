@@ -1,0 +1,21 @@
+[package]
+name = "admin"
+edition = "2024"
+# Excluded from the root workspace so the standard `cargo build`/`cargo test`
+# loop (and the pre-commit hook) doesn't try to compile this Leptos app to
+# WASM. Build it explicitly with `trunk build` from this directory.
+[workspace]
+
+# Standalone Leptos WASM app built with `trunk`. The server embeds the
+# already-built `dist/` directory via `rust-embed`; the Rust source is not
+# a workspace library consumed by any other crate.
+
+[dependencies]
+console_error_panic_hook = "0.1"
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = { version = "0.8" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde"] }
+wasm-bindgen = "0.2"

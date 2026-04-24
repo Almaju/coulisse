@@ -1,10 +1,14 @@
+mod admin;
+mod admin_ui;
 mod chat;
 mod error;
 mod server;
+mod stream;
 mod tool;
 
 pub use chat::{
-    ChatCompletionRequest, ChatCompletionResponse, Choice, FinishReason, Message, Role, Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
+    ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage,
 };
 pub use error::{ApiError, ServerError};
 pub use server::{AppState, Server};

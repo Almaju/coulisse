@@ -3,9 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use limits::{LimitError, RequestLimits};
 use memory::UserId;
+use prompter::{LanguageTag, LanguageTagError};
 use serde::{Deserialize, Serialize};
 
 use crate::{Tool, ToolCall, ToolChoice};
+
+pub const METADATA_LANGUAGE: &str = "language";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
@@ -20,6 +23,8 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
@@ -32,6 +37,32 @@ pub struct ChatCompletionRequest {
 }
 
 impl ChatCompletionRequest {
+    /// True when the client asked for `stream_options.include_usage`. The
+    /// `usage` field is then included on the terminal `chat.completion.chunk`
+    /// (matching OpenAI's contract); otherwise it's omitted.
+    pub fn include_usage(&self) -> bool {
+        self.stream_options
+            .as_ref()
+            .and_then(|o| o.include_usage)
+            .unwrap_or(false)
+    }
+
+    /// True when the client asked for a streamed (SSE) response.
+    pub fn is_streaming(&self) -> bool {
+        self.stream.unwrap_or(false)
+    }
+
+    /// Language preference parsed from `metadata["language"]`, if present.
+    /// `Ok(None)` means the key is absent — the model falls back to whatever
+    /// language the user wrote in. `Err` means the key is present but
+    /// malformed.
+    pub fn language(&self) -> Result<Option<LanguageTag>, LanguageTagError> {
+        match self.metadata.get(METADATA_LANGUAGE) {
+            Some(raw) => LanguageTag::parse(raw).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// The last user message in the request. Only this message is treated
     /// as new input; the rest of the conversation history comes from the
     /// memory store.
@@ -49,10 +80,7 @@ impl ChatCompletionRequest {
     }
 
     pub fn response_with(&self, text: String, usage: prompter::Usage) -> ChatCompletionResponse {
-        let created = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let created = now_secs();
         let message = Message {
             content: Some(text),
             name: None,
@@ -67,14 +95,10 @@ impl ChatCompletionRequest {
                 message,
             }],
             created,
-            id: format!("chatcmpl-coulisse-{created}"),
+            id: response_id(created),
             model: self.model.clone(),
             object: "chat.completion".into(),
-            usage: Usage {
-                completion_tokens: clamp_u32(usage.output_tokens),
-                prompt_tokens: clamp_u32(usage.input_tokens),
-                total_tokens: clamp_u32(usage.total_tokens),
-            },
+            usage: Usage::from_prompter(usage),
         }
     }
 
@@ -109,6 +133,17 @@ impl ChatCompletionRequest {
 
 fn clamp_u32(n: u64) -> u32 {
     n.min(u32::MAX as u64) as u32
+}
+
+pub(crate) fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub(crate) fn response_id(created: u64) -> String {
+    format!("chatcmpl-coulisse-{created}")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -170,4 +205,104 @@ pub struct Usage {
     pub completion_tokens: u32,
     pub prompt_tokens: u32,
     pub total_tokens: u32,
+}
+
+impl Usage {
+    pub fn from_prompter(usage: prompter::Usage) -> Self {
+        Self {
+            completion_tokens: clamp_u32(usage.output_tokens),
+            prompt_tokens: clamp_u32(usage.input_tokens),
+            total_tokens: clamp_u32(usage.total_tokens),
+        }
+    }
+}
+
+/// One frame of an SSE-streamed chat completion. Mirrors OpenAI's
+/// `chat.completion.chunk` object: each frame carries a `delta` for one
+/// choice. The first frame announces the role, mid-frames carry text, and
+/// the terminal frame sets `finish_reason` (and `usage` when requested).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ChatCompletionChunk {
+    pub choices: Vec<ChunkChoice>,
+    pub created: u64,
+    pub id: String,
+    pub model: String,
+    pub object: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ChunkChoice {
+    pub delta: ChunkDelta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<FinishReason>,
+    pub index: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ChunkDelta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StreamOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_usage: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_with_metadata(metadata: HashMap<String, String>) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            max_tokens: None,
+            messages: vec![],
+            metadata,
+            model: "test".into(),
+            safety_identifier: None,
+            stream: None,
+            stream_options: None,
+            temperature: None,
+            tool_choice: None,
+            tools: None,
+            user: None,
+        }
+    }
+
+    #[test]
+    fn language_is_none_when_metadata_key_is_absent() {
+        let req = request_with_metadata(HashMap::new());
+        assert!(req.language().unwrap().is_none());
+    }
+
+    #[test]
+    fn language_parses_valid_tag_from_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("language".into(), "fr-FR".into());
+        let req = request_with_metadata(metadata);
+        let tag = req.language().unwrap().expect("language present");
+        assert_eq!(tag.as_str(), "fr-FR");
+        assert_eq!(tag.instruction(), "Respond in French.");
+    }
+
+    #[test]
+    fn language_rejects_malformed_tag() {
+        let mut metadata = HashMap::new();
+        metadata.insert("language".into(), "not a tag!".into());
+        let req = request_with_metadata(metadata);
+        assert!(req.language().is_err());
+    }
+
+    #[test]
+    fn language_rejects_empty_value() {
+        let mut metadata = HashMap::new();
+        metadata.insert("language".into(), "".into());
+        let req = request_with_metadata(metadata);
+        assert!(req.language().is_err());
+    }
 }

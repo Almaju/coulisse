@@ -134,7 +134,7 @@ impl Message {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredMessage {
     pub content: String,
     pub created_at: u64,

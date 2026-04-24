@@ -4,14 +4,14 @@ use std::sync::Arc;
 use limits::Tracker;
 use memory::testing::HashEmbedder;
 use memory::{MemoryConfig, Store, UserId};
-use prompter::{Config, Prompter};
+use prompter::{Config, Prompter, RigPrompter};
 use server::{AppState, Server};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path("coulisse.yaml")?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
-    let prompter = Prompter::new(config).await?;
+    let prompter = RigPrompter::new(config).await?;
     let memory = Store::new(HashEmbedder::default(), MemoryConfig::default());
     let tracker = Tracker::new();
     let state = Arc::new(AppState {

@@ -3,7 +3,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use limits::LimitError;
 use memory::MemoryError;
-use prompter::PrompterError;
+use prompter::{LanguageTagError, PrompterError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -18,6 +18,8 @@ pub enum ServerError {
 pub enum ApiError {
     #[error("{0}")]
     BadRequest(String),
+    #[error("invalid `metadata.language`: {0}")]
+    Language(#[from] LanguageTagError),
     #[error("{0}")]
     Limit(#[from] LimitError),
     #[error("memory backend error: {0}")]
@@ -31,6 +33,7 @@ impl IntoResponse for ApiError {
         let mut retry_after: Option<u64> = None;
         let (status, kind) = match &self {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Self::Language(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Limit(LimitError::Exceeded { retry_after: s, .. }) => {
                 retry_after = Some(*s);
                 (StatusCode::TOO_MANY_REQUESTS, "rate_limited")

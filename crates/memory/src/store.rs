@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -31,6 +32,31 @@ impl<E: Embedder> Store<E> {
 
     pub fn config(&self) -> &MemoryConfig {
         &self.config
+    }
+
+    /// Summaries of every user the store has seen. Ordered by most recent
+    /// activity first. Intended for read-only admin views; does not mutate
+    /// the store or create new user records.
+    pub async fn list_user_summaries(&self) -> Vec<UserSummary> {
+        let users = self.users.read().await;
+        let mut out = Vec::with_capacity(users.len());
+        for data in users.values() {
+            let data = data.read().await;
+            let last_activity_at = data
+                .messages
+                .last()
+                .map(|m| m.created_at)
+                .or_else(|| data.memories.last().map(|m| m.created_at))
+                .unwrap_or(0);
+            out.push(UserSummary {
+                last_activity_at,
+                memory_count: data.memories.len() as u32,
+                message_count: data.messages.len() as u32,
+                user_id: data.user_id,
+            });
+        }
+        out.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+        out
     }
 
     /// Obtain a scoped handle for `user_id`. Creates an empty record on first access.
@@ -142,6 +168,18 @@ impl<'a, E: Embedder> UserMemory<'a, E> {
         self.data.read().await.memories.len()
     }
 
+    /// Full conversation history for this user, in chronological order.
+    /// Clones the stored messages; callers get an owned snapshot.
+    pub async fn messages(&self) -> Vec<StoredMessage> {
+        self.data.read().await.messages.clone()
+    }
+
+    /// All long-term memories recorded for this user, in the order they
+    /// were added. Clones the stored memories; callers get an owned snapshot.
+    pub async fn memories(&self) -> Vec<Memory> {
+        self.data.read().await.memories.clone()
+    }
+
     /// Assemble a context window for an upcoming prompt. Takes the new user
     /// message (used for semantic recall) and a total token budget. Returns
     /// recalled memories and the most-recent conversation messages that fit
@@ -178,6 +216,16 @@ impl<'a, E: Embedder> UserMemory<'a, E> {
 pub struct AssembledContext {
     pub memories: Vec<Memory>,
     pub messages: Vec<Message>,
+}
+
+/// Aggregate view of a single user's stored data. Returned by
+/// `Store::list_user_summaries` for admin-style overviews.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct UserSummary {
+    pub last_activity_at: u64,
+    pub memory_count: u32,
+    pub message_count: u32,
+    pub user_id: UserId,
 }
 
 fn check_dims(vector: &[f32], expected: usize) -> Result<(), MemoryError> {

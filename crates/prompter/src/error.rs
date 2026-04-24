@@ -42,6 +42,8 @@ pub enum PrompterError {
     ParseConfig(serde_yaml::Error),
     #[error("provider request failed: {0}")]
     Provider(#[from] rig::completion::PromptError),
+    #[error("provider streaming failed: {0}")]
+    Streaming(String),
     #[error("agent '{agent}' references provider '{provider}' which is not configured")]
     ProviderNotConfigured {
         agent: String,
