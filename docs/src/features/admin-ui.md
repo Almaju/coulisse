@@ -6,9 +6,10 @@ Point a browser at `http://localhost:8421/admin` while the server is running.
 
 ## What you can do
 
-- List every user the server has seen, most recent activity first.
+- List every user the server has seen, most recent activity first, with message / memory / score counts.
 - Open a user to see their full conversation (user, assistant, and system messages) with per-message token counts and relative timestamps.
 - See the long-term memories recalled for that user, tagged as `fact` or `preference`.
+- See the LLM-as-judge scores for that user, including mean score per `(judge, criterion)` and the most recent individual scores with reasoning.
 
 That's it — this is a **read-only** tool. There's no way to send messages, edit memory, or mutate server state from the UI.
 
@@ -55,10 +56,11 @@ Open `http://127.0.0.1:4422/admin/`. Changes to `crates/admin/src/` rebuild and 
 
 The UI is backed by three read-only endpoints. They're not part of the OpenAI-compatible surface — they're specifically for the admin UI, but you're free to hit them from scripts.
 
-| Method | Path                                        | Returns                                            |
-|--------|---------------------------------------------|----------------------------------------------------|
-| `GET`  | `/admin/api/users`                          | List of users with message/memory counts.          |
-| `GET`  | `/admin/api/users/{user_id}/messages`       | Full conversation history for one user.            |
-| `GET`  | `/admin/api/users/{user_id}/memories`       | Long-term memories for one user (no embeddings).   |
+| Method | Path                                        | Returns                                                      |
+|--------|---------------------------------------------|--------------------------------------------------------------|
+| `GET`  | `/admin/api/users`                          | List of users with message / memory / score counts.          |
+| `GET`  | `/admin/api/users/{user_id}/messages`       | Full conversation history for one user.                      |
+| `GET`  | `/admin/api/users/{user_id}/memories`       | Long-term memories for one user (no embeddings).             |
+| `GET`  | `/admin/api/users/{user_id}/scores`         | Judge scores for one user, plus mean per (judge, criterion). |
 
 `{user_id}` must be a real UUID — the admin endpoints don't derive one from arbitrary strings the way `/v1/chat/completions` does, because they're looking up existing records.

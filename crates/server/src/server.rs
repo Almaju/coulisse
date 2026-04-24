@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -5,6 +6,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use judge::{Judge, spawn_score};
 use limits::Tracker;
 use memory::{Memory, MemoryKind, Role as MemRole, Store, UserId};
 use prompter::Prompter;
@@ -25,9 +27,36 @@ pub struct AppState<P: Prompter> {
     /// Optional auto-extraction configured via YAML. When `None`, the
     /// memories table is only written via explicit API calls.
     pub extractor: Option<Arc<Extractor>>,
+    /// All judges configured in YAML, keyed by name. Agents opt in by listing
+    /// judge names on themselves — the per-request handler looks up which of
+    /// these apply to the agent being called.
+    pub judges: Arc<HashMap<String, Arc<Judge>>>,
     pub memory: Arc<Store>,
     pub prompter: Arc<P>,
     pub tracker: Tracker,
+}
+
+/// Collect the judges configured for `agent_name`, preserving the order
+/// declared on the agent so log output is stable. Unknown judge names are
+/// skipped silently — validation at config load already rejects dangling
+/// references, so any miss here is a programmer error, not user input.
+pub(crate) fn judges_for_agent<P: Prompter>(
+    state: &AppState<P>,
+    agent_name: &str,
+) -> Vec<Arc<Judge>> {
+    let Some(agent) = state
+        .prompter
+        .agents()
+        .iter()
+        .find(|a| a.name == agent_name)
+    else {
+        return Vec::new();
+    };
+    agent
+        .judges
+        .iter()
+        .filter_map(|name| state.judges.get(name).cloned())
+        .collect()
 }
 
 pub struct Server<P: Prompter + 'static> {
@@ -100,7 +129,8 @@ async fn chat_completions<P: Prompter + 'static>(
     let um = state.memory.for_user(prepared.user_id);
     um.append_message(MemRole::User, prepared.user_message.clone())
         .await?;
-    um.append_message(MemRole::Assistant, completion.text.clone())
+    let assistant_message_id = um
+        .append_message(MemRole::Assistant, completion.text.clone())
         .await?;
 
     if let Some(extractor) = state.extractor.clone() {
@@ -109,10 +139,21 @@ async fn chat_completions<P: Prompter + 'static>(
             Arc::clone(&state.memory),
             Arc::clone(&state.prompter),
             prepared.user_id,
-            prepared.user_message,
+            prepared.user_message.clone(),
             completion.text.clone(),
         );
     }
+
+    let judges = judges_for_agent(&state, &request.model);
+    spawn_score(
+        judges,
+        Arc::clone(&state.memory),
+        Arc::clone(&state.prompter),
+        prepared.user_id,
+        assistant_message_id,
+        prepared.user_message,
+        completion.text.clone(),
+    );
 
     Ok(Json(request.response_with(completion.text, completion.usage)).into_response())
 }

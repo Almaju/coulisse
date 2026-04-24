@@ -51,11 +51,40 @@ mcp:
   #   transport: http
   #   url: http://localhost:8080
 
+# LLM-as-judge evaluators. Optional — omit the block for no evaluation.
+# Each judge runs in a background task after an assistant turn. Agents opt
+# in by listing judge names in their own `judges:` field. Coulisse forces
+# the output shape (integer 0-10 per criterion + reasoning) internally, so
+# rubrics only describe *what* to assess — never scale or format.
+# See docs/src/features/evaluation.md for the full walkthrough.
+judges:
+  # Cheap, broad check on every assistant turn. A small model averaged
+  # across many turns gives a stable signal at negligible cost.
+  - name: quality
+    provider: openai
+    model: gpt-4o-mini
+    sampling_rate: 1.0
+    rubrics:
+      accuracy:    Factual accuracy. Flag hallucinations.
+      helpfulness: Whether the assistant answered the user's question.
+      tone:        Politeness and tone.
+
+  # Expensive deep audit on a small fraction of turns for code reviews.
+  # A strong model gives a more discerning read; sampling keeps the bill down.
+  - name: review_depth
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    sampling_rate: 0.1
+    rubrics:
+      correctness: Did the reviewer catch real bugs, not just cosmetic issues?
+      clarity:     Are the suggested fixes concrete and actionable?
+
 agents:
   - name: claude-assistant
     provider: anthropic
     model: claude-sonnet-4-5-20250929
     preamble: You are a helpful general-purpose assistant.
+    judges: [quality]
     # Grant this agent every tool exposed by the `hello` MCP server.
     mcp_tools:
       - server: hello
@@ -64,6 +93,7 @@ agents:
     provider: openai
     model: gpt-4o
     preamble: You are a helpful general-purpose assistant.
+    judges: [quality]
     # Restrict this agent to a specific subset of tools (tool names come
     # from the MCP server — startup logs the tools it discovered).
     mcp_tools:
@@ -75,6 +105,7 @@ agents:
     provider: gemini
     model: gemini-2.0-flash
     preamble: You are a helpful general-purpose assistant.
+    judges: [quality]
 
   - name: code-reviewer
     provider: anthropic
@@ -82,3 +113,5 @@ agents:
     preamble: |
       You are a thorough code reviewer. Focus on correctness, clarity, and security.
       Point out subtle bugs and suggest concrete improvements.
+    # Stack judges: broad quality check on every turn + deep audit on 10%.
+    judges: [quality, review_depth]

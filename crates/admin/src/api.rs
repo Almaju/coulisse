@@ -12,6 +12,7 @@ pub struct UserView {
     pub last_activity_at: u64,
     pub memory_count: u32,
     pub message_count: u32,
+    pub score_count: u32,
     pub user_id: Uuid,
 }
 
@@ -81,6 +82,32 @@ pub struct MemoriesResponse {
     pub memories: Vec<MemoryView>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ScoreView {
+    pub created_at: u64,
+    pub criterion: String,
+    pub id: String,
+    pub judge_model: String,
+    pub judge_name: String,
+    pub message_id: String,
+    pub reasoning: String,
+    pub score: f32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CriterionAverage {
+    pub average: f32,
+    pub count: u32,
+    pub criterion: String,
+    pub judge_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ScoresResponse {
+    pub averages: Vec<CriterionAverage>,
+    pub scores: Vec<ScoreView>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ApiError(pub String);
 
@@ -123,4 +150,14 @@ pub async fn user_memories(user_id: Uuid) -> Result<Vec<MemoryView>, ApiError> {
         .json()
         .await?;
     Ok(resp.memories)
+}
+
+pub async fn user_scores(user_id: Uuid) -> Result<ScoresResponse, ApiError> {
+    let url = format!("{BASE}/users/{user_id}/scores");
+    let resp: ScoresResponse = gloo_net::http::Request::get(&url)
+        .send()
+        .await?
+        .json()
+        .await?;
+    Ok(resp)
 }

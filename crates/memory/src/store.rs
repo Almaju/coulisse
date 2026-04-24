@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     BackendConfig, BundledEmbedder, ConfigError, Memory, MemoryConfig, MemoryError, MemoryId,
-    MemoryKind, Message, MessageId, Role, StoredMessage, TokenCount, UserId,
+    MemoryKind, Message, MessageId, Role, Score, ScoreId, StoredMessage, TokenCount, UserId,
 };
 
 const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
@@ -74,17 +74,22 @@ impl Store {
             "SELECT u.user_id AS user_id, \
                     COALESCE((SELECT COUNT(*) FROM messages m WHERE m.user_id = u.user_id), 0) AS message_count, \
                     COALESCE((SELECT COUNT(*) FROM memories mm WHERE mm.user_id = u.user_id), 0) AS memory_count, \
+                    COALESCE((SELECT COUNT(*) FROM scores s WHERE s.user_id = u.user_id), 0) AS score_count, \
                     COALESCE(( \
                         SELECT MAX(created_at) FROM ( \
                             SELECT created_at FROM messages WHERE user_id = u.user_id \
                             UNION ALL \
                             SELECT created_at FROM memories WHERE user_id = u.user_id \
+                            UNION ALL \
+                            SELECT created_at FROM scores WHERE user_id = u.user_id \
                         ) \
                     ), 0) AS last_activity_at \
              FROM ( \
                  SELECT DISTINCT user_id FROM messages \
                  UNION \
                  SELECT DISTINCT user_id FROM memories \
+                 UNION \
+                 SELECT DISTINCT user_id FROM scores \
              ) u \
              ORDER BY last_activity_at DESC",
         )
@@ -95,11 +100,13 @@ impl Store {
             let user_id: String = row.try_get("user_id")?;
             let message_count: i64 = row.try_get("message_count")?;
             let memory_count: i64 = row.try_get("memory_count")?;
+            let score_count: i64 = row.try_get("score_count")?;
             let last_activity_at: i64 = row.try_get("last_activity_at")?;
             out.push(UserSummary {
                 last_activity_at: last_activity_at as u64,
                 memory_count: clamp_u32(memory_count),
                 message_count: clamp_u32(message_count),
+                score_count: clamp_u32(score_count),
                 user_id: UserId(parse_uuid(&user_id, "user id")?),
             });
         }
@@ -226,6 +233,50 @@ impl<'a> UserMemory<'a> {
         self.load_memories().await
     }
 
+    /// Persist one LLM-judge score row. Called after a scored turn, typically
+    /// from a background task spawned off the response path so the client is
+    /// never blocked on the judge call.
+    pub async fn append_score(&self, score: Score) -> Result<ScoreId, MemoryError> {
+        sqlx::query(
+            "INSERT INTO scores (created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(score.created_at as i64)
+        .bind(&score.criterion)
+        .bind(score.id.0.to_string())
+        .bind(&score.judge_model)
+        .bind(&score.judge_name)
+        .bind(score.message_id.0.to_string())
+        .bind(&score.reasoning)
+        .bind(score.score)
+        .bind(self.user_id.0.to_string())
+        .execute(&self.store.pool)
+        .await?;
+        Ok(score.id)
+    }
+
+    /// All judge scores recorded for this user, chronological.
+    pub async fn scores(&self) -> Result<Vec<Score>, MemoryError> {
+        let rows = sqlx::query(
+            "SELECT created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id \
+             FROM scores WHERE user_id = ? ORDER BY rowid ASC",
+        )
+        .bind(self.user_id.0.to_string())
+        .fetch_all(&self.store.pool)
+        .await?;
+        rows.into_iter().map(row_to_score).collect()
+    }
+
+    pub async fn score_count(&self) -> Result<usize, MemoryError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM scores WHERE user_id = ?")
+            .bind(self.user_id.0.to_string())
+            .fetch_one(&self.store.pool)
+            .await?;
+        Ok(row.0 as usize)
+    }
+
     /// Assemble a context window for an upcoming prompt. Takes the new user
     /// message (used for semantic recall) and a total token budget. Returns
     /// recalled memories and the most-recent conversation messages that fit
@@ -303,6 +354,7 @@ pub struct UserSummary {
     pub last_activity_at: u64,
     pub memory_count: u32,
     pub message_count: u32,
+    pub score_count: u32,
     pub user_id: UserId,
 }
 
@@ -458,6 +510,29 @@ fn row_to_memory(row: SqliteRow) -> Result<Memory, MemoryError> {
         embedding: bytes_to_vec(&embedding_blob)?,
         id: MemoryId(parse_uuid(&id, "memory id")?),
         kind: parse_kind(&kind)?,
+        user_id: UserId(parse_uuid(&user_id, "user id")?),
+    })
+}
+
+fn row_to_score(row: SqliteRow) -> Result<Score, MemoryError> {
+    let created_at: i64 = row.try_get("created_at")?;
+    let criterion: String = row.try_get("criterion")?;
+    let id: String = row.try_get("id")?;
+    let judge_model: String = row.try_get("judge_model")?;
+    let judge_name: String = row.try_get("judge_name")?;
+    let message_id: String = row.try_get("message_id")?;
+    let reasoning: String = row.try_get("reasoning")?;
+    let score: f32 = row.try_get("score")?;
+    let user_id: String = row.try_get("user_id")?;
+    Ok(Score {
+        created_at: created_at as u64,
+        criterion,
+        id: ScoreId(parse_uuid(&id, "score id")?),
+        judge_model,
+        judge_name,
+        message_id: MessageId(parse_uuid(&message_id, "message id")?),
+        reasoning,
+        score,
         user_id: UserId(parse_uuid(&user_id, "user id")?),
     })
 }

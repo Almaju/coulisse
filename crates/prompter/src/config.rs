@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::{fs, path::Path};
 
 use memory::MemoryConfig;
@@ -17,6 +17,11 @@ pub struct Config {
     /// client bothers to send an id; the same memory bucket is used.
     #[serde(default)]
     pub default_user_id: Option<String>,
+    /// LLM-as-judge evaluators. Each agent opts in by listing judge names in
+    /// its own `judges:` array — omit here (or on the agent) to skip
+    /// evaluation entirely.
+    #[serde(default)]
+    pub judges: Vec<JudgeConfig>,
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
     /// Memory subsystem config (persistence, embedder, auto-extraction).
@@ -47,6 +52,33 @@ impl Config {
         {
             return Err(PrompterError::BlankDefaultUserId);
         }
+        let mut judge_names = HashSet::new();
+        for judge in &self.judges {
+            if !judge_names.insert(&judge.name) {
+                return Err(PrompterError::DuplicateJudge(judge.name.clone()));
+            }
+            if judge.rubrics.is_empty() {
+                return Err(PrompterError::JudgeWithoutRubrics(judge.name.clone()));
+            }
+            if !(0.0..=1.0).contains(&judge.sampling_rate) {
+                return Err(PrompterError::InvalidSamplingRate {
+                    judge: judge.name.clone(),
+                    value: judge.sampling_rate,
+                });
+            }
+            let provider = ProviderKind::parse(&judge.provider).ok_or_else(|| {
+                PrompterError::JudgeUnknownProvider {
+                    judge: judge.name.clone(),
+                    provider: judge.provider.clone(),
+                }
+            })?;
+            if !self.providers.contains_key(&provider) {
+                return Err(PrompterError::JudgeProviderNotConfigured {
+                    judge: judge.name.clone(),
+                    provider,
+                });
+            }
+        }
         let mut seen = HashSet::new();
         for agent in &self.agents {
             if !seen.insert(&agent.name) {
@@ -63,6 +95,14 @@ impl Config {
                     return Err(PrompterError::McpServerNotConfigured {
                         agent: agent.name.clone(),
                         server: access.server.clone(),
+                    });
+                }
+            }
+            for judge_name in &agent.judges {
+                if !judge_names.contains(judge_name) {
+                    return Err(PrompterError::JudgeNotConfigured {
+                        agent: agent.name.clone(),
+                        judge: judge_name.clone(),
                     });
                 }
             }
@@ -94,6 +134,10 @@ impl Config {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AgentConfig {
+    /// Names of judges (defined at the top level under `judges:`) that should
+    /// evaluate this agent's replies. Empty = no automatic evaluation.
+    #[serde(default)]
+    pub judges: Vec<String>,
     #[serde(default)]
     pub mcp_tools: Vec<McpToolAccess>,
     pub model: String,
@@ -114,6 +158,34 @@ pub struct AgentConfig {
     /// message is returned as the tool result.
     #[serde(default)]
     pub subagents: Vec<String>,
+}
+
+/// Runtime config for one LLM-as-judge evaluator. A judge runs in a
+/// background task after each assistant turn of agents that reference it,
+/// sampling at `sampling_rate`, and produces one `Score` row per criterion
+/// in `rubrics`.
+///
+/// The user only describes *what* to evaluate; Coulisse builds the judge
+/// preamble and forces JSON output internally — users should not write scale
+/// or format instructions into their rubrics.
+#[derive(Clone, Debug, Deserialize)]
+pub struct JudgeConfig {
+    pub model: String,
+    pub name: String,
+    pub provider: String,
+    /// Map of criterion name → short description of what to assess. Each
+    /// criterion produces one score per scored turn. `BTreeMap` gives
+    /// deterministic, alphabetical order in the judge preamble.
+    #[serde(default)]
+    pub rubrics: BTreeMap<String, String>,
+    /// Probability in [0, 1] that any given assistant turn is scored.
+    /// 1.0 = every turn, 0.1 = ~10% of turns. Defaults to 1.0.
+    #[serde(default = "default_sampling_rate")]
+    pub sampling_rate: f32,
+}
+
+fn default_sampling_rate() -> f32 {
+    1.0
 }
 
 #[derive(Clone, Debug, Deserialize)]

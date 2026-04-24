@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Store, UserId};
-use prompter::{Config, Prompter, ProviderKind, RigPrompter};
+use prompter::{Config, JudgeConfig, Prompter, ProviderKind, RigPrompter};
 use server::{AppState, Extractor, Server};
 
 #[tokio::main]
@@ -15,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let embedder_fallback_key = embedder_fallback_key(&config);
     let extractor_config = config.memory.extractor.clone();
+    let judge_configs = config.judges.clone();
     let memory_summary = memory_summary(&config.memory);
     let store = Store::open(config.memory.clone(), embedder_fallback_key.as_deref()).await?;
     let memory = Arc::new(store);
@@ -24,11 +27,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
+    let judges = build_judges(&judge_configs)?;
+
     let prompter = Arc::new(RigPrompter::new(config).await?);
     let tracker = Tracker::new();
     let state = Arc::new(AppState {
         default_user_id,
         extractor,
+        judges: Arc::new(judges),
         memory,
         prompter,
         tracker,
@@ -45,16 +51,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("  extractor: disabled (memory only grows via explicit API calls)");
     }
+    if judge_configs.is_empty() {
+        println!("  judges: none configured");
+    } else {
+        for cfg in &judge_configs {
+            let criteria: Vec<&str> = cfg.rubrics.keys().map(String::as_str).collect();
+            println!(
+                "  judge: {} ({} / {}, sampling_rate={}, criteria=[{}])",
+                cfg.name,
+                cfg.provider,
+                cfg.model,
+                cfg.sampling_rate,
+                criteria.join(", "),
+            );
+        }
+    }
     for agent in state.prompter.agents() {
+        let judges = if agent.judges.is_empty() {
+            String::new()
+        } else {
+            format!(", judges=[{}]", agent.judges.join(", "))
+        };
         println!(
-            "  agent: {} (provider={}, model={})",
+            "  agent: {} (provider={}, model={}{})",
             agent.name,
             agent.provider.as_str(),
             agent.model,
+            judges,
         );
     }
     Server::new(addr, state).run().await?;
     Ok(())
+}
+
+fn build_judges(
+    configs: &[JudgeConfig],
+) -> Result<HashMap<String, Arc<Judge>>, judge::JudgeBuildError> {
+    let mut out = HashMap::with_capacity(configs.len());
+    for cfg in configs {
+        let judge = Judge::from_config(cfg)?;
+        out.insert(cfg.name.clone(), Arc::new(judge));
+    }
+    Ok(out)
 }
 
 /// Derive an API key to use when the memory embedder config doesn't carry

@@ -8,6 +8,7 @@ version.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 futures.workspace = true
+judge.workspace = true
 limits.workspace = true
 memory.workspace = true
 mime_guess = "2"

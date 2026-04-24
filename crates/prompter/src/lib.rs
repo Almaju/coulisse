@@ -7,7 +7,7 @@ mod usage;
 
 pub use backend::{CompletionStream, Message, Prompter, RigPrompter, Role, StreamEvent};
 pub use config::{
-    AgentConfig, Config, McpServerConfig, McpToolAccess, ProviderConfig, ProviderKind,
+    AgentConfig, Config, JudgeConfig, McpServerConfig, McpToolAccess, ProviderConfig, ProviderKind,
 };
 pub use error::PrompterError;
 pub use lang::{LanguageTag, LanguageTagError};

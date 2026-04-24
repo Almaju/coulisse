@@ -1,0 +1,15 @@
+[package]
+name = "judge"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+memory.workspace = true
+prompter.workspace = true
+rand = "0.8"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+tracing.workspace = true

@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/cli", "crates/limits", "crates/memory", "crates/prompter", "crates/server"]
+members = [
+    "crates/cli",
+    "crates/judge",
+    "crates/limits",
+    "crates/memory",
+    "crates/prompter",
+    "crates/server",
+]
 # `crates/admin` is a Leptos WASM app with its own lockfile. Kept out of the
 # workspace so `cargo test`/`cargo clippy` don't try to cross-compile it.
 exclude = ["crates/admin"]
@@ -16,6 +23,7 @@ version = "0.1.0"
 async-stream = "0.3"
 axum = "0.8"
 futures = "0.3"
+judge = { path = "crates/judge" }
 limits = { path = "crates/limits" }
 memory = { path = "crates/memory" }
 oxilangtag = "0.1"

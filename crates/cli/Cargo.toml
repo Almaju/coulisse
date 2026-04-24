@@ -11,6 +11,7 @@ name = "coulisse"
 path = "src/main.rs"
 
 [dependencies]
+judge.workspace = true
 limits.workspace = true
 memory.workspace = true
 prompter.workspace = true

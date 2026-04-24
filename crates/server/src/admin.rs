@@ -12,7 +12,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use memory::{Memory, MemoryError, MemoryId, MemoryKind, Role, StoredMessage, UserId, UserSummary};
+use memory::{
+    Memory, MemoryError, MemoryId, MemoryKind, Role, Score, StoredMessage, UserId, UserSummary,
+};
 use prompter::Prompter;
 use serde::Serialize;
 use uuid::Uuid;
@@ -24,6 +26,7 @@ pub fn router<P: Prompter + 'static>() -> Router<Arc<AppState<P>>> {
         .route("/users", get(list_users::<P>))
         .route("/users/{user_id}/memories", get(user_memories::<P>))
         .route("/users/{user_id}/messages", get(user_messages::<P>))
+        .route("/users/{user_id}/scores", get(user_scores::<P>))
 }
 
 async fn list_users<P: Prompter>(
@@ -67,6 +70,51 @@ async fn user_memories<P: Prompter>(
         .map(MemoryView::from)
         .collect();
     Ok(Json(MemoriesResponse { memories }))
+}
+
+async fn user_scores<P: Prompter>(
+    State(state): State<Arc<AppState<P>>>,
+    Path(user_id): Path<String>,
+) -> Result<Json<ScoresResponse>, AdminError> {
+    let user_id = parse_user_id(&user_id)?;
+    let um = state.memory.for_user(user_id);
+    let scores: Vec<ScoreView> = um
+        .scores()
+        .await?
+        .into_iter()
+        .map(ScoreView::from)
+        .collect();
+    let averages = average_by_criterion(&scores);
+    Ok(Json(ScoresResponse { averages, scores }))
+}
+
+/// Mean score per (judge, criterion), recomputed on every request so the
+/// UI always sees the latest data without a materialized view.
+fn average_by_criterion(scores: &[ScoreView]) -> Vec<CriterionAverage> {
+    use std::collections::HashMap;
+    let mut buckets: HashMap<(String, String), (f64, u32)> = HashMap::new();
+    for s in scores {
+        let entry = buckets
+            .entry((s.judge_name.clone(), s.criterion.clone()))
+            .or_insert((0.0, 0));
+        entry.0 += s.score as f64;
+        entry.1 += 1;
+    }
+    let mut out: Vec<CriterionAverage> = buckets
+        .into_iter()
+        .map(|((judge_name, criterion), (sum, count))| CriterionAverage {
+            average: (sum / count as f64) as f32,
+            count,
+            criterion,
+            judge_name,
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.judge_name
+            .cmp(&b.judge_name)
+            .then_with(|| a.criterion.cmp(&b.criterion))
+    });
+    out
 }
 
 /// Admin endpoints expect a real UUID in the path — unlike chat requests,
@@ -116,6 +164,7 @@ pub struct UserView {
     pub last_activity_at: u64,
     pub memory_count: u32,
     pub message_count: u32,
+    pub score_count: u32,
     pub user_id: UserId,
 }
 
@@ -125,6 +174,7 @@ impl From<UserSummary> for UserView {
             last_activity_at: s.last_activity_at,
             memory_count: s.memory_count,
             message_count: s.message_count,
+            score_count: s.score_count,
             user_id: s.user_id,
         }
     }
@@ -180,4 +230,48 @@ impl From<Memory> for MemoryView {
             kind: m.kind,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScoresResponse {
+    pub averages: Vec<CriterionAverage>,
+    pub scores: Vec<ScoreView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScoreView {
+    pub created_at: u64,
+    pub criterion: String,
+    pub id: String,
+    pub judge_model: String,
+    pub judge_name: String,
+    pub message_id: String,
+    pub reasoning: String,
+    pub score: f32,
+}
+
+impl From<Score> for ScoreView {
+    fn from(s: Score) -> Self {
+        Self {
+            created_at: s.created_at,
+            criterion: s.criterion,
+            id: s.id.0.to_string(),
+            judge_model: s.judge_model,
+            judge_name: s.judge_name,
+            message_id: s.message_id.0.to_string(),
+            reasoning: s.reasoning,
+            score: s.score,
+        }
+    }
+}
+
+/// Aggregated mean score for one `(judge, criterion)` pair across every
+/// assistant turn the user has had. `count` lets the UI distinguish a
+/// 9.0 from a single sample versus 9.0 averaged over hundreds.
+#[derive(Clone, Debug, Serialize)]
+pub struct CriterionAverage {
+    pub average: f32,
+    pub count: u32,
+    pub criterion: String,
+    pub judge_name: String,
 }

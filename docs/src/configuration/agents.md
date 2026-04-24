@@ -44,6 +44,18 @@ A system prompt prepended to every conversation this agent handles. Use it to de
 
 Defaults to empty. YAML block scalars (`|`) are handy for multi-line preambles.
 
+### `judges` (optional)
+
+A list of judge names (from the top-level `judges:` block) that evaluate this agent's replies in the background. Empty or omitted = no evaluation. See [LLM-as-judge evaluation](../features/evaluation.md) for the full story.
+
+```yaml
+agents:
+  - name: assistant
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    judges: [quality, deep_audit]
+```
+
 ### `mcp_tools` (optional)
 
 A list of MCP servers and tools this agent is allowed to use. See [MCP tools](./mcp.md) for the full story.

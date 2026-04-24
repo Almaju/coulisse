@@ -38,6 +38,25 @@ pub enum PrompterError {
         server: String,
         tool: String,
     },
+    #[error("duplicate judge name in config: {0}")]
+    DuplicateJudge(String),
+    #[error("judge '{judge}' has sampling_rate={value}, must be in [0.0, 1.0]")]
+    InvalidSamplingRate { judge: String, value: f32 },
+    #[error("agent '{agent}' references judge '{judge}' which is not configured")]
+    JudgeNotConfigured { agent: String, judge: String },
+    #[error(
+        "judge '{judge}' references provider '{provider}' which is not declared under `providers:`"
+    )]
+    JudgeProviderNotConfigured {
+        judge: String,
+        provider: ProviderKind,
+    },
+    #[error(
+        "judge '{judge}' provider '{provider}' is not supported (anthropic, cohere, deepseek, gemini, groq, openai)"
+    )]
+    JudgeUnknownProvider { judge: String, provider: String },
+    #[error("judge '{0}' declares no rubrics; add at least one `criterion: description` entry")]
+    JudgeWithoutRubrics(String),
     #[error("config must declare at least one agent")]
     NoAgents,
     #[error("failed to parse config: {0}")]

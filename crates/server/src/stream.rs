@@ -5,6 +5,7 @@ use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use futures::StreamExt;
+use judge::spawn_score;
 use memory::{Role as MemRole, UserId};
 use prompter::{CompletionStream, Prompter, StreamEvent, Usage as ProviderUsage};
 
@@ -12,7 +13,7 @@ use crate::chat::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
 };
 use crate::extractor::spawn_extract;
-use crate::server::AppState;
+use crate::server::{AppState, judges_for_agent};
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
 /// the rest of the per-request state (user id, tracker key, user message)
@@ -36,6 +37,7 @@ pub fn sse_response<P: Prompter + 'static>(
     let flush = MemoryFlush {
         accumulated: Arc::clone(&accumulated),
         final_usage: Arc::clone(&final_usage),
+        model: model.clone(),
         state,
         tracker_key,
         user_id,
@@ -90,6 +92,7 @@ pub fn sse_response<P: Prompter + 'static>(
 struct MemoryFlush<P: Prompter + 'static> {
     accumulated: Arc<Mutex<String>>,
     final_usage: Arc<Mutex<ProviderUsage>>,
+    model: String,
     state: Arc<AppState<P>>,
     tracker_key: String,
     user_id: UserId,
@@ -100,6 +103,7 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
         let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
         let usage = *self.final_usage.lock().unwrap();
+        let model = std::mem::take(&mut self.model);
         let state = Arc::clone(&self.state);
         let tracker_key = std::mem::take(&mut self.tracker_key);
         let user_id = self.user_id;
@@ -110,21 +114,37 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
             if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
                 warn_memory_append_failed("user", err);
             }
-            if !accumulated.is_empty()
-                && let Err(err) = um
-                    .append_message(MemRole::Assistant, accumulated.clone())
-                    .await
-            {
-                warn_memory_append_failed("assistant", err);
+            if accumulated.is_empty() {
+                return;
             }
-            if !accumulated.is_empty()
-                && let Some(extractor) = state.extractor.clone()
+            let assistant_message_id = match um
+                .append_message(MemRole::Assistant, accumulated.clone())
+                .await
             {
+                Ok(id) => Some(id),
+                Err(err) => {
+                    warn_memory_append_failed("assistant", err);
+                    None
+                }
+            };
+            if let Some(extractor) = state.extractor.clone() {
                 spawn_extract(
                     extractor,
                     Arc::clone(&state.memory),
                     Arc::clone(&state.prompter),
                     user_id,
+                    user_message.clone(),
+                    accumulated.clone(),
+                );
+            }
+            if let Some(assistant_message_id) = assistant_message_id {
+                let judges = judges_for_agent(&state, &model);
+                spawn_score(
+                    judges,
+                    Arc::clone(&state.memory),
+                    Arc::clone(&state.prompter),
+                    user_id,
+                    assistant_message_id,
                     user_message,
                     accumulated,
                 );

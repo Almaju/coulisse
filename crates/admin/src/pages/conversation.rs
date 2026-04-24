@@ -4,7 +4,9 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 use uuid::Uuid;
 
-use crate::api::{self, MemoryView, MessageView, Role};
+use crate::api::{
+    self, CriterionAverage, MemoryView, MessageView, Role, ScoreView, ScoresResponse,
+};
 use crate::components::{Badge, Card, CardContent, CardHeader, CardTitle, Empty, Spinner};
 use crate::pages::relative_time;
 
@@ -38,6 +40,7 @@ pub fn ConversationPage() -> impl IntoView {
 fn ConversationView(user_id: Uuid) -> impl IntoView {
     let (messages, set_messages) = signal::<Load<Vec<MessageView>>>(Load::Loading);
     let (memories, set_memories) = signal::<Load<Vec<MemoryView>>>(Load::Loading);
+    let (scores, set_scores) = signal::<Load<ScoresResponse>>(Load::Loading);
 
     spawn_local(async move {
         match api::user_messages(user_id).await {
@@ -49,6 +52,12 @@ fn ConversationView(user_id: Uuid) -> impl IntoView {
         match api::user_memories(user_id).await {
             Ok(m) => set_memories.set(Load::Ready(m)),
             Err(e) => set_memories.set(Load::Failed(e.to_string())),
+        }
+    });
+    spawn_local(async move {
+        match api::user_scores(user_id).await {
+            Ok(s) => set_scores.set(Load::Ready(s)),
+            Err(e) => set_scores.set(Load::Failed(e.to_string())),
         }
     });
 
@@ -77,7 +86,24 @@ fn ConversationView(user_id: Uuid) -> impl IntoView {
                     </CardContent>
                 </Card>
             </div>
-            <div>
+            <div class="space-y-6">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>"Scores"</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {move || match scores.get() {
+                            Load::Loading => view! { <Spinner/> }.into_any(),
+                            Load::Failed(msg) => view! {
+                                <Empty message=format!("Failed to load scores: {msg}")/>
+                            }.into_any(),
+                            Load::Ready(s) if s.scores.is_empty() => view! {
+                                <Empty message="No judge scores recorded for this user.".to_string()/>
+                            }.into_any(),
+                            Load::Ready(s) => view! { <ScoresPanel data=s/> }.into_any(),
+                        }}
+                    </CardContent>
+                </Card>
                 <Card>
                     <CardHeader>
                         <CardTitle>"Memories"</CardTitle>
@@ -98,6 +124,82 @@ fn ConversationView(user_id: Uuid) -> impl IntoView {
             </div>
         </div>
     }
+}
+
+#[component]
+fn ScoresPanel(data: ScoresResponse) -> impl IntoView {
+    let averages = data.averages;
+    let recent: Vec<ScoreView> = data.scores.into_iter().rev().take(5).collect();
+    view! {
+        <div class="space-y-4">
+            <div>
+                <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    "Averages"
+                </h3>
+                <AveragesList items=averages/>
+            </div>
+            <div>
+                <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    "Recent"
+                </h3>
+                <RecentScoresList items=recent/>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn AveragesList(items: Vec<CriterionAverage>) -> impl IntoView {
+    let rows: Vec<_> = items
+        .into_iter()
+        .map(|a| {
+            view! {
+                <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                    <div class="min-w-0">
+                        <div class="truncate text-sm text-slate-200">{a.criterion}</div>
+                        <div class="text-xs text-slate-500">
+                            {format!("{} · n={}", a.judge_name, a.count)}
+                        </div>
+                    </div>
+                    <div class="ml-3 font-mono text-sm text-slate-100">
+                        {format!("{:.1}", a.average)}
+                    </div>
+                </div>
+            }
+        })
+        .collect();
+    view! { <div class="space-y-2">{rows}</div> }
+}
+
+#[component]
+fn RecentScoresList(items: Vec<ScoreView>) -> impl IntoView {
+    let rows: Vec<_> = items
+        .into_iter()
+        .map(|s| {
+            view! {
+                <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                    <div class="mb-1 flex items-center justify-between">
+                        <div class="min-w-0">
+                            <span class="text-sm text-slate-200">{s.criterion}</span>
+                            <span class="ml-1 text-xs text-slate-500">
+                                {format!("· {}", s.judge_name)}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="font-mono text-sm text-slate-100">
+                                {format!("{:.1}", s.score)}
+                            </span>
+                            <span class="text-xs text-slate-500">
+                                {relative_time(s.created_at)}
+                            </span>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-400">{s.reasoning}</p>
+                </div>
+            }
+        })
+        .collect();
+    view! { <div class="space-y-2">{rows}</div> }
 }
 
 #[component]

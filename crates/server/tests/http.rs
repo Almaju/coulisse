@@ -7,6 +7,7 @@
 //! Tests use the `current_thread` flavor so a 20ms sleep after dropping a
 //! response is enough for the spawned memory-flush task to complete.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,15 +15,17 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, MemoryConfig, Role as MemRole, Store, UserId};
 use prompter::testing::{ScriptedPrompter, ScriptedReply};
-use prompter::{AgentConfig, ProviderKind, Usage};
+use prompter::{AgentConfig, JudgeConfig, ProviderKind, Usage};
 use server::{AppState, Server};
 use tower::ServiceExt;
 
-fn make_agents() -> Vec<AgentConfig> {
-    vec![AgentConfig {
+fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
+    AgentConfig {
+        judges,
         mcp_tools: vec![],
         model: "gpt-scripted".into(),
         name: "assistant".into(),
@@ -30,11 +33,23 @@ fn make_agents() -> Vec<AgentConfig> {
         provider: ProviderKind::Openai,
         purpose: None,
         subagents: vec![],
-    }]
+    }
+}
+
+fn make_agents() -> Vec<AgentConfig> {
+    vec![agent_with_judges(vec![])]
 }
 
 async fn make_app(replies: Vec<ScriptedReply>) -> (Router, Arc<AppState<ScriptedPrompter>>) {
-    let prompter = Arc::new(ScriptedPrompter::new(make_agents(), replies));
+    make_app_with(make_agents(), HashMap::new(), replies).await
+}
+
+async fn make_app_with(
+    agents: Vec<AgentConfig>,
+    judges: HashMap<String, Arc<Judge>>,
+    replies: Vec<ScriptedReply>,
+) -> (Router, Arc<AppState<ScriptedPrompter>>) {
+    let prompter = Arc::new(ScriptedPrompter::new(agents, replies));
     let config = MemoryConfig {
         backend: BackendConfig::InMemory,
         embedder: EmbedderConfig::Hash { dims: 32 },
@@ -45,6 +60,7 @@ async fn make_app(replies: Vec<ScriptedReply>) -> (Router, Arc<AppState<Scripted
     let state = Arc::new(AppState {
         default_user_id: None,
         extractor: None,
+        judges: Arc::new(judges),
         memory,
         prompter,
         tracker,
@@ -330,6 +346,142 @@ async fn streaming_persists_full_assistant_message_on_normal_completion() {
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "count");
     assert_eq!(messages[1].content, "one two three");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn judge_scores_are_persisted_after_a_turn() {
+    // Two scripted replies: the assistant's answer and the judge's JSON.
+    let judge_reply = r#"{
+        "accuracy": {"score": 8, "reasoning": "mostly right"},
+        "helpfulness": {"score": 9, "reasoning": "answered the question"}
+    }"#;
+    let replies = vec![
+        ScriptedReply::text("The capital of France is Paris."),
+        ScriptedReply::text(judge_reply),
+    ];
+    let rubrics: BTreeMap<String, String> = [
+        ("accuracy".into(), "factual correctness".into()),
+        ("helpfulness".into(), "answered the question".into()),
+    ]
+    .into_iter()
+    .collect();
+    let judge = Judge::from_config(&JudgeConfig {
+        model: "gpt-scripted".into(),
+        name: "quality".into(),
+        provider: "openai".into(),
+        rubrics,
+        sampling_rate: 1.0,
+    })
+    .unwrap();
+    let mut judges = HashMap::new();
+    judges.insert("quality".into(), Arc::new(judge));
+
+    let agents = vec![agent_with_judges(vec!["quality".into()])];
+    let (app, state) = make_app_with(agents, judges, replies).await;
+
+    let req = json_request(serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "What is the capital of France?"}],
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(collect(resp.into_body()).await);
+
+    // Give the spawned judge task time to persist.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    let mut scores = um.scores().await.unwrap();
+    scores.sort_by(|a, b| a.criterion.cmp(&b.criterion));
+    assert_eq!(scores.len(), 2);
+    assert_eq!(scores[0].criterion, "accuracy");
+    assert_eq!(scores[0].score, 8.0);
+    assert_eq!(scores[0].reasoning, "mostly right");
+    assert_eq!(scores[0].judge_name, "quality");
+    assert_eq!(scores[1].criterion, "helpfulness");
+    assert_eq!(scores[1].score, 9.0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn judge_scores_are_persisted_after_a_streaming_turn() {
+    let judge_reply = r#"{
+        "helpfulness": {"score": 7, "reasoning": "ok"}
+    }"#;
+    let replies = vec![
+        ScriptedReply::deltas(["Hel", "lo"]),
+        ScriptedReply::text(judge_reply),
+    ];
+    let rubrics: BTreeMap<String, String> = [("helpfulness".into(), "answered".into())]
+        .into_iter()
+        .collect();
+    let judge = Judge::from_config(&JudgeConfig {
+        model: "gpt-scripted".into(),
+        name: "quality".into(),
+        provider: "openai".into(),
+        rubrics,
+        sampling_rate: 1.0,
+    })
+    .unwrap();
+    let mut judges = HashMap::new();
+    judges.insert("quality".into(), Arc::new(judge));
+
+    let agents = vec![agent_with_judges(vec!["quality".into()])];
+    let (app, state) = make_app_with(agents, judges, replies).await;
+
+    let req = json_request(serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true,
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = collect(resp.into_body()).await;
+
+    // MemoryFlush spawns on Drop; the judge spawns again from inside.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    let scores = um.scores().await.unwrap();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].criterion, "helpfulness");
+    assert_eq!(scores[0].score, 7.0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn judge_sampling_rate_zero_records_nothing() {
+    let rubrics: BTreeMap<String, String> = [("accuracy".into(), "factual".into())]
+        .into_iter()
+        .collect();
+    let judge = Judge::from_config(&JudgeConfig {
+        model: "gpt-scripted".into(),
+        name: "q".into(),
+        provider: "openai".into(),
+        rubrics,
+        sampling_rate: 0.0,
+    })
+    .unwrap();
+    let mut judges = HashMap::new();
+    judges.insert("q".into(), Arc::new(judge));
+
+    let agents = vec![agent_with_judges(vec!["q".into()])];
+    let replies = vec![ScriptedReply::text("answer")];
+    let (app, state) = make_app_with(agents, judges, replies).await;
+
+    let req = json_request(serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "Q"}],
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(collect(resp.into_body()).await);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    assert_eq!(um.scores().await.unwrap().len(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

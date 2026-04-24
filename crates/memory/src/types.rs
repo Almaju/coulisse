@@ -38,6 +38,22 @@ impl Default for MessageId {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
+pub struct ScoreId(pub Uuid);
+
+impl ScoreId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for ScoreId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct UserId(pub Uuid);
 
 impl UserId {
@@ -191,6 +207,46 @@ impl Memory {
             kind,
             user_id,
             content,
+        }
+    }
+}
+
+/// Single criterion evaluation attached to an assistant message by an LLM judge.
+/// Each rubric on a judge produces one `Score` per scored turn; averages and
+/// trends are computed at read time (admin views), not aggregated here.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Score {
+    pub created_at: u64,
+    pub criterion: String,
+    pub id: ScoreId,
+    pub judge_model: String,
+    pub judge_name: String,
+    pub message_id: MessageId,
+    pub reasoning: String,
+    pub score: f32,
+    pub user_id: UserId,
+}
+
+impl Score {
+    pub fn new(
+        user_id: UserId,
+        message_id: MessageId,
+        judge_name: String,
+        judge_model: String,
+        criterion: String,
+        score: f32,
+        reasoning: String,
+    ) -> Self {
+        Self {
+            created_at: now_secs(),
+            criterion,
+            id: ScoreId::new(),
+            judge_model,
+            judge_name,
+            message_id,
+            reasoning,
+            score,
+            user_id,
         }
     }
 }

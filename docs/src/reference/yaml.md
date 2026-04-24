@@ -7,6 +7,7 @@ A complete reference for every field in `coulisse.yaml`.
 ```yaml
 agents: [ ... ]               # required, non-empty
 default_user_id: <string>     # optional, unset by default
+judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
 memory: { ... }               # optional; defaults to sqlite + hash embedder
 providers: { ... }            # required
@@ -122,6 +123,7 @@ See [Memory configuration](../configuration/memory.md) for the full walkthrough 
 | `provider`   | string                | yes      | Key under `providers`. |
 | `model`      | string                | yes      | Upstream model identifier. |
 | `preamble`   | string                | no       | System prompt. Default: empty. |
+| `judges`     | list<string>          | no       | Names of judges (from top-level `judges:`) that evaluate this agent's replies. Empty = no evaluation. |
 | `mcp_tools`  | list<mcp_tool_access> | no       | Tools this agent may use. |
 | `purpose`    | string                | no       | Tool description when this agent is exposed via another agent's `subagents`. Omit for standalone agents; add a concrete one-line description when this agent is meant to be called as a specialist. |
 | `subagents`  | list<string>          | no       | Names of other agents exposed as callable tools. Each entry must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. |
@@ -171,6 +173,39 @@ agents:
 
 See [Multi-agent routing](../features/multi-agent.md) for the full subagent walkthrough.
 
+## `judges`
+
+- **Type:** list of judge configs
+- **Optional.** Omit (or leave empty) for no automatic evaluation.
+
+Judges are background LLM-as-judge evaluators. An agent opts in by listing judge names in its own `judges:` field. See [LLM-as-judge evaluation](../features/evaluation.md) for the full walkthrough.
+
+### Per-judge fields
+
+| Field           | Type              | Required | Default | Notes |
+|-----------------|-------------------|----------|---------|-------|
+| `name`          | string            | yes      | —       | Unique judge identifier; agents refer to it here. |
+| `provider`      | string            | yes      | —       | Must match a key under `providers`. |
+| `model`         | string            | yes      | —       | Upstream model identifier for the judge call. |
+| `rubrics`       | map<string,string>| yes      | —       | `criterion: short description of what to assess`. One score row per criterion per scored turn. Must declare at least one entry. |
+| `sampling_rate` | float             | no       | `1.0`   | In `[0.0, 1.0]`. `1.0` = every turn, `0.1` ≈ 10%, `0.0` = never. |
+
+Rubric descriptions should say **what** to evaluate — don't include scale, JSON, or format instructions. Coulisse forces the output shape internally (integer 0-10 per criterion with a one-sentence reasoning).
+
+### Example
+
+```yaml
+judges:
+  - name: quality
+    provider: openai
+    model: gpt-4o-mini
+    sampling_rate: 1.0
+    rubrics:
+      accuracy:     Factual accuracy. Flag hallucinations.
+      helpfulness:  Whether the assistant answered the user's question.
+      tone:         Politeness and tone.
+```
+
 ## Validation
 
 On startup, Coulisse checks:
@@ -182,5 +217,10 @@ On startup, Coulisse checks:
 - Every name in `subagents` refers to another defined agent.
 - No agent lists itself under `subagents`.
 - `subagents` entries are unique within an agent (no duplicates).
+- Every referenced judge exists.
+- Judge names are unique.
+- Every judge's `provider` is configured and supported.
+- Every judge has at least one rubric.
+- Every judge's `sampling_rate` is in `[0.0, 1.0]`.
 
-Any violation fails fast with an error message that names the offending agent and field.
+Any violation fails fast with an error message that names the offending agent or judge and field.
