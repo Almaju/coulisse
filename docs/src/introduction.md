@@ -39,13 +39,16 @@ Coulisse collapses this plumbing into one configurable server. You describe the 
 | Feature                 | Status |
 |-------------------------|--------|
 | Multi-agent routing     | ✅ Working |
-| Per-user memory         | ✅ Working |
-| Semantic memory recall  | ✅ Working |
+| Per-user memory         | ✅ Persistent (SQLite) with semantic recall |
+| Real embedders          | ✅ OpenAI + Voyage (hash fallback for offline dev) |
+| Auto-extraction         | ✅ Optional — pulls durable facts from each exchange |
 | MCP tool integration    | ✅ Working (stdio + HTTP) |
 | Multi-backend support   | ✅ Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq |
 | OpenAI-compatible API   | ✅ `/v1/chat/completions`, `/v1/models` |
-| Rate limiting           | ✅ Per-user token quotas (hour / day / month) |
+| Streaming responses     | ✅ Server-Sent Events |
+| Rate limiting           | ✅ Per-user token quotas (hour / day / month, in-memory) |
+| Admin UI                | ✅ Read-only at `/admin` |
 | Workflow orchestration  | ⏳ Planned |
-| Streaming responses     | ⏳ Planned |
+| Durable rate-limit state| ⏳ Planned |
 
 Continue to [Installation](./getting-started/installation.md) to get started.

@@ -35,10 +35,14 @@ You should see output like:
 
 ```text
 coulisse listening on http://0.0.0.0:8421
-  memory: HashEmbedder (MVP placeholder — swap for a real embedder before production)
+  memory: sqlite at ./coulisse-memory.db; embedder=openai / text-embedding-3-small
+  extractor: anthropic / claude-haiku-4-5-20251001 (dedup_threshold=0.9, max_facts_per_turn=5)
   agent: claude-assistant (provider=anthropic, model=claude-sonnet-4-5-20250929)
+  agent: gpt-assistant    (provider=openai, model=gpt-4o)
   agent: code-reviewer    (provider=anthropic, model=claude-sonnet-4-5-20250929)
 ```
+
+The exact lines depend on your config — what matters is that memory, the (optional) extractor, and every configured agent are each acknowledged on startup.
 
 The server binds to **port 8421**.
 
