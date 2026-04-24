@@ -62,6 +62,8 @@ To disable, omit the `memory.extractor` block entirely. Memories will still be r
 |-------------------------------|-------------|----------|
 | Conversation messages         | Per user    | SQLite (`messages` table) |
 | Long-term memories + vectors  | Per user    | SQLite (`memories` table, BLOB embeddings) |
+| Tool invocations              | Per user    | SQLite (`tool_calls` table, linked to `messages.id`) |
+| Judge scores                  | Per user    | SQLite (`scores` table, linked to `messages.id`) |
 | User identifier → internal ID | Shared      | Derived deterministically — no storage needed |
 
 Each memory row carries the id of the embedder that produced it. If you swap the embedder, old vectors become ineligible for recall (they'd be scored in the wrong space). They stay in the database but are silently ignored until you re-embed them.

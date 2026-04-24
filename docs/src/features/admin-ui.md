@@ -6,8 +6,9 @@ Point a browser at `http://localhost:8421/admin` while the server is running.
 
 ## What you can do
 
-- List every user the server has seen, most recent activity first, with message / memory / score counts.
+- List every user the server has seen, most recent activity first, with message / memory / score / tool-call counts.
 - Open a user to see their full conversation (user, assistant, and system messages) with per-message token counts and relative timestamps.
+- See every tool invocation that happened during each assistant turn — rendered inline in the conversation as a collapsed block above the assistant bubble. Expand to see the args, the result (or error body), and a badge marking MCP vs subagent calls. This is the debug view for figuring out *what the agent tried and what came back*.
 - See the long-term memories recalled for that user, tagged as `fact` or `preference`.
 - See the LLM-as-judge scores for that user, including mean score per `(judge, criterion)` and the most recent individual scores with reasoning.
 
@@ -58,8 +59,8 @@ The UI is backed by three read-only endpoints. They're not part of the OpenAI-co
 
 | Method | Path                                        | Returns                                                      |
 |--------|---------------------------------------------|--------------------------------------------------------------|
-| `GET`  | `/admin/api/users`                          | List of users with message / memory / score counts.          |
-| `GET`  | `/admin/api/users/{user_id}/messages`       | Full conversation history for one user.                      |
+| `GET`  | `/admin/api/users`                          | List of users with message / memory / score / tool-call counts. |
+| `GET`  | `/admin/api/users/{user_id}/messages`       | Full conversation history for one user; each assistant message carries the tool invocations that produced it in fire order. |
 | `GET`  | `/admin/api/users/{user_id}/memories`       | Long-term memories for one user (no embeddings).             |
 | `GET`  | `/admin/api/users/{user_id}/scores`         | Judge scores for one user, plus mean per (judge, criterion). |
 
