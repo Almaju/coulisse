@@ -1,0 +1,65 @@
+# Copy to coulisse.yaml and fill in the values.
+# Supported providers: anthropic, cohere, deepseek, gemini, groq, openai
+
+# Fallback user identifier for requests that don't supply `safety_identifier`
+# (or the deprecated `user` field). Leave unset for multi-tenant deployments
+# so every request must identify its user. Set to a value like "main" for
+# local / single-user setups: memory still works, just scoped to that bucket.
+# default_user_id: main
+
+providers:
+  anthropic:
+    api_key: sk-ant-your-key-here
+  openai:
+    api_key: sk-your-openai-key
+  gemini:
+    api_key: your-gemini-key
+
+# Optional: MCP (Model Context Protocol) servers the agents can borrow tools from.
+# Two transports are supported:
+#   - stdio: coulisse spawns the command and talks over the child's stdin/stdout.
+#   - http:  coulisse connects to a running Streamable-HTTP MCP endpoint.
+mcp:
+  hello:
+    transport: stdio
+    command: uvx
+    args:
+      - --from
+      - git+https://github.com/macsymwang/hello-mcp-server.git
+      - hello-mcp-server
+  # Example of an HTTP-based MCP server:
+  # calculator:
+  #   transport: http
+  #   url: http://localhost:8080
+
+agents:
+  - name: claude-assistant
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    preamble: You are a helpful general-purpose assistant.
+    # Grant this agent every tool exposed by the `hello` MCP server.
+    mcp_tools:
+      - server: hello
+
+  - name: gpt-assistant
+    provider: openai
+    model: gpt-4o
+    preamble: You are a helpful general-purpose assistant.
+    # Restrict this agent to a specific subset of tools (tool names come
+    # from the MCP server — startup logs the tools it discovered).
+    mcp_tools:
+      - server: hello
+        only:
+          - say_hello
+
+  - name: gemini-assistant
+    provider: gemini
+    model: gemini-2.0-flash
+    preamble: You are a helpful general-purpose assistant.
+
+  - name: code-reviewer
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    preamble: |
+      You are a thorough code reviewer. Focus on correctness, clarity, and security.
+      Point out subtle bugs and suggest concrete improvements.

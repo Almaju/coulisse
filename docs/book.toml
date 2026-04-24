@@ -1,0 +1,10 @@
+[book]
+authors = ["Coulisse contributors"]
+description = "One YAML file. An OpenAI-compatible server with memory, tools, and multi-backend routing."
+language = "en"
+src = "src"
+title = "Coulisse"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"

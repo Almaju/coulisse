@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pre-commit hook: formatting, linting, and tests must pass before a commit.
+# Enable locally once with:  git config core.hooksPath .githooks
+
+set -e
+
+echo "==> cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "==> cargo clippy"
+cargo clippy --all-targets --all-features --locked -- -D warnings
+
+echo "==> cargo test"
+cargo test --all --locked

@@ -1,0 +1,13 @@
+[package]
+name = "server"
+edition.workspace = true
+
+[dependencies]
+axum.workspace = true
+limits.workspace = true
+memory.workspace = true
+prompter.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }

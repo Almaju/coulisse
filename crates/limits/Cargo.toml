@@ -1,0 +1,6 @@
+[package]
+name = "limits"
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true

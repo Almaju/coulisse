@@ -1,0 +1,14 @@
+[package]
+name = "cli"
+edition.workspace = true
+
+[[bin]]
+name = "coulisse"
+path = "src/main.rs"
+
+[dependencies]
+limits.workspace = true
+memory.workspace = true
+prompter.workspace = true
+server.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

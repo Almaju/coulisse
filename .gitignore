@@ -1,0 +1,4 @@
+/target
+Cargo.lock
+coulisse.yaml
+docs/book/

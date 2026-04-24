@@ -1,0 +1,203 @@
+use std::ops::{Add, AddAssign};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct MemoryId(pub Uuid);
+
+impl MemoryId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for MemoryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct MessageId(pub Uuid);
+
+impl MessageId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for MessageId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct UserId(pub Uuid);
+
+impl UserId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Parse `s` as a UUID if well-formed; otherwise derive a stable UUID from it.
+    /// Accepts arbitrary caller-supplied strings without losing partitioning guarantees.
+    pub fn from_string(s: &str) -> Self {
+        match Uuid::parse_str(s) {
+            Ok(uuid) => Self(uuid),
+            Err(_) => Self(Uuid::new_v5(&Uuid::NAMESPACE_OID, s.as_bytes())),
+        }
+    }
+}
+
+impl Default for UserId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<Uuid> for UserId {
+    fn from(id: Uuid) -> Self {
+        Self(id)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct TokenCount(pub u32);
+
+impl TokenCount {
+    /// Rough approximation: ~4 characters per token. Swap for tiktoken when accuracy matters.
+    pub fn estimate(text: &str) -> Self {
+        let chars = text.chars().count() as u32;
+        Self(chars / 4 + 1)
+    }
+
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self(self.0.saturating_sub(rhs.0))
+    }
+}
+
+impl Add for TokenCount {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0.saturating_add(rhs.0))
+    }
+}
+
+impl AddAssign for TokenCount {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 = self.0.saturating_add(rhs.0);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Assistant,
+    System,
+    User,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Message {
+    pub content: String,
+    pub role: Role,
+}
+
+impl Message {
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            role: Role::Assistant,
+        }
+    }
+
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            role: Role::System,
+        }
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            role: Role::User,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredMessage {
+    pub content: String,
+    pub created_at: u64,
+    pub id: MessageId,
+    pub role: Role,
+    pub token_count: TokenCount,
+    pub user_id: UserId,
+}
+
+impl StoredMessage {
+    pub fn new(user_id: UserId, role: Role, content: String) -> Self {
+        let token_count = TokenCount::estimate(&content);
+        Self {
+            created_at: now_secs(),
+            id: MessageId::new(),
+            role,
+            token_count,
+            user_id,
+            content,
+        }
+    }
+
+    pub fn as_message(&self) -> Message {
+        Message {
+            content: self.content.clone(),
+            role: self.role,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryKind {
+    Fact,
+    Preference,
+}
+
+#[derive(Clone, Debug)]
+pub struct Memory {
+    pub content: String,
+    pub created_at: u64,
+    pub embedding: Vec<f32>,
+    pub id: MemoryId,
+    pub kind: MemoryKind,
+    pub user_id: UserId,
+}
+
+impl Memory {
+    pub fn new(user_id: UserId, kind: MemoryKind, content: String, embedding: Vec<f32>) -> Self {
+        Self {
+            created_at: now_secs(),
+            embedding,
+            id: MemoryId::new(),
+            kind,
+            user_id,
+            content,
+        }
+    }
+}
+
+pub(crate) fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
