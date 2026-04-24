@@ -8,6 +8,7 @@ A complete reference for every field in `coulisse.yaml`.
 agents: [ ... ]               # required, non-empty
 default_user_id: <string>     # optional, unset by default
 mcp: { ... }                  # optional
+memory: { ... }               # optional; defaults to sqlite + hash embedder
 providers: { ... }            # required
 ```
 
@@ -82,6 +83,31 @@ mcp:
     transport: http
     url: http://localhost:8080
 ```
+
+## `memory`
+
+- **Type:** object
+- **Optional.** Omit for defaults (sqlite at `./coulisse-memory.db`, offline `hash` embedder, no auto-extraction).
+
+See [Memory configuration](../configuration/memory.md) for the full walkthrough and examples.
+
+### Sub-fields
+
+| Field                          | Type   | Required | Default                                |
+|--------------------------------|--------|----------|----------------------------------------|
+| `backend.kind`                 | enum   | no       | `sqlite`                               |
+| `backend.path`                 | string | no       | `./coulisse-memory.db`                 |
+| `embedder.provider`            | enum   | no       | `hash`                                 |
+| `embedder.model`               | string | depends  | required for `openai`/`voyage`         |
+| `embedder.api_key`             | string | no       | falls back to `providers.<provider>`    |
+| `embedder.dims`                | int    | no       | 32 (hash only)                         |
+| `extractor.provider`           | string | yes\*    | — (\* required when `extractor` is set) |
+| `extractor.model`              | string | yes\*    | —                                      |
+| `extractor.dedup_threshold`    | float  | no       | 0.9                                    |
+| `extractor.max_facts_per_turn` | int    | no       | 5                                      |
+| `context_budget`               | int    | no       | 8000                                   |
+| `memory_budget_fraction`       | float  | no       | 0.1                                    |
+| `recall_k`                     | int    | no       | 5                                      |
 
 ## `agents`
 

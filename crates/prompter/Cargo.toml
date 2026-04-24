@@ -5,6 +5,7 @@ edition.workspace = true
 [dependencies]
 async-stream.workspace = true
 futures.workspace = true
+memory.workspace = true
 oxilangtag.workspace = true
 rig-core.workspace = true
 rmcp.workspace = true

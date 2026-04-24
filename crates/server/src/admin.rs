@@ -12,57 +12,57 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use memory::{Embedder, Memory, MemoryId, MemoryKind, Role, StoredMessage, UserId, UserSummary};
+use memory::{Memory, MemoryError, MemoryId, MemoryKind, Role, StoredMessage, UserId, UserSummary};
 use prompter::Prompter;
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::AppState;
 
-pub fn router<E: Embedder + 'static, P: Prompter + 'static>() -> Router<Arc<AppState<E, P>>> {
+pub fn router<P: Prompter + 'static>() -> Router<Arc<AppState<P>>> {
     Router::new()
-        .route("/users", get(list_users::<E, P>))
-        .route("/users/{user_id}/memories", get(user_memories::<E, P>))
-        .route("/users/{user_id}/messages", get(user_messages::<E, P>))
+        .route("/users", get(list_users::<P>))
+        .route("/users/{user_id}/memories", get(user_memories::<P>))
+        .route("/users/{user_id}/messages", get(user_messages::<P>))
 }
 
-async fn list_users<E: Embedder, P: Prompter>(
-    State(state): State<Arc<AppState<E, P>>>,
-) -> Json<UsersResponse> {
+async fn list_users<P: Prompter>(
+    State(state): State<Arc<AppState<P>>>,
+) -> Result<Json<UsersResponse>, AdminError> {
     let users = state
         .memory
         .list_user_summaries()
-        .await
+        .await?
         .into_iter()
         .map(UserView::from)
         .collect();
-    Json(UsersResponse { users })
+    Ok(Json(UsersResponse { users }))
 }
 
-async fn user_messages<E: Embedder, P: Prompter>(
-    State(state): State<Arc<AppState<E, P>>>,
+async fn user_messages<P: Prompter>(
+    State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
 ) -> Result<Json<MessagesResponse>, AdminError> {
     let user_id = parse_user_id(&user_id)?;
-    let um = state.memory.for_user(user_id).await;
+    let um = state.memory.for_user(user_id);
     let messages = um
         .messages()
-        .await
+        .await?
         .into_iter()
         .map(MessageView::from)
         .collect();
     Ok(Json(MessagesResponse { messages }))
 }
 
-async fn user_memories<E: Embedder, P: Prompter>(
-    State(state): State<Arc<AppState<E, P>>>,
+async fn user_memories<P: Prompter>(
+    State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
 ) -> Result<Json<MemoriesResponse>, AdminError> {
     let user_id = parse_user_id(&user_id)?;
-    let um = state.memory.for_user(user_id).await;
+    let um = state.memory.for_user(user_id);
     let memories = um
         .memories()
-        .await
+        .await?
         .into_iter()
         .map(MemoryView::from)
         .collect();
@@ -81,15 +81,26 @@ fn parse_user_id(raw: &str) -> Result<UserId, AdminError> {
 #[derive(Debug)]
 enum AdminError {
     InvalidUserId,
+    Memory(MemoryError),
+}
+
+impl From<MemoryError> for AdminError {
+    fn from(err: MemoryError) -> Self {
+        Self::Memory(err)
+    }
 }
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Self::InvalidUserId => (StatusCode::BAD_REQUEST, "user_id must be a valid UUID"),
+            Self::InvalidUserId => (
+                StatusCode::BAD_REQUEST,
+                "user_id must be a valid UUID".to_string(),
+            ),
+            Self::Memory(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
         let body = Json(serde_json::json!({
-            "error": { "message": message, "type": "invalid_request" }
+            "error": { "message": message, "type": "admin_error" }
         }));
         (status, body).into_response()
     }

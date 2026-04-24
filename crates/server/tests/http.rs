@@ -15,8 +15,7 @@ use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use limits::Tracker;
-use memory::testing::HashEmbedder;
-use memory::{MemoryConfig, Role as MemRole, Store, UserId};
+use memory::{BackendConfig, EmbedderConfig, MemoryConfig, Role as MemRole, Store, UserId};
 use prompter::testing::{ScriptedPrompter, ScriptedReply};
 use prompter::{AgentConfig, ProviderKind, Usage};
 use server::{AppState, Server};
@@ -32,14 +31,18 @@ fn make_agents() -> Vec<AgentConfig> {
     }]
 }
 
-fn make_app(
-    replies: Vec<ScriptedReply>,
-) -> (Router, Arc<AppState<HashEmbedder, ScriptedPrompter>>) {
-    let prompter = ScriptedPrompter::new(make_agents(), replies);
-    let memory = Store::new(HashEmbedder::new(32), MemoryConfig::default());
+async fn make_app(replies: Vec<ScriptedReply>) -> (Router, Arc<AppState<ScriptedPrompter>>) {
+    let prompter = Arc::new(ScriptedPrompter::new(make_agents(), replies));
+    let config = MemoryConfig {
+        backend: BackendConfig::InMemory,
+        embedder: EmbedderConfig::Hash { dims: 32 },
+        ..MemoryConfig::default()
+    };
+    let memory = Arc::new(Store::open(config, None).await.unwrap());
     let tracker = Tracker::new();
     let state = Arc::new(AppState {
         default_user_id: None,
+        extractor: None,
         memory,
         prompter,
         tracker,
@@ -68,7 +71,8 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
         output_tokens: 3,
         total_tokens: 10,
         ..Usage::default()
-    })]);
+    })])
+    .await;
 
     let req = json_request(serde_json::json!({
         "model": "assistant",
@@ -88,8 +92,8 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
 
     // Both messages landed in memory.
     let alice = UserId::from_string("alice");
-    let um = state.memory.for_user(alice).await;
-    let messages = um.messages().await;
+    let um = state.memory.for_user(alice);
+    let messages = um.messages().await.unwrap();
     assert_eq!(messages.len(), 2);
     assert!(matches!(messages[0].role, MemRole::User));
     assert_eq!(messages[0].content, "Hi");
@@ -99,7 +103,7 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_without_user_id_is_rejected() {
-    let (app, _) = make_app(vec![ScriptedReply::text("unused")]);
+    let (app, _) = make_app(vec![ScriptedReply::text("unused")]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -110,7 +114,7 @@ async fn request_without_user_id_is_rejected() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_without_user_message_is_rejected() {
-    let (app, _) = make_app(vec![ScriptedReply::text("unused")]);
+    let (app, _) = make_app(vec![ScriptedReply::text("unused")]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -122,7 +126,7 @@ async fn request_without_user_message_is_rejected() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn unknown_agent_returns_not_found() {
-    let (app, _) = make_app(vec![ScriptedReply::text("unused")]);
+    let (app, _) = make_app(vec![ScriptedReply::text("unused")]).await;
     let req = json_request(serde_json::json!({
         "model": "does-not-exist",
         "safety_identifier": "alice",
@@ -137,7 +141,8 @@ async fn history_is_loaded_on_the_second_request() {
     let (app, state) = make_app(vec![
         ScriptedReply::text("first reply"),
         ScriptedReply::text("second reply"),
-    ]);
+    ])
+    .await;
 
     // Turn 1.
     let req = json_request(serde_json::json!({
@@ -175,7 +180,7 @@ async fn history_is_loaded_on_the_second_request() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn users_cannot_see_each_others_history() {
-    let (app, state) = make_app(vec![ScriptedReply::text("reply")]);
+    let (app, state) = make_app(vec![ScriptedReply::text("reply")]).await;
 
     let req = json_request(serde_json::json!({
         "model": "assistant",
@@ -205,7 +210,7 @@ async fn users_cannot_see_each_others_history() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn models_endpoint_lists_configured_agents() {
-    let (app, _) = make_app(vec![]);
+    let (app, _) = make_app(vec![]).await;
     let req = Request::builder()
         .method("GET")
         .uri("/v1/models")
@@ -234,7 +239,7 @@ fn parse_sse(bytes: &[u8]) -> Vec<String> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn streaming_emits_role_content_stop_and_done_in_order() {
-    let (app, _) = make_app(vec![ScriptedReply::deltas(["Hel", "lo", " world"])]);
+    let (app, _) = make_app(vec![ScriptedReply::deltas(["Hel", "lo", " world"])]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -283,7 +288,8 @@ async fn streaming_include_usage_puts_usage_on_terminal_chunk() {
         output_tokens: 1,
         total_tokens: 5,
         ..Usage::default()
-    })]);
+    })])
+    .await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -304,7 +310,7 @@ async fn streaming_include_usage_puts_usage_on_terminal_chunk() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn streaming_persists_full_assistant_message_on_normal_completion() {
-    let (app, state) = make_app(vec![ScriptedReply::deltas(["one ", "two ", "three"])]);
+    let (app, state) = make_app(vec![ScriptedReply::deltas(["one ", "two ", "three"])]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -317,8 +323,8 @@ async fn streaming_persists_full_assistant_message_on_normal_completion() {
     // The Drop guard spawns a task; give the runtime a moment to drain it.
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    let um = state.memory.for_user(UserId::from_string("alice")).await;
-    let messages = um.messages().await;
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    let messages = um.messages().await.unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "count");
     assert_eq!(messages[1].content, "one two three");
@@ -332,7 +338,8 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
         "piece-one",
         "piece-two",
         "piece-three",
-    ])]);
+    ])])
+    .await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -350,8 +357,8 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
     // Let the Drop guard's spawned task persist whatever we accumulated.
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    let um = state.memory.for_user(UserId::from_string("alice")).await;
-    let messages = um.messages().await;
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    let messages = um.messages().await.unwrap();
     // User message must be persisted. Assistant may be partial or full.
     assert!(
         !messages.is_empty(),

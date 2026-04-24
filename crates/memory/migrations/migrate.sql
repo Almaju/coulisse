@@ -1,0 +1,4 @@
+-- The single step forward from the previous schema revision to the current one.
+-- For v1 there is no prior revision; this file is intentionally empty.
+-- When the schema changes, replace the contents with the ALTER/CREATE/DROP
+-- statements needed to bring a prior database up to date.

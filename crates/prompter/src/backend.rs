@@ -87,6 +87,17 @@ pub trait Prompter: Send + Sync {
         agent_name: &str,
         messages: Vec<Message>,
     ) -> impl std::future::Future<Output = Result<CompletionStream, PrompterError>> + Send;
+
+    /// One-off prompt bypassing agent-config lookup. No MCP tools, no
+    /// preamble merging — just `provider`, `model`, the supplied preamble
+    /// and messages. Used for internal tasks like memory fact extraction.
+    fn prompt_with(
+        &self,
+        provider: ProviderKind,
+        model: &str,
+        preamble: &str,
+        messages: Vec<Message>,
+    ) -> impl std::future::Future<Output = Result<Completion, PrompterError>> + Send;
 }
 
 impl RigPrompter {
@@ -257,6 +268,32 @@ impl Prompter for RigPrompter {
             Backend::Groq(c) => conversation.stream(c, &agent.model, attachments).await,
             Backend::Openai(c) => conversation.stream(c, &agent.model, attachments).await,
         }
+    }
+
+    async fn prompt_with(
+        &self,
+        provider: ProviderKind,
+        model: &str,
+        preamble: &str,
+        messages: Vec<Message>,
+    ) -> Result<Completion, PrompterError> {
+        let backend = self
+            .backends
+            .get(&provider)
+            .ok_or(PrompterError::ProviderNotConfigured {
+                agent: "<internal>".into(),
+                provider,
+            })?;
+        let conversation = Conversation::from_messages(messages, preamble)?;
+        let result = match backend {
+            Backend::Anthropic(c) => conversation.send(c, model, vec![]).await,
+            Backend::Cohere(c) => conversation.send(c, model, vec![]).await,
+            Backend::Deepseek(c) => conversation.send(c, model, vec![]).await,
+            Backend::Gemini(c) => conversation.send(c, model, vec![]).await,
+            Backend::Groq(c) => conversation.send(c, model, vec![]).await,
+            Backend::Openai(c) => conversation.send(c, model, vec![]).await,
+        };
+        result.map_err(PrompterError::from)
     }
 }
 

@@ -5,12 +5,13 @@ use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use futures::StreamExt;
-use memory::{Embedder, Role as MemRole, UserId};
+use memory::{Role as MemRole, UserId};
 use prompter::{CompletionStream, Prompter, StreamEvent, Usage as ProviderUsage};
 
 use crate::chat::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
 };
+use crate::extractor::spawn_extract;
 use crate::server::AppState;
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
@@ -18,8 +19,8 @@ use crate::server::AppState;
 /// alive through `MemoryFlush`, which writes back to memory and the rate
 /// tracker on drop — so a client disconnect mid-stream still records the
 /// partial assistant reply rather than losing both messages.
-pub fn sse_response<E: Embedder + 'static, P: Prompter + 'static>(
-    state: Arc<AppState<E, P>>,
+pub fn sse_response<P: Prompter + 'static>(
+    state: Arc<AppState<P>>,
     user_id: UserId,
     tracker_key: String,
     user_message: String,
@@ -86,16 +87,16 @@ pub fn sse_response<E: Embedder + 'static, P: Prompter + 'static>(
 /// Drop guard: persists the conversation to memory and records token usage
 /// when the SSE stream ends, regardless of whether it ended normally or the
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
-struct MemoryFlush<E: Embedder + 'static, P: Prompter + 'static> {
+struct MemoryFlush<P: Prompter + 'static> {
     accumulated: Arc<Mutex<String>>,
     final_usage: Arc<Mutex<ProviderUsage>>,
-    state: Arc<AppState<E, P>>,
+    state: Arc<AppState<P>>,
     tracker_key: String,
     user_id: UserId,
     user_message: String,
 }
 
-impl<E: Embedder + 'static, P: Prompter + 'static> Drop for MemoryFlush<E, P> {
+impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
         let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
         let usage = *self.final_usage.lock().unwrap();
@@ -105,14 +106,28 @@ impl<E: Embedder + 'static, P: Prompter + 'static> Drop for MemoryFlush<E, P> {
         let user_message = std::mem::take(&mut self.user_message);
         tokio::spawn(async move {
             state.tracker.record(&tracker_key, usage.total_tokens);
-            let um = state.memory.for_user(user_id).await;
-            if let Err(err) = um.append_message(MemRole::User, user_message).await {
+            let um = state.memory.for_user(user_id);
+            if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
                 warn_memory_append_failed("user", err);
             }
             if !accumulated.is_empty()
-                && let Err(err) = um.append_message(MemRole::Assistant, accumulated).await
+                && let Err(err) = um
+                    .append_message(MemRole::Assistant, accumulated.clone())
+                    .await
             {
                 warn_memory_append_failed("assistant", err);
+            }
+            if !accumulated.is_empty()
+                && let Some(extractor) = state.extractor.clone()
+            {
+                spawn_extract(
+                    extractor,
+                    Arc::clone(&state.memory),
+                    Arc::clone(&state.prompter),
+                    user_id,
+                    user_message,
+                    accumulated,
+                );
             }
         });
     }

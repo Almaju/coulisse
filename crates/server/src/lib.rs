@@ -2,6 +2,7 @@ mod admin;
 mod admin_ui;
 mod chat;
 mod error;
+mod extractor;
 mod server;
 mod stream;
 mod tool;
@@ -11,6 +12,7 @@ pub use chat::{
     ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage,
 };
 pub use error::{ApiError, ServerError};
+pub use extractor::{Extractor, ExtractorBuildError};
 pub use server::{AppState, Server};
 pub use tool::{
     Tool, ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolChoiceMode, ToolFunction,

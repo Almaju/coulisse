@@ -1,17 +1,23 @@
 //! Behavioral tests for context assembly: recall, ordering, budgeting.
 
-use memory::testing::HashEmbedder;
-use memory::{MemoryConfig, MemoryKind, Role, Store, TokenCount, UserId};
+use memory::{
+    BackendConfig, EmbedderConfig, MemoryConfig, MemoryKind, Role, Store, TokenCount, UserId,
+};
 
-fn new_store() -> Store<HashEmbedder> {
-    Store::new(HashEmbedder::new(128), MemoryConfig::default())
+async fn new_store() -> Store {
+    let config = MemoryConfig {
+        backend: BackendConfig::InMemory,
+        embedder: EmbedderConfig::Hash { dims: 128 },
+        ..MemoryConfig::default()
+    };
+    Store::open(config, None).await.unwrap()
 }
 
 #[tokio::test]
 async fn recall_ranks_semantically_similar_content_first() {
-    let store = new_store();
+    let store = new_store().await;
     let user = UserId::new();
-    let um = store.for_user(user).await;
+    let um = store.for_user(user);
 
     um.remember(
         MemoryKind::Fact,
@@ -36,9 +42,9 @@ async fn recall_ranks_semantically_similar_content_first() {
 
 #[tokio::test]
 async fn assemble_context_returns_messages_chronologically() {
-    let store = new_store();
+    let store = new_store().await;
     let user = UserId::new();
-    let um = store.for_user(user).await;
+    let um = store.for_user(user);
 
     um.append_message(Role::User, "first".into()).await.unwrap();
     um.append_message(Role::Assistant, "second".into())
@@ -56,9 +62,9 @@ async fn assemble_context_returns_messages_chronologically() {
 
 #[tokio::test]
 async fn assemble_context_drops_oldest_when_over_budget() {
-    let store = new_store();
+    let store = new_store().await;
     let user = UserId::new();
-    let um = store.for_user(user).await;
+    let um = store.for_user(user);
 
     // Each message ~= 25 tokens (100 chars / 4). Budget of 60 tokens fits ~2 messages.
     let long = "a".repeat(100);
@@ -85,9 +91,9 @@ async fn assemble_context_drops_oldest_when_over_budget() {
 
 #[tokio::test]
 async fn assemble_context_includes_recalled_memories() {
-    let store = new_store();
+    let store = new_store().await;
     let user = UserId::new();
-    let um = store.for_user(user).await;
+    let um = store.for_user(user);
 
     um.remember(MemoryKind::Preference, "prefers dark mode".into())
         .await

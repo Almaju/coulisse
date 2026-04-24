@@ -7,6 +7,25 @@
 # local / single-user setups: memory still works, just scoped to that bucket.
 # default_user_id: main
 
+# Memory subsystem. Entire block is optional — omit for defaults: sqlite at
+# ./coulisse-memory.db with the offline `hash` embedder (OFFLINE, no semantic
+# understanding). See docs/src/configuration/memory.md for the full schema.
+memory:
+  backend:
+    kind: sqlite
+    path: ./coulisse-memory.db     # use /var/lib/coulisse/memory.db under Docker
+  embedder:
+    # Anthropic users: swap provider to `voyage` and set api_key below.
+    provider: openai
+    model: text-embedding-3-small
+  # Auto-extraction: after each exchange, a cheap model extracts durable
+  # facts ("user lives in Paris") and stores them. Omit this block to disable.
+  extractor:
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    dedup_threshold: 0.9
+    max_facts_per_turn: 5
+
 providers:
   anthropic:
     api_key: sk-ant-your-key-here

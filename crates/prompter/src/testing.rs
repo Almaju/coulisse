@@ -6,7 +6,8 @@ use std::sync::Mutex;
 use async_stream::stream;
 
 use crate::{
-    AgentConfig, Completion, CompletionStream, Message, Prompter, PrompterError, StreamEvent, Usage,
+    AgentConfig, Completion, CompletionStream, Message, Prompter, PrompterError, ProviderKind,
+    StreamEvent, Usage,
 };
 
 /// A `Prompter` that replays a scripted reply. Each call to `complete` or
@@ -124,5 +125,31 @@ impl Prompter for ScriptedPrompter {
             yield Ok(StreamEvent::Done { usage: reply.usage });
         };
         Ok(Box::pin(s))
+    }
+
+    async fn prompt_with(
+        &self,
+        _provider: ProviderKind,
+        _model: &str,
+        _preamble: &str,
+        messages: Vec<Message>,
+    ) -> Result<Completion, PrompterError> {
+        self.calls.lock().unwrap().push(messages);
+        let reply = {
+            let mut replies = self.replies.lock().unwrap();
+            match replies.len() {
+                0 => {
+                    return Err(PrompterError::Streaming(
+                        "scripted prompter has no replies left".into(),
+                    ));
+                }
+                1 => replies[0].clone(),
+                _ => replies.remove(0),
+            }
+        };
+        Ok(Completion {
+            text: reply.full_text(),
+            usage: reply.usage,
+        })
     }
 }

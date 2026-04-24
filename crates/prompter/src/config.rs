@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::{fs, path::Path};
 
+use memory::MemoryConfig;
 use serde::Deserialize;
 
 use crate::PrompterError;
@@ -18,6 +19,10 @@ pub struct Config {
     pub default_user_id: Option<String>,
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Memory subsystem config (persistence, embedder, auto-extraction).
+    /// Omit to use sensible defaults for local development.
+    #[serde(default)]
+    pub memory: MemoryConfig,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
 }
 
@@ -124,6 +129,18 @@ impl ProviderKind {
             Self::Gemini => "gemini",
             Self::Groq => "groq",
             Self::Openai => "openai",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "anthropic" => Some(Self::Anthropic),
+            "cohere" => Some(Self::Cohere),
+            "deepseek" => Some(Self::Deepseek),
+            "gemini" => Some(Self::Gemini),
+            "groq" => Some(Self::Groq),
+            "openai" => Some(Self::Openai),
+            _ => None,
         }
     }
 }

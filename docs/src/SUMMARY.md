@@ -13,6 +13,7 @@
 - [Providers](./configuration/providers.md)
 - [Agents](./configuration/agents.md)
 - [MCP tools](./configuration/mcp.md)
+- [Memory](./configuration/memory.md)
 - [User identification](./configuration/user-id.md)
 
 # Features

@@ -14,7 +14,6 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::routing::get;
-use memory::Embedder;
 use prompter::Prompter;
 use rust_embed::RustEmbed;
 
@@ -24,18 +23,18 @@ use crate::AppState;
 #[folder = "../admin/dist/"]
 struct AdminAssets;
 
-pub fn router<E: Embedder + 'static, P: Prompter + 'static>() -> Router<Arc<AppState<E, P>>> {
+pub fn router<P: Prompter + 'static>() -> Router<Arc<AppState<P>>> {
     Router::new()
-        .route("/", get(index::<E, P>))
-        .route("/{*path}", get(asset::<E, P>))
+        .route("/", get(index::<P>))
+        .route("/{*path}", get(asset::<P>))
 }
 
-async fn index<E: Embedder, P: Prompter>(State(_): State<Arc<AppState<E, P>>>) -> Response {
+async fn index<P: Prompter>(State(_): State<Arc<AppState<P>>>) -> Response {
     serve("index.html")
 }
 
-async fn asset<E: Embedder, P: Prompter>(
-    State(_): State<Arc<AppState<E, P>>>,
+async fn asset<P: Prompter>(
+    State(_): State<Arc<AppState<P>>>,
     Path(path): Path<String>,
     uri: Uri,
 ) -> Response {

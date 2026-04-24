@@ -6,7 +6,9 @@ What's in Coulisse today, and what's coming.
 
 - Multi-agent routing via the `model` field.
 - Per-user conversation history with isolation.
-- Long-term memory with semantic recall.
+- Long-term memory with semantic recall — **persistent via SQLite** and backed by a real embedder (OpenAI or Voyage AI; `hash` fallback for offline dev).
+- Auto-extraction — an optional background task pulls durable facts from each exchange and deduplicates them before storing.
+- Tunable memory budgets (`context_budget`, `memory_budget_fraction`, `recall_k`) in YAML.
 - Multi-backend support (Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq).
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
 - Read-only admin UI at `/admin` for browsing conversations and memories.
@@ -14,6 +16,7 @@ What's in Coulisse today, and what's coming.
 - MCP tool integration over stdio and HTTP, with per-agent filtering.
 - Per-user token rate limiting (hour / day / month).
 - YAML-driven config with startup validation.
+- Docker image with a volume-mounted SQLite store.
 
 ## Planned
 
@@ -25,17 +28,13 @@ Current rate-limit counters live in memory — they reset on restart and don't s
 
 Chaining agents into declarative pipelines (one agent's output feeds the next, with conditional routing) — all configured in YAML rather than app code.
 
-### Persistent memory
+### Vector index for large memory stores
 
-Memory today is in-process and evaporates on restart. A persistent backend (SQLite or a pluggable store) is planned so memory survives restarts.
+Recall currently does a linear cosine scan over all memories for the user. Fine at hundreds-to-low-thousands of memories per user, but a vector index will be needed if per-user memory counts grow into the tens of thousands.
 
-### Real embedder
+### Per-agent memory overrides
 
-The current embedder is a hash-based placeholder for development. Swapping in a real embedding model (provider-hosted or local) is required before production use — and is planned as a built-in option.
-
-### Tunable memory budgets
-
-`context_budget`, `memory_budget_fraction`, and `recall_k` live in code today. They'll move into the YAML config, scoped per-agent.
+Today the `memory:` block is global. A future revision will allow per-agent scoping (different embedders or budgets per agent) for cases where one agent handles long-form research and another handles short user chat.
 
 ---
 
