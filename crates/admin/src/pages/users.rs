@@ -67,6 +67,7 @@ fn UsersTable(users: Vec<UserView>) -> impl IntoView {
                         <Badge>{u.memory_count.to_string()}</Badge>
                     </td>
                     <td class="px-4 py-3 text-right text-sm text-slate-300">{u.score_count}</td>
+                    <td class="px-4 py-3 text-right text-sm text-slate-300">{u.tool_call_count}</td>
                     <td class="px-4 py-3 text-right text-sm text-slate-400">
                         {relative_time(u.last_activity_at)}
                     </td>
@@ -83,6 +84,7 @@ fn UsersTable(users: Vec<UserView>) -> impl IntoView {
                         <th class="px-4 py-2 text-right font-medium">"Messages"</th>
                         <th class="px-4 py-2 text-right font-medium">"Memories"</th>
                         <th class="px-4 py-2 text-right font-medium">"Scores"</th>
+                        <th class="px-4 py-2 text-right font-medium">"Tool calls"</th>
                         <th class="px-4 py-2 text-right font-medium">"Last activity"</th>
                     </tr>
                 </thead>

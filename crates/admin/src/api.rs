@@ -13,6 +13,7 @@ pub struct UserView {
     pub memory_count: u32,
     pub message_count: u32,
     pub score_count: u32,
+    pub tool_call_count: u32,
     pub user_id: Uuid,
 }
 
@@ -41,6 +42,30 @@ pub struct MessageView {
     pub id: String,
     pub role: Role,
     pub token_count: u32,
+    /// Tool invocations that fired during this assistant turn, in fire
+    /// order. Always empty for user and system messages.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallView>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolCallKind {
+    Mcp,
+    Subagent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolCallView {
+    pub args: String,
+    pub created_at: u64,
+    pub error: Option<String>,
+    pub id: String,
+    pub kind: ToolCallKind,
+    pub message_id: String,
+    pub ordinal: u32,
+    pub result: Option<String>,
+    pub tool_name: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

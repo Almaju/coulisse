@@ -5,7 +5,8 @@ use leptos_router::hooks::use_params_map;
 use uuid::Uuid;
 
 use crate::api::{
-    self, CriterionAverage, MemoryView, MessageView, Role, ScoreView, ScoresResponse,
+    self, CriterionAverage, MemoryView, MessageView, Role, ScoreView, ScoresResponse, ToolCallKind,
+    ToolCallView,
 };
 use crate::components::{Badge, Card, CardContent, CardHeader, CardTitle, Empty, Spinner};
 use crate::pages::relative_time;
@@ -223,22 +224,93 @@ fn MessageRow(m: MessageView) -> impl IntoView {
         Role::System => "text-slate-500",
         Role::User => "text-slate-300",
     };
+    // Render tool calls BEFORE the assistant text so the UI walks the turn
+    // in the order it actually happened: user → (tool call → result)* → text.
+    let mut tool_calls = m.tool_calls;
+    tool_calls.sort_by_key(|t| t.ordinal);
+    let tool_call_rows: Vec<_> = tool_calls
+        .into_iter()
+        .map(|t| view! { <ToolCallBlock t=t/> })
+        .collect();
     view! {
-        <div class=format!("rounded-lg border px-4 py-3 {tone}")>
-            <div class="flex items-center justify-between">
-                <span class=format!("text-xs font-semibold uppercase tracking-wide {label_class}")>
-                    {m.role.label()}
-                </span>
-                <div class="flex items-center gap-2 text-xs text-slate-500">
-                    <span>{format!("{} tok", m.token_count)}</span>
-                    <span>"·"</span>
-                    <span>{relative_time(m.created_at)}</span>
+        <div class="space-y-2">
+            {tool_call_rows}
+            <div class=format!("rounded-lg border px-4 py-3 {tone}")>
+                <div class="flex items-center justify-between">
+                    <span class=format!("text-xs font-semibold uppercase tracking-wide {label_class}")>
+                        {m.role.label()}
+                    </span>
+                    <div class="flex items-center gap-2 text-xs text-slate-500">
+                        <span>{format!("{} tok", m.token_count)}</span>
+                        <span>"·"</span>
+                        <span>{relative_time(m.created_at)}</span>
+                    </div>
                 </div>
+                <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm text-slate-200">
+                    {m.content}
+                </pre>
             </div>
-            <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm text-slate-200">
-                {m.content}
-            </pre>
         </div>
+    }
+}
+
+#[component]
+fn ToolCallBlock(t: ToolCallView) -> impl IntoView {
+    let (kind_label, kind_class) = match t.kind {
+        ToolCallKind::Mcp => ("mcp", "bg-amber-950/60 text-amber-300 border-amber-900/60"),
+        ToolCallKind::Subagent => (
+            "subagent",
+            "bg-emerald-950/60 text-emerald-300 border-emerald-900/60",
+        ),
+    };
+    let outcome_label = if t.error.is_some() {
+        "error"
+    } else if t.result.is_some() {
+        "result"
+    } else {
+        "pending"
+    };
+    view! {
+        <details class="rounded-md border border-slate-800 bg-slate-950/80 px-3 py-2 text-sm text-slate-300">
+            <summary class="flex cursor-pointer items-center justify-between gap-2">
+                <div class="flex items-center gap-2 min-w-0">
+                    <span class=format!("rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {kind_class}")>
+                        {kind_label}
+                    </span>
+                    <span class="truncate font-mono text-xs text-slate-200">{t.tool_name.clone()}</span>
+                </div>
+                <span class="text-xs text-slate-500">{outcome_label}</span>
+            </summary>
+            <div class="mt-2 space-y-2">
+                <div>
+                    <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">"Args"</div>
+                    <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">
+                        {t.args}
+                    </pre>
+                </div>
+                {match (t.result, t.error) {
+                    (_, Some(err)) => view! {
+                        <div>
+                            <div class="text-[10px] font-semibold uppercase tracking-wide text-rose-400">"Error"</div>
+                            <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-rose-300">
+                                {err}
+                            </pre>
+                        </div>
+                    }.into_any(),
+                    (Some(res), None) => view! {
+                        <div>
+                            <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">"Result"</div>
+                            <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">
+                                {res}
+                            </pre>
+                        </div>
+                    }.into_any(),
+                    (None, None) => view! {
+                        <div class="text-[10px] italic text-slate-500">"No result recorded (stream may have ended before the tool returned)."</div>
+                    }.into_any(),
+                }}
+            </div>
+        </details>
     }
 }
 
