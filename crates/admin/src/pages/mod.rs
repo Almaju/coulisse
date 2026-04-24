@@ -4,18 +4,17 @@ mod users;
 pub use conversation::ConversationPage;
 pub use users::UsersPage;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// Render a unix-seconds timestamp as a short relative label (e.g. "3m ago").
 /// Good enough for an admin overview; precision doesn't matter.
+///
+/// `std::time::SystemTime` is unimplemented on `wasm32-unknown-unknown` and
+/// panics at runtime if called — we read the clock through `js_sys::Date`
+/// instead.
 pub(crate) fn relative_time(ts: u64) -> String {
     if ts == 0 {
         return "—".into();
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = (js_sys::Date::now() / 1000.0) as u64;
     let diff = now.saturating_sub(ts);
     if diff < 60 {
         format!("{diff}s ago")

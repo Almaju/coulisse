@@ -13,6 +13,7 @@ edition = "2024"
 [dependencies]
 console_error_panic_hook = "0.1"
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+js-sys = "0.3"
 leptos = { version = "0.8", features = ["csr"] }
 leptos_router = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
