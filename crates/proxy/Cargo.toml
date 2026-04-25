@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 agents.workspace = true
 coulisse-core.workspace = true
+language.workspace = true
 limits.workspace = true
 serde.workspace = true
 serde_json.workspace = true

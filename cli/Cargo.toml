@@ -19,6 +19,7 @@ coulisse-core.workspace = true
 experiments.workspace = true
 futures.workspace = true
 judge.workspace = true
+language.workspace = true
 limits.workspace = true
 memory.workspace = true
 proxy.workspace = true
