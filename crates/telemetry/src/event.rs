@@ -1,9 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use coulisse_core::TurnId;
 use memory::UserId;
 use serde::{Deserialize, Serialize};
 
-use crate::id::{EventId, TurnId};
+use crate::id::EventId;
 
 /// A single telemetry row. All events emitted while handling one HTTP
 /// request share the same `correlation_id`. `parent_id` nests an event

@@ -9,8 +9,9 @@ mod event;
 mod id;
 mod sink;
 
+pub use coulisse_core::TurnId;
 pub use ctx::Ctx;
 pub use error::TelemetryError;
 pub use event::{Event, EventKind};
-pub use id::{EventId, TurnId};
+pub use id::EventId;
 pub use sink::Sink;

@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+coulisse-core.workspace = true
 reqwest = { version = "0.13", default-features = false }
 rig-core.workspace = true
 serde = { workspace = true, features = ["derive"] }

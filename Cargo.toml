@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/cli",
     "crates/config",
+    "crates/core",
     "crates/judge",
     "crates/limits",
     "crates/memory",
@@ -23,6 +24,7 @@ version = "0.1.0"
 async-stream = "0.3"
 axum = "0.8"
 config = { path = "crates/config" }
+coulisse-core = { path = "crates/core" }
 futures = "0.3"
 judge = { path = "crates/judge" }
 limits = { path = "crates/limits" }

@@ -1,6 +1,7 @@
+use coulisse_core::TurnId;
 use memory::UserId;
 
-use crate::id::{EventId, TurnId};
+use crate::id::EventId;
 
 /// Request-scoped telemetry context threaded through the prompter so that
 /// nested spans (subagent calls, inner MCP tool calls, LLM provider calls)

@@ -1,3 +1,4 @@
+use coulisse_core::TurnId;
 use memory::UserId;
 use sqlx::Row;
 use sqlx::SqlitePool;
@@ -6,7 +7,7 @@ use uuid::Uuid;
 
 use crate::error::TelemetryError;
 use crate::event::{Event, EventKind};
-use crate::id::{EventId, TurnId};
+use crate::id::EventId;
 
 const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
 const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
