@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use config::ExperimentConfig;
+use experiments::ExperimentConfig;
 use memory::Store;
 use telemetry::Sink as TelemetrySink;
 

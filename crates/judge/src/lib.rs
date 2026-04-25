@@ -7,6 +7,8 @@
 //! preamble and forces a JSON response shape internally so rubrics stay free
 //! of format/scale boilerplate.
 
+mod config;
 mod judge;
 
+pub use config::JudgeConfig;
 pub use judge::{Judge, JudgeBuildError, spawn_score};

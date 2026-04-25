@@ -6,7 +6,7 @@ version.workspace = true
 
 [dependencies]
 agents.workspace = true
-config.workspace = true
+backends.workspace = true
 memory.workspace = true
 rand = "0.8"
 serde = { workspace = true, features = ["derive"] }

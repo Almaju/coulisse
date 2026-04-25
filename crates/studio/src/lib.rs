@@ -6,11 +6,13 @@
 //! [`router`] with the proxy router into the same axum service.
 
 mod auth;
+mod config;
 mod router;
 mod state;
 mod templates;
 mod views;
 
 pub use auth::{OidcBuildError, OidcRuntime, StudioAuth, StudioCredentials};
+pub use config::{StudioBasicConfig, StudioConfig, StudioOidcConfig};
 pub use router::router;
 pub use state::StudioState;

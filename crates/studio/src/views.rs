@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use config::ExperimentConfig;
+use experiments::{ExperimentConfig, Strategy};
 use memory::{
     Memory, MemoryKind, Role, Score, StoredMessage, StoredToolCall, ToolCallKind, UserSummary,
 };
@@ -47,7 +47,7 @@ impl ExperimentRow {
     ) -> Self {
         let total: f32 = exp.variants.iter().map(|v| v.weight).sum();
         let primary = exp.primary.as_deref();
-        let show_scores = matches!(exp.strategy, config::Strategy::Bandit);
+        let show_scores = matches!(exp.strategy, Strategy::Bandit);
         let leader = if show_scores {
             exp.variants
                 .iter()
@@ -97,9 +97,9 @@ impl ExperimentRow {
             show_scores,
             sticky_by_user: exp.sticky_by_user,
             strategy: match exp.strategy {
-                config::Strategy::Bandit => "bandit",
-                config::Strategy::Shadow => "shadow",
-                config::Strategy::Split => "split",
+                Strategy::Bandit => "bandit",
+                Strategy::Shadow => "shadow",
+                Strategy::Split => "split",
             },
             variants,
         }

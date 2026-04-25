@@ -4,7 +4,6 @@ members = [
     "crates/agents",
     "crates/backends",
     "crates/cli",
-    "crates/config",
     "crates/core",
     "crates/experiments",
     "crates/judge",
@@ -27,7 +26,6 @@ agents = { path = "crates/agents" }
 async-stream = "0.3"
 axum = "0.8"
 backends = { path = "crates/backends" }
-config = { path = "crates/config" }
 coulisse-core = { path = "crates/core" }
 experiments = { path = "crates/experiments" }
 futures = "0.3"

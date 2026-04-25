@@ -2,19 +2,20 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use agents::{Agents, RigAgents};
+use agents::{Agents, BootConfig, RigAgents};
 use axum::Router;
 use axum::response::Redirect;
 use axum::routing::get;
-use config::{Config, JudgeConfig, ProviderKind, StudioConfig};
-use judge::Judge;
+use backends::ProviderKind;
+use coulisse::config::Config;
+use coulisse::server::{self, AppState};
+use experiments::Strategy;
+use judge::{Judge, JudgeConfig};
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
-use studio::{OidcRuntime, StudioAuth, StudioCredentials, StudioState};
+use studio::{OidcRuntime, StudioAuth, StudioConfig, StudioCredentials, StudioState};
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
-
-use coulisse::server::{self, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,7 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
     let prompter = Arc::new(
         RigAgents::new(
-            config,
+            BootConfig {
+                agents: config.agents,
+                experiments: config.experiments,
+                mcp: config.mcp,
+                providers: config.providers,
+            },
             Some(Arc::clone(&telemetry)),
             Some(Arc::clone(&memory)),
         )
@@ -106,9 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "  experiment: {} (strategy={}, sticky_by_user={}, variants=[{}])",
             exp.name,
             match exp.strategy {
-                config::Strategy::Bandit => "bandit",
-                config::Strategy::Shadow => "shadow",
-                config::Strategy::Split => "split",
+                Strategy::Bandit => "bandit",
+                Strategy::Shadow => "shadow",
+                Strategy::Split => "split",
             },
             exp.sticky_by_user,
             variants.join(", "),

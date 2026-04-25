@@ -3,6 +3,7 @@
 //! top-to-bottom as the request-flow spec — limits → context → route
 //! → call → score, with off-path work spawned as background tasks.
 
+pub mod config;
 pub mod error;
 pub mod server;
 pub mod shadow;

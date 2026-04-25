@@ -21,7 +21,7 @@ use serde_json::json;
 use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
-use config::{AgentConfig, Config, McpServerConfig};
+use crate::config::{AgentConfig, McpServerConfig};
 use coulisse_core::{OneShotError, OneShotPrompt};
 use experiments::ExperimentRouter;
 use memory::Store;
@@ -166,14 +166,25 @@ pub trait Agents: Send + Sync {
     ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
 }
 
+/// Bundled inputs for `RigAgents::new`. Grouped into one struct so cli
+/// can hand each YAML slice to the right field without a long argument
+/// list, and so adding a new optional input doesn't break every call site.
+pub struct BootConfig {
+    pub agents: Vec<AgentConfig>,
+    pub experiments: Vec<experiments::ExperimentConfig>,
+    pub mcp: HashMap<String, McpServerConfig>,
+    pub providers: HashMap<ProviderKind, backends::ProviderConfig>,
+}
+
 impl RigAgents {
-    /// Build a prompter from `config`, optionally wired to a telemetry
-    /// sink. When `telemetry` is `Some`, every tool invocation at any depth
-    /// (MCP or subagent) is recorded as a `ToolCall` event so the studio UI
-    /// can reconstruct nested subagent trees. Tests that don't care pass
-    /// `None` and pay no observability cost.
+    /// Build agents from the YAML slices declared under `agents:`,
+    /// `experiments:`, `mcp:`, and `providers:`. When `telemetry` is
+    /// `Some`, every tool invocation at any depth (MCP or subagent) is
+    /// recorded as a `ToolCall` event so the studio UI can reconstruct
+    /// nested subagent trees. Tests that don't care pass `None` and pay
+    /// no observability cost.
     pub async fn new(
-        config: Config,
+        config: BootConfig,
         telemetry: Option<Arc<TelemetrySink>>,
         score_store: Option<Arc<Store>>,
     ) -> Result<Self, AgentsError> {

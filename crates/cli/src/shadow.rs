@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use agents::{Agents, Message as AgentMessage};
-use config::ExperimentConfig;
+use experiments::ExperimentConfig;
 use judge::{Judge, spawn_score};
 use memory::{MessageId, Store, UserId};
 use telemetry::{Ctx as TelemetryCtx, TurnId};

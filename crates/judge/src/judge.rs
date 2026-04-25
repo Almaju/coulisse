@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use agents::{Agents, Message as AgentMessage, Role as AgentRole};
-use config::{JudgeConfig, ProviderKind};
+use backends::ProviderKind;
 use memory::{MessageId, Score, Store, UserId};
 use serde::Deserialize;
+
+use crate::JudgeConfig;
 
 /// Runtime judge built from YAML and validated at startup. Holds the
 /// prebuilt preamble so the hot path does zero string construction before

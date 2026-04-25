@@ -7,7 +7,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use config::Strategy;
+use experiments::Strategy;
 use judge::{Judge, spawn_score};
 use limits::Tracker;
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};

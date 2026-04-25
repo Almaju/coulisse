@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use crate::StudioOidcConfig;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -24,7 +25,6 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum_oidc::{EmptyAdditionalClaims, OidcClient};
 use base64::Engine;
-use config::StudioOidcConfig;
 use http::Uri;
 use thiserror::Error;
 

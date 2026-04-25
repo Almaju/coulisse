@@ -11,15 +11,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use agents::AgentConfig;
 use agents::testing::{ScriptedAgents, ScriptedReply};
 use agents::{ToolCallKind, Usage};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
-use config::{AgentConfig, ExperimentConfig, JudgeConfig, ProviderKind, Strategy, Variant};
+use backends::ProviderKind;
 use coulisse::server::AppState;
+use experiments::{ExperimentConfig, Strategy, Variant};
 use http_body_util::BodyExt;
 use judge::Judge;
+use judge::JudgeConfig;
 use limits::Tracker;
 use memory::{
     BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Score, Store, UserId,

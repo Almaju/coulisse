@@ -6,13 +6,13 @@ use std::sync::Mutex;
 
 use async_stream::stream;
 
-use config::{AgentConfig, ExperimentConfig, ProviderKind};
+use backends::ProviderKind;
 use coulisse_core::{OneShotError, OneShotPrompt};
-use experiments::ExperimentRouter;
+use experiments::{ExperimentConfig, ExperimentRouter};
 
 use crate::{
-    Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent, ToolCallKind,
-    Usage,
+    AgentConfig, Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent,
+    ToolCallKind, Usage,
 };
 
 /// A `Agents` that replays a scripted reply. Each call to `complete` or
