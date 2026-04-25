@@ -15,9 +15,10 @@ use memory::{
     ToolCallKind as MemToolCallKind, UserId,
 };
 
-use crate::chat::{
+use proxy::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
 };
+
 use crate::server::{AppState, judges_for_agent};
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps

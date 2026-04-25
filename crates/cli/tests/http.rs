@@ -17,13 +17,13 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
 use config::{AgentConfig, ExperimentConfig, JudgeConfig, ProviderKind, Strategy, Variant};
+use coulisse::server::AppState;
 use http_body_util::BodyExt;
 use judge::Judge;
 use limits::Tracker;
 use memory::{
     BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Score, Store, UserId,
 };
-use proxy::AppState;
 use tower::ServiceExt;
 
 fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
@@ -83,7 +83,7 @@ async fn make_app_with_experiments(
         telemetry,
         tracker,
     });
-    (proxy::router(Arc::clone(&state)), state)
+    (coulisse::server::router(Arc::clone(&state)), state)
 }
 
 fn json_request(body: serde_json::Value) -> Request<Body> {

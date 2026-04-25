@@ -10,10 +10,11 @@ use config::{Config, JudgeConfig, ProviderKind, StudioConfig};
 use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
-use proxy::AppState;
 use studio::{OidcRuntime, StudioAuth, StudioCredentials, StudioState};
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
+
+use coulisse::server::{self, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -132,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // inner `/` route at `/studio`, but a request to `/studio/` returns
     // 404. Redirect the trailing-slash form so bookmarks don't break.
     let app = Router::new()
-        .merge(proxy::router(proxy_state))
+        .merge(server::router(proxy_state))
         .route("/studio/", get(|| async { Redirect::permanent("/studio") }))
         .nest("/studio", studio::router(studio_state));
     let listener = TcpListener::bind(addr).await?;

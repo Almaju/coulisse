@@ -13,8 +13,9 @@ use limits::Tracker;
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use telemetry::{Ctx as TelemetryCtx, Event, EventKind, Sink as TelemetrySink, TurnId};
 
-use crate::ChatCompletionRequest;
-use crate::chat::Message as ChatMessage;
+use proxy::ChatCompletionRequest;
+use proxy::Message as ChatMessage;
+
 use crate::error::ApiError;
 use crate::shadow::spawn_shadow_runs;
 use crate::stream::{StreamContext, sse_response};

@@ -135,14 +135,14 @@ fn clamp_u32(n: u64) -> u32 {
     n.min(u32::MAX as u64) as u32
 }
 
-pub(crate) fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-pub(crate) fn response_id(created: u64) -> String {
+pub fn response_id(created: u64) -> String {
     format!("chatcmpl-coulisse-{created}")
 }
 

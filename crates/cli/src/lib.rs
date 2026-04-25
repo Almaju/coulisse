@@ -1,0 +1,9 @@
+//! Coulisse CLI: orchestrates every feature crate behind one OpenAI-
+//! compatible HTTP server. The chat handler in `server` reads
+//! top-to-bottom as the request-flow spec — limits → context → route
+//! → call → score, with off-path work spawned as background tasks.
+
+pub mod error;
+pub mod server;
+pub mod shadow;
+pub mod stream;
