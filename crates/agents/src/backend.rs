@@ -3,14 +3,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use backends::{Backend, Backends, ProviderKind};
-use futures::stream::{Stream, StreamExt};
-use rig::agent::{MultiTurnStreamItem, PromptRequest};
-use rig::client::CompletionClient;
-use rig::completion::{
-    CompletionModel, GetTokenUsage, Message as RigMessage, PromptError, ToolDefinition,
+use backends::{
+    Backends, Completion, CompletionStream, Conversation, Message, ProviderKind, Role, ToolCallKind,
 };
-use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingPrompt};
+use coulisse_core::{OneShotError, OneShotPrompt};
+use experiments::ExperimentRouter;
+use memory::Store;
+use rig::completion::ToolDefinition;
 use rig::tool::rmcp::McpTool;
 use rig::tool::{ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
@@ -21,14 +20,9 @@ use serde_json::json;
 use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
+use crate::AgentsError;
 use crate::config::{AgentConfig, McpServerConfig};
-use coulisse_core::{OneShotError, OneShotPrompt};
-use experiments::ExperimentRouter;
-use memory::Store;
 
-use crate::{AgentsError, Completion, Usage};
-
-const MAX_TURNS: usize = 8;
 /// How many nested subagent calls are allowed before the hop limit kicks in.
 /// A→B→A→… is cut off once the depth reaches this number. Four levels is
 /// deep enough for realistic orchestrator → specialist → sub-specialist
@@ -65,53 +59,6 @@ struct McpServer {
     sink: ServerSink,
     tools: HashMap<String, rmcp::model::Tool>,
 }
-
-#[derive(Clone, Debug)]
-pub struct Message {
-    pub content: String,
-    pub role: Role,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Role {
-    Assistant,
-    System,
-    User,
-}
-
-/// One event in a streamed completion. `Delta` carries an incremental piece of
-/// the assistant's response; `Done` is yielded at the end with cumulative
-/// token usage. `ToolCall` and `ToolResult` expose rig's multi-turn tool
-/// dispatch so callers (the studio UI, observability sinks) can record what
-/// the agent tried and what came back. Correlate the pair by `call_id`.
-#[derive(Clone, Debug)]
-pub enum StreamEvent {
-    Delta(String),
-    Done {
-        usage: Usage,
-    },
-    ToolCall {
-        args: String,
-        call_id: String,
-        kind: ToolCallKind,
-        tool_name: String,
-    },
-    ToolResult {
-        call_id: String,
-        error: Option<String>,
-        result: Option<String>,
-    },
-}
-
-/// How a tool invocation was serviced — an MCP server, or another agent
-/// exposed as a tool (subagent).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ToolCallKind {
-    Mcp,
-    Subagent,
-}
-
-pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, AgentsError>> + Send>>;
 
 /// Result of `AgentsInner::build_tools`: the full `ToolDyn` list to
 /// hand to rig, plus a snapshot of subagent names so the streaming
@@ -387,15 +334,10 @@ impl AgentsInner {
         })?;
         let (tools, _) = self.build_tools(agent, depth, ctx)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
-        let result = match backend {
-            Backend::Anthropic(c) => conversation.send(c, &agent.model, tools).await,
-            Backend::Cohere(c) => conversation.send(c, &agent.model, tools).await,
-            Backend::Deepseek(c) => conversation.send(c, &agent.model, tools).await,
-            Backend::Gemini(c) => conversation.send(c, &agent.model, tools).await,
-            Backend::Groq(c) => conversation.send(c, &agent.model, tools).await,
-            Backend::Openai(c) => conversation.send(c, &agent.model, tools).await,
-        };
-        result.map_err(AgentsError::from)
+        backend
+            .send(conversation, &agent.model, tools)
+            .await
+            .map_err(AgentsError::from)
     }
 
     async fn complete_streaming_with_depth(
@@ -422,38 +364,10 @@ impl AgentsInner {
         })?;
         let (tools, subagent_names) = self.build_tools(agent, depth, ctx)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
-        match backend {
-            Backend::Anthropic(c) => {
-                conversation
-                    .stream(c, &agent.model, tools, subagent_names)
-                    .await
-            }
-            Backend::Cohere(c) => {
-                conversation
-                    .stream(c, &agent.model, tools, subagent_names)
-                    .await
-            }
-            Backend::Deepseek(c) => {
-                conversation
-                    .stream(c, &agent.model, tools, subagent_names)
-                    .await
-            }
-            Backend::Gemini(c) => {
-                conversation
-                    .stream(c, &agent.model, tools, subagent_names)
-                    .await
-            }
-            Backend::Groq(c) => {
-                conversation
-                    .stream(c, &agent.model, tools, subagent_names)
-                    .await
-            }
-            Backend::Openai(c) => {
-                conversation
-                    .stream(c, &agent.model, tools, subagent_names)
-                    .await
-            }
-        }
+        backend
+            .stream(conversation, &agent.model, tools, subagent_names)
+            .await
+            .map_err(AgentsError::from)
     }
 
     async fn prompt_with(
@@ -471,15 +385,10 @@ impl AgentsInner {
                 provider,
             })?;
         let conversation = Conversation::from_messages(messages, preamble)?;
-        let result = match backend {
-            Backend::Anthropic(c) => conversation.send(c, model, vec![]).await,
-            Backend::Cohere(c) => conversation.send(c, model, vec![]).await,
-            Backend::Deepseek(c) => conversation.send(c, model, vec![]).await,
-            Backend::Gemini(c) => conversation.send(c, model, vec![]).await,
-            Backend::Groq(c) => conversation.send(c, model, vec![]).await,
-            Backend::Openai(c) => conversation.send(c, model, vec![]).await,
-        };
-        result.map_err(AgentsError::from)
+        backend
+            .send(conversation, model, vec![])
+            .await
+            .map_err(AgentsError::from)
     }
 }
 
@@ -747,162 +656,6 @@ impl McpServer {
             tools,
         })
     }
-}
-
-struct Conversation {
-    history: Vec<RigMessage>,
-    preamble: String,
-    prompt: RigMessage,
-}
-
-impl Conversation {
-    fn from_messages(messages: Vec<Message>, agent_preamble: &str) -> Result<Self, AgentsError> {
-        let mut preamble_parts = Vec::new();
-        if !agent_preamble.is_empty() {
-            preamble_parts.push(agent_preamble.to_string());
-        }
-        let mut turns: Vec<RigMessage> = Vec::new();
-        for m in messages {
-            match m.role {
-                Role::Assistant => turns.push(RigMessage::assistant(m.content)),
-                Role::System => {
-                    if !m.content.is_empty() {
-                        preamble_parts.push(m.content);
-                    }
-                }
-                Role::User => turns.push(RigMessage::user(m.content)),
-            }
-        }
-        let prompt = turns.pop().ok_or(AgentsError::EmptyConversation)?;
-        Ok(Self {
-            history: turns,
-            preamble: preamble_parts.join("\n\n"),
-            prompt,
-        })
-    }
-
-    async fn send<C>(
-        self,
-        client: &C,
-        model: &str,
-        tools: Vec<Box<dyn ToolDyn>>,
-    ) -> Result<Completion, PromptError>
-    where
-        C: CompletionClient,
-        C::CompletionModel: 'static,
-    {
-        let mut builder = client.agent(model);
-        if !self.preamble.is_empty() {
-            builder = builder.preamble(&self.preamble);
-        }
-        let agent = if tools.is_empty() {
-            builder.build()
-        } else {
-            builder.tools(tools).build()
-        };
-        let response = PromptRequest::from_agent(&agent, self.prompt)
-            .with_history(self.history)
-            .max_turns(MAX_TURNS)
-            .extended_details()
-            .await?;
-        Ok(Completion {
-            text: response.output,
-            usage: response.usage.into(),
-        })
-    }
-
-    async fn stream<C>(
-        self,
-        client: &C,
-        model: &str,
-        tools: Vec<Box<dyn ToolDyn>>,
-        subagent_names: Arc<std::collections::HashSet<String>>,
-    ) -> Result<CompletionStream, AgentsError>
-    where
-        C: CompletionClient,
-        C::CompletionModel: 'static,
-        <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
-    {
-        let mut builder = client.agent(model);
-        if !self.preamble.is_empty() {
-            builder = builder.preamble(&self.preamble);
-        }
-        let agent = if tools.is_empty() {
-            builder.build()
-        } else {
-            builder.tools(tools).build()
-        };
-        let inner = agent
-            .stream_prompt(self.prompt)
-            .with_history(self.history)
-            .multi_turn(MAX_TURNS)
-            .await;
-        let mapped = inner.filter_map(move |item| {
-            let subagent_names = Arc::clone(&subagent_names);
-            async move {
-                match item {
-                    Ok(MultiTurnStreamItem::StreamAssistantItem(
-                        StreamedAssistantContent::Text(t),
-                    )) => Some(Ok(StreamEvent::Delta(t.text))),
-                    Ok(MultiTurnStreamItem::StreamAssistantItem(
-                        StreamedAssistantContent::ToolCall {
-                            tool_call,
-                            internal_call_id,
-                        },
-                    )) => {
-                        let tool_name = tool_call.function.name.clone();
-                        let kind = if subagent_names.contains(&tool_name) {
-                            ToolCallKind::Subagent
-                        } else {
-                            ToolCallKind::Mcp
-                        };
-                        let args = tool_call.function.arguments.to_string();
-                        Some(Ok(StreamEvent::ToolCall {
-                            args,
-                            call_id: internal_call_id,
-                            kind,
-                            tool_name,
-                        }))
-                    }
-                    Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
-                        tool_result,
-                        internal_call_id,
-                    })) => {
-                        let result = flatten_tool_result(&tool_result);
-                        Some(Ok(StreamEvent::ToolResult {
-                            call_id: internal_call_id,
-                            error: None,
-                            result: Some(result),
-                        }))
-                    }
-                    Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
-                        usage: fr.usage().into(),
-                    })),
-                    Ok(_) => None,
-                    Err(e) => Some(Err(AgentsError::Streaming(e.to_string()))),
-                }
-            }
-        });
-        Ok(Box::pin(mapped))
-    }
-}
-
-/// Collapse rig's `ToolResult.content` (a `OneOrMany<ToolResultContent>`) into
-/// a single plain-text string for persistence. Text parts are joined; images
-/// are rendered as a stable `"<image>"` placeholder so the studio UI at least
-/// shows that an image was returned. Lossy on purpose — the studio view is for
-/// human debugging, not verbatim replay.
-fn flatten_tool_result(tool_result: &rig::completion::message::ToolResult) -> String {
-    use rig::completion::message::ToolResultContent;
-    tool_result
-        .content
-        .iter()
-        .map(|part| match part {
-            ToolResultContent::Text(t) => t.text.clone(),
-            ToolResultContent::Image(_) => "<image>".to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]

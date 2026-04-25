@@ -2,6 +2,7 @@ use agents::{AgentsError, LanguageTagError};
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use backends::CallError;
 use limits::LimitError;
 use memory::MemoryError;
 use thiserror::Error;
@@ -46,7 +47,9 @@ impl IntoResponse for ApiError {
             }
             Self::Memory(_) => (StatusCode::INTERNAL_SERVER_ERROR, "memory_error"),
             Self::Agents(err) => match err {
-                AgentsError::EmptyConversation => (StatusCode::BAD_REQUEST, "invalid_request"),
+                AgentsError::Backend(CallError::EmptyConversation) => {
+                    (StatusCode::BAD_REQUEST, "invalid_request")
+                }
                 AgentsError::UnknownAgent(_) => (StatusCode::NOT_FOUND, "not_found"),
                 _ => (StatusCode::BAD_GATEWAY, "upstream_error"),
             },

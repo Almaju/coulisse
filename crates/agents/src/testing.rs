@@ -151,9 +151,9 @@ impl ScriptedAgents {
             .push(agent_name.to_string());
         let mut replies = self.replies.lock().unwrap();
         match replies.len() {
-            0 => Err(AgentsError::Streaming(
+            0 => Err(AgentsError::Backend(backends::CallError::Streaming(
                 "scripted prompter has no replies left".into(),
-            )),
+            ))),
             1 => Ok(replies[0].clone()),
             _ => Ok(replies.remove(0)),
         }
@@ -227,9 +227,9 @@ impl Agents for ScriptedAgents {
             let mut replies = self.replies.lock().unwrap();
             match replies.len() {
                 0 => {
-                    return Err(AgentsError::Streaming(
+                    return Err(AgentsError::Backend(backends::CallError::Streaming(
                         "scripted prompter has no replies left".into(),
-                    ));
+                    )));
                 }
                 1 => replies[0].clone(),
                 _ => replies.remove(0),

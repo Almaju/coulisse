@@ -1,16 +1,24 @@
-//! Per-provider LLM client wrappers.
+//! Per-provider LLM client wrappers and the dispatch that hides them.
 //!
 //! `backends` is the only crate that depends on Rig. It owns the
 //! `ProviderKind` enum (the YAML name of a provider), `ProviderConfig`
-//! (its API key), and the `Backend` enum that wraps one Rig client per
-//! provider. Higher-level orchestration (agent loops, tool dispatch,
-//! streaming) lives in `agents`; this crate is intentionally a thin
-//! adapter so swapping a provider library only touches one crate.
+//! (its API key), the `Backend` enum that wraps one Rig client per
+//! provider, and the `send`/`stream` methods that match on the variant
+//! internally so callers never have to. Conversation packaging
+//! (`Conversation::from_messages`) and the streaming event/usage types
+//! also live here — they're provider-shaped, not agent-shaped.
+
+mod conversation;
 
 use std::collections::HashMap;
 
 use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
 use serde::Deserialize;
+
+pub use conversation::{
+    CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, StreamEvent,
+    ToolCallKind, Usage,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "lowercase")]

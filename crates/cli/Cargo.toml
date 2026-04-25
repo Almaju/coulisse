@@ -15,6 +15,7 @@ agents.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 backends.workspace = true
+coulisse-core.workspace = true
 experiments.workspace = true
 futures.workspace = true
 judge.workspace = true
