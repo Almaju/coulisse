@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agents::{LanguageTag, LanguageTagError};
+use coulisse_core::UserId;
 use limits::{LimitError, RequestLimits};
-use memory::UserId;
 use serde::{Deserialize, Serialize};
 
 use crate::{Tool, ToolCall, ToolChoice};
