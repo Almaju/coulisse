@@ -152,6 +152,17 @@ pub struct Score {
     pub user_id: UserId,
 }
 
+/// Per-agent score summary aggregated over a time window. One row per
+/// agent that has any score in the window; absence means "not enough
+/// data". Produced by storage queries (e.g. `memory::Store`) and consumed
+/// by routing logic (e.g. `experiments`).
+#[derive(Clone, Debug)]
+pub struct AgentScoreSummary {
+    pub agent_name: String,
+    pub mean: f32,
+    pub samples: u32,
+}
+
 impl Score {
     #[allow(clippy::too_many_arguments)]
     pub fn new(

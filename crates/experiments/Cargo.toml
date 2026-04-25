@@ -1,0 +1,9 @@
+[package]
+name = "experiments"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+coulisse-core.workspace = true
+serde = { workspace = true, features = ["derive"] }

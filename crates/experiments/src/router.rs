@@ -1,17 +1,9 @@
-//! Experiment routing. Resolves an addressable name (agent or
-//! experiment) to a concrete agent for a given user.
-//!
-//! Sticky-by-user routing uses an FNV-1a hash of `(user_id, experiment
-//! name)` mod the cumulative variant weights, so the same user always
-//! lands on the same variant across restarts without any DB writes.
-//! Adding or removing a variant reshuffles users — that's the price of
-//! statelessness, and it's documented behaviour.
-
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use config::{ExperimentConfig, Strategy};
-use memory::{AgentScoreSummary, UserId};
+use coulisse_core::{AgentScoreSummary, UserId};
+
+use crate::{ExperimentConfig, Strategy, Variant};
 
 /// Default exploration probability for the bandit strategy when not
 /// overridden in YAML. 10% is a common pragma — enough to surface a
@@ -126,7 +118,7 @@ impl ExperimentRouter {
     pub fn shadow_variants<'a>(
         &'a self,
         experiment: &'a ExperimentConfig,
-    ) -> impl Iterator<Item = &'a config::Variant> + 'a {
+    ) -> impl Iterator<Item = &'a Variant> + 'a {
         let primary = match experiment.strategy {
             Strategy::Shadow => experiment.primary.as_deref(),
             _ => None,
@@ -165,7 +157,7 @@ fn pick_variant<'a>(
     experiment: &'a ExperimentConfig,
     user_id: UserId,
     scores: &[AgentScoreSummary],
-) -> &'a config::Variant {
+) -> &'a Variant {
     match experiment.strategy {
         Strategy::Split => weighted_pick(experiment, user_id),
         Strategy::Shadow => shadow_pick(experiment),
@@ -173,7 +165,7 @@ fn pick_variant<'a>(
     }
 }
 
-fn shadow_pick(experiment: &ExperimentConfig) -> &config::Variant {
+fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
     // Validation guarantees `primary` is present and references one of
     // the variants for shadow strategy.
     let primary = experiment
@@ -196,9 +188,9 @@ fn bandit_pick<'a>(
     experiment: &'a ExperimentConfig,
     user_id: UserId,
     scores: &[AgentScoreSummary],
-) -> &'a config::Variant {
+) -> &'a Variant {
     let min_samples = experiment.min_samples.unwrap_or(BANDIT_DEFAULT_MIN_SAMPLES);
-    let forced: Vec<&config::Variant> = experiment
+    let forced: Vec<&Variant> = experiment
         .variants
         .iter()
         .filter(|v| {
@@ -220,7 +212,7 @@ fn bandit_pick<'a>(
     };
     let bucket = (seed as f64 / u64::MAX as f64) as f32;
     if bucket < epsilon {
-        let arms: Vec<&config::Variant> = experiment.variants.iter().collect();
+        let arms: Vec<&Variant> = experiment.variants.iter().collect();
         return uniform_hash_pick(&arms, user_id, &experiment.name);
     }
     experiment
@@ -244,17 +236,13 @@ fn bandit_pick<'a>(
         .expect("validation rejects experiments with no variants")
 }
 
-fn uniform_hash_pick<'a>(
-    arms: &[&'a config::Variant],
-    user_id: UserId,
-    name: &str,
-) -> &'a config::Variant {
+fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &'a Variant {
     let seed = sticky_seed(user_id, name);
     let idx = (seed % arms.len() as u64) as usize;
     arms[idx]
 }
 
-fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &config::Variant {
+fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
     // Validation guarantees at least one variant with strictly positive
     // weight, so the cumulative total is finite and `> 0.0` and the
     // index lookup below cannot fall off the end.
@@ -325,7 +313,6 @@ impl Fnv64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::Variant;
 
     fn experiment(sticky: bool, weights: &[(&str, f32)]) -> ExperimentConfig {
         ExperimentConfig {

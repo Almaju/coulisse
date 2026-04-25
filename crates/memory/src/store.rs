@@ -463,16 +463,7 @@ pub struct AssembledContext {
     pub messages: Vec<Message>,
 }
 
-/// Per-agent score summary returned by `Store::mean_scores_by_agent`.
-/// One row per `agent_name` that has any matching score within the
-/// requested window — agents with zero samples don't appear, so callers
-/// must treat absence as "not enough data, explore".
-#[derive(Clone, Debug)]
-pub struct AgentScoreSummary {
-    pub agent_name: String,
-    pub mean: f32,
-    pub samples: u32,
-}
+pub use coulisse_core::AgentScoreSummary;
 
 /// Aggregate view of a single user's stored data. Returned by
 /// `Store::list_user_summaries` for studio-style overviews.

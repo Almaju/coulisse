@@ -23,9 +23,9 @@ use tokio::process::Command;
 
 use config::{AgentConfig, Config, McpServerConfig, ProviderKind};
 use coulisse_core::{OneShotError, OneShotPrompt};
+use experiments::ExperimentRouter;
 use memory::Store;
 
-use crate::experiment::ExperimentRouter;
 use crate::{Completion, PrompterError, Usage};
 
 const MAX_TURNS: usize = 8;

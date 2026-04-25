@@ -8,6 +8,7 @@ version.workspace = true
 async-stream.workspace = true
 config.workspace = true
 coulisse-core.workspace = true
+experiments.workspace = true
 futures.workspace = true
 memory.workspace = true
 oxilangtag.workspace = true

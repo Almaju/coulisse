@@ -8,8 +8,8 @@ use async_stream::stream;
 
 use config::{AgentConfig, ExperimentConfig, ProviderKind};
 use coulisse_core::{OneShotError, OneShotPrompt};
+use experiments::ExperimentRouter;
 
-use crate::experiment::ExperimentRouter;
 use crate::{
     Completion, CompletionStream, Message, Prompter, PrompterError, Role, StreamEvent,
     ToolCallKind, Usage,

@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+experiments.workspace = true
 memory.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
