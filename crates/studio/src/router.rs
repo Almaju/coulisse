@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::auth::{StudioAuth, require_basic_auth};
 use crate::state::StudioState;
-use crate::templates::{ConversationPage, EventsFragment, UsersPage};
+use crate::templates::{ConversationPage, EventsFragment, ExperimentsPage, UsersPage};
 use crate::views::{ScoresPanel, event_rows, message_rows};
 
 /// Build the studio router. Auth layers (Basic or OIDC) are attached here
@@ -29,6 +29,7 @@ use crate::views::{ScoresPanel, event_rows, message_rows};
 pub fn router(state: Arc<StudioState>) -> Router {
     let routes = Router::new()
         .route("/", get(users))
+        .route("/experiments", get(experiments))
         .route("/users/{user_id}", get(conversation))
         .route("/users/{user_id}/turns/{turn_id}/events", get(turn_events))
         .with_state(Arc::clone(&state));
@@ -93,6 +94,34 @@ async fn conversation(
         scores,
         user_id: user_id.0.to_string(),
     })
+}
+
+async fn experiments(State(state): State<Arc<StudioState>>) -> Result<Html<String>, StudioError> {
+    let mut rows: Vec<crate::views::ExperimentRow> = Vec::with_capacity(state.experiments.len());
+    for exp in &state.experiments {
+        let mut scores: std::collections::HashMap<String, (f32, u32)> =
+            std::collections::HashMap::new();
+        if let Some(metric) = exp.metric.as_deref()
+            && let Some((judge, criterion)) = metric.split_once('.')
+        {
+            let window = exp.bandit_window_seconds.unwrap_or(7 * 24 * 60 * 60);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let since = now.saturating_sub(window);
+            for s in state
+                .memory
+                .mean_scores_by_agent(judge, criterion, since)
+                .await?
+            {
+                scores.insert(s.agent_name, (s.mean, s.samples));
+            }
+        }
+        rows.push(crate::views::ExperimentRow::build(exp, &scores));
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    render(ExperimentsPage { experiments: rows })
 }
 
 async fn turn_events(

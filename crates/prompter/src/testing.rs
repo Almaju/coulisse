@@ -5,20 +5,24 @@ use std::sync::Mutex;
 
 use async_stream::stream;
 
-use config::{AgentConfig, ProviderKind};
+use config::{AgentConfig, ExperimentConfig, ProviderKind};
 
+use crate::experiment::ExperimentRouter;
 use crate::{
     Completion, CompletionStream, Message, Prompter, PrompterError, StreamEvent, ToolCallKind,
     Usage,
 };
 
 /// A `Prompter` that replays a scripted reply. Each call to `complete` or
-/// `complete_streaming` captures the incoming messages in `calls` and then
-/// returns the next scripted response (or loops on the last one).
+/// `complete_streaming` captures the incoming messages in `calls` and the
+/// dispatched agent name in `dispatched_to`, then returns the next
+/// scripted response (or loops on the last one).
 pub struct ScriptedPrompter {
     agents: Vec<AgentConfig>,
     calls: Mutex<Vec<Vec<Message>>>,
+    dispatched_to: Mutex<Vec<String>>,
     replies: Mutex<Vec<ScriptedReply>>,
+    router: ExperimentRouter,
 }
 
 #[derive(Clone)]
@@ -103,11 +107,29 @@ impl ScriptedReply {
 
 impl ScriptedPrompter {
     pub fn new(agents: Vec<AgentConfig>, replies: Vec<ScriptedReply>) -> Self {
+        Self::with_experiments(agents, Vec::new(), replies)
+    }
+
+    pub fn with_experiments(
+        agents: Vec<AgentConfig>,
+        experiments: Vec<ExperimentConfig>,
+        replies: Vec<ScriptedReply>,
+    ) -> Self {
         Self {
             agents,
             calls: Mutex::new(Vec::new()),
+            dispatched_to: Mutex::new(Vec::new()),
             replies: Mutex::new(replies),
+            router: ExperimentRouter::new(experiments),
         }
+    }
+
+    /// Agent names the prompter was asked to run, in call order. Lets
+    /// tests verify experiment routing — if the proxy resolved
+    /// `model: alice` to variant `alice-v1`, this records `alice-v1`,
+    /// not `alice`.
+    pub fn dispatched_to(&self) -> Vec<String> {
+        self.dispatched_to.lock().unwrap().clone()
     }
 
     /// Messages received on each `complete`/`complete_streaming` call so far,
@@ -121,6 +143,10 @@ impl ScriptedPrompter {
         if !self.agents.iter().any(|a| a.name == agent_name) {
             return Err(PrompterError::UnknownAgent(agent_name.to_string()));
         }
+        self.dispatched_to
+            .lock()
+            .unwrap()
+            .push(agent_name.to_string());
         let mut replies = self.replies.lock().unwrap();
         match replies.len() {
             0 => Err(PrompterError::Streaming(
@@ -135,6 +161,10 @@ impl ScriptedPrompter {
 impl Prompter for ScriptedPrompter {
     fn agents(&self) -> &[AgentConfig] {
         &self.agents
+    }
+
+    fn router(&self) -> &ExperimentRouter {
+        &self.router
     }
 
     async fn complete(

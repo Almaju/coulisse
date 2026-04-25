@@ -75,6 +75,43 @@ impl Store {
         }
     }
 
+    /// Mean and sample count of scores grouped by `agent_name`, scoped to
+    /// `(judge, criterion)` and to scores recorded after `since`. Used by
+    /// the bandit strategy to read each variant's recent average for one
+    /// metric. Empty when no scores match — callers fall back to
+    /// exploration. Aggregates across all users (the experiment is global,
+    /// not per-user).
+    pub async fn mean_scores_by_agent(
+        &self,
+        judge: &str,
+        criterion: &str,
+        since: u64,
+    ) -> Result<Vec<AgentScoreSummary>, MemoryError> {
+        let rows = sqlx::query(
+            "SELECT agent_name, AVG(score) AS mean, COUNT(*) AS samples \
+             FROM scores \
+             WHERE judge_name = ? AND criterion = ? AND created_at >= ? AND agent_name <> '' \
+             GROUP BY agent_name",
+        )
+        .bind(judge)
+        .bind(criterion)
+        .bind(since as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let agent_name: String = row.try_get("agent_name")?;
+            let mean: f64 = row.try_get("mean")?;
+            let samples: i64 = row.try_get("samples")?;
+            out.push(AgentScoreSummary {
+                agent_name,
+                mean: mean as f32,
+                samples: samples as u32,
+            });
+        }
+        Ok(out)
+    }
+
     /// Summaries of every user the store has seen, ordered by most recent
     /// activity first. Intended for read-only studio views.
     pub async fn list_user_summaries(&self) -> Result<Vec<UserSummary>, MemoryError> {
@@ -267,10 +304,11 @@ impl<'a> UserMemory<'a> {
     /// never blocked on the judge call.
     pub async fn append_score(&self, score: Score) -> Result<ScoreId, MemoryError> {
         sqlx::query(
-            "INSERT INTO scores (created_at, criterion, id, judge_model, judge_name, \
+            "INSERT INTO scores (agent_name, created_at, criterion, id, judge_model, judge_name, \
              message_id, reasoning, score, user_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
+        .bind(&score.agent_name)
         .bind(score.created_at as i64)
         .bind(&score.criterion)
         .bind(score.id.0.to_string())
@@ -288,7 +326,7 @@ impl<'a> UserMemory<'a> {
     /// All judge scores recorded for this user, chronological.
     pub async fn scores(&self) -> Result<Vec<Score>, MemoryError> {
         let rows = sqlx::query(
-            "SELECT created_at, criterion, id, judge_model, judge_name, \
+            "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
              message_id, reasoning, score, user_id \
              FROM scores WHERE user_id = ? ORDER BY rowid ASC",
         )
@@ -425,6 +463,17 @@ pub struct AssembledContext {
     pub messages: Vec<Message>,
 }
 
+/// Per-agent score summary returned by `Store::mean_scores_by_agent`.
+/// One row per `agent_name` that has any matching score within the
+/// requested window — agents with zero samples don't appear, so callers
+/// must treat absence as "not enough data, explore".
+#[derive(Clone, Debug)]
+pub struct AgentScoreSummary {
+    pub agent_name: String,
+    pub mean: f32,
+    pub samples: u32,
+}
+
 /// Aggregate view of a single user's stored data. Returned by
 /// `Store::list_user_summaries` for studio-style overviews.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -476,13 +525,29 @@ fn ensure_dir(path: &Path) -> Result<(), ConfigError> {
 }
 
 async fn apply_schema(pool: &SqlitePool) -> Result<(), ConfigError> {
-    for stmt in split_sql(SCHEMA_SQL)
-        .into_iter()
-        .chain(split_sql(MIGRATE_SQL))
-    {
+    for stmt in split_sql(SCHEMA_SQL) {
         sqlx::query(&stmt).execute(pool).await?;
     }
+    // Migrate steps may run on a fresh database where the target shape is
+    // already in place from schema.sql. ALTER TABLE ADD COLUMN cannot be
+    // made idempotent in pure SQL, so swallow "duplicate column name"
+    // errors and let everything else surface as a fatal config error.
+    for stmt in split_sql(MIGRATE_SQL) {
+        if let Err(err) = sqlx::query(&stmt).execute(pool).await
+            && !is_already_applied(&err)
+        {
+            return Err(err.into());
+        }
+    }
     Ok(())
+}
+
+fn is_already_applied(err: &sqlx::Error) -> bool {
+    let Some(db_err) = err.as_database_error() else {
+        return false;
+    };
+    let msg = db_err.message();
+    msg.contains("duplicate column name") || msg.contains("already exists")
 }
 
 fn split_sql(sql: &str) -> Vec<String> {
@@ -594,6 +659,7 @@ fn row_to_memory(row: SqliteRow) -> Result<Memory, MemoryError> {
 }
 
 fn row_to_score(row: SqliteRow) -> Result<Score, MemoryError> {
+    let agent_name: String = row.try_get("agent_name")?;
     let created_at: i64 = row.try_get("created_at")?;
     let criterion: String = row.try_get("criterion")?;
     let id: String = row.try_get("id")?;
@@ -604,6 +670,7 @@ fn row_to_score(row: SqliteRow) -> Result<Score, MemoryError> {
     let score: f32 = row.try_get("score")?;
     let user_id: String = row.try_get("user_id")?;
     Ok(Score {
+        agent_name,
         created_at: created_at as u64,
         criterion,
         id: ScoreId(parse_uuid(&id, "score id")?),

@@ -31,6 +31,11 @@ use crate::server::{AppState, judges_for_agent};
 /// fields (telemetry turn id, future flags) can be added without breaking
 /// callers.
 pub struct StreamContext<P: Prompter + 'static> {
+    /// Resolved agent name — what judges score and what `judges_for_agent`
+    /// looks up. Differs from `model` when the request hit an experiment:
+    /// `model` echoes back the experiment name the client sent, while
+    /// `agent_name` records which variant actually ran.
+    pub agent_name: String,
     pub assistant_message_id: MessageId,
     pub include_usage: bool,
     pub inner: CompletionStream,
@@ -45,6 +50,7 @@ pub fn sse_response<P: Prompter + 'static>(
     cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     let StreamContext {
+        agent_name,
         assistant_message_id,
         include_usage,
         inner,
@@ -62,9 +68,9 @@ pub fn sse_response<P: Prompter + 'static>(
 
     let flush = MemoryFlush {
         accumulated: Arc::clone(&accumulated),
+        agent_name,
         assistant_message_id,
         final_usage: Arc::clone(&final_usage),
-        model: model.clone(),
         state,
         tool_calls: Arc::clone(&tool_calls),
         tracker_key,
@@ -165,9 +171,11 @@ fn to_mem_tool_kind(k: PromptToolCallKind) -> MemToolCallKind {
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
 struct MemoryFlush<P: Prompter + 'static> {
     accumulated: Arc<Mutex<String>>,
+    /// Resolved agent name; used for `judges_for_agent`. See
+    /// `StreamContext::agent_name` for the rationale.
+    agent_name: String,
     assistant_message_id: MessageId,
     final_usage: Arc<Mutex<ProviderUsage>>,
-    model: String,
     state: Arc<AppState<P>>,
     tool_calls: Arc<Mutex<Vec<PendingToolCall>>>,
     tracker_key: String,
@@ -178,9 +186,9 @@ struct MemoryFlush<P: Prompter + 'static> {
 impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
         let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
+        let agent_name = std::mem::take(&mut self.agent_name);
         let assistant_message_id = self.assistant_message_id;
         let usage = *self.final_usage.lock().unwrap();
-        let model = std::mem::take(&mut self.model);
         let state = Arc::clone(&self.state);
         let tool_calls = std::mem::take(&mut *self.tool_calls.lock().unwrap());
         let tracker_key = std::mem::take(&mut self.tracker_key);
@@ -233,13 +241,14 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
                     accumulated.clone(),
                 );
             }
-            let judges = judges_for_agent(&state, &model);
+            let judges = judges_for_agent(&state, &agent_name);
             spawn_score(
                 judges,
                 Arc::clone(&state.memory),
                 Arc::clone(&state.prompter),
                 user_id,
                 assistant_message_id,
+                agent_name.clone(),
                 user_message,
                 accumulated,
             );

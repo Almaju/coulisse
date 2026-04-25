@@ -2,6 +2,7 @@ mod chat;
 mod error;
 mod extractor;
 mod server;
+mod shadow;
 mod stream;
 mod tool;
 

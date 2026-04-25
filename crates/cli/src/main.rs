@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
     let embedder_fallback_key = embedder_fallback_key(&config);
+    let experiment_configs = config.experiments.clone();
     let extractor_config = config.memory.extractor.clone();
     let judge_configs = config.judges.clone();
     let memory_summary = memory_summary(&config.memory);
@@ -38,7 +39,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let judges = build_judges(&judge_configs)?;
 
     let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
-    let prompter = Arc::new(RigPrompter::new(config, Some(Arc::clone(&telemetry))).await?);
+    let prompter = Arc::new(
+        RigPrompter::new(
+            config,
+            Some(Arc::clone(&telemetry)),
+            Some(Arc::clone(&memory)),
+        )
+        .await?,
+    );
     let tracker = Tracker::open(memory.pool().clone()).await?;
     let proxy_state = Arc::new(AppState {
         default_user_id,
@@ -51,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let studio_state = Arc::new(StudioState {
         auth: studio_auth,
+        experiments: experiment_configs.clone(),
         memory,
         telemetry,
     });
@@ -85,6 +94,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 criteria.join(", "),
             );
         }
+    }
+    for exp in &experiment_configs {
+        let variants: Vec<String> = exp
+            .variants
+            .iter()
+            .map(|v| format!("{}@{}", v.agent, v.weight))
+            .collect();
+        println!(
+            "  experiment: {} (strategy={}, sticky_by_user={}, variants=[{}])",
+            exp.name,
+            match exp.strategy {
+                config::Strategy::Bandit => "bandit",
+                config::Strategy::Shadow => "shadow",
+                config::Strategy::Split => "split",
+            },
+            exp.sticky_by_user,
+            variants.join(", "),
+        );
     }
     for agent in proxy_state.prompter.agents() {
         let judges = if agent.judges.is_empty() {

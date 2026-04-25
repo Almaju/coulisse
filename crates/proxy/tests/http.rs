@@ -14,11 +14,13 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
-use config::{AgentConfig, JudgeConfig, ProviderKind};
+use config::{AgentConfig, ExperimentConfig, JudgeConfig, ProviderKind, Strategy, Variant};
 use http_body_util::BodyExt;
 use judge::Judge;
 use limits::Tracker;
-use memory::{BackendConfig, EmbedderConfig, MemoryConfig, Role as MemRole, Store, UserId};
+use memory::{
+    BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Score, Store, UserId,
+};
 use prompter::testing::{ScriptedPrompter, ScriptedReply};
 use prompter::{ToolCallKind, Usage};
 use proxy::AppState;
@@ -50,7 +52,20 @@ async fn make_app_with(
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
 ) -> (Router, Arc<AppState<ScriptedPrompter>>) {
-    let prompter = Arc::new(ScriptedPrompter::new(agents, replies));
+    make_app_with_experiments(agents, vec![], judges, replies).await
+}
+
+async fn make_app_with_experiments(
+    agents: Vec<AgentConfig>,
+    experiments: Vec<ExperimentConfig>,
+    judges: HashMap<String, Arc<Judge>>,
+    replies: Vec<ScriptedReply>,
+) -> (Router, Arc<AppState<ScriptedPrompter>>) {
+    let prompter = Arc::new(ScriptedPrompter::with_experiments(
+        agents,
+        experiments,
+        replies,
+    ));
     let config = MemoryConfig {
         backend: BackendConfig::InMemory,
         embedder: EmbedderConfig::Hash { dims: 32 },
@@ -154,6 +169,378 @@ async fn unknown_agent_returns_not_found() {
     }));
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+fn variant_agent(name: &str) -> AgentConfig {
+    AgentConfig {
+        judges: vec![],
+        mcp_tools: vec![],
+        model: "gpt-scripted".into(),
+        name: name.into(),
+        preamble: String::new(),
+        provider: ProviderKind::Openai,
+        purpose: None,
+        subagents: vec![],
+    }
+}
+
+fn split_experiment(name: &str, variants: &[&str]) -> ExperimentConfig {
+    ExperimentConfig {
+        bandit_window_seconds: None,
+        epsilon: None,
+        metric: None,
+        min_samples: None,
+        name: name.into(),
+        primary: None,
+        purpose: None,
+        sampling_rate: None,
+        sticky_by_user: true,
+        strategy: Strategy::Split,
+        variants: variants
+            .iter()
+            .map(|v| Variant {
+                agent: (*v).into(),
+                weight: 1.0,
+            })
+            .collect(),
+    }
+}
+
+fn bandit_experiment(
+    name: &str,
+    metric: &str,
+    min_samples: u32,
+    variants: &[&str],
+) -> ExperimentConfig {
+    ExperimentConfig {
+        bandit_window_seconds: Some(86400),
+        epsilon: Some(0.0),
+        metric: Some(metric.into()),
+        min_samples: Some(min_samples),
+        name: name.into(),
+        primary: None,
+        purpose: None,
+        sampling_rate: None,
+        sticky_by_user: true,
+        strategy: Strategy::Bandit,
+        variants: variants
+            .iter()
+            .map(|v| Variant {
+                agent: (*v).into(),
+                weight: 1.0,
+            })
+            .collect(),
+    }
+}
+
+fn shadow_experiment(name: &str, primary: &str, variants: &[&str]) -> ExperimentConfig {
+    ExperimentConfig {
+        bandit_window_seconds: None,
+        epsilon: None,
+        metric: None,
+        min_samples: None,
+        name: name.into(),
+        primary: Some(primary.into()),
+        purpose: None,
+        sampling_rate: None,
+        sticky_by_user: true,
+        strategy: Strategy::Shadow,
+        variants: variants
+            .iter()
+            .map(|v| Variant {
+                agent: (*v).into(),
+                weight: 1.0,
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn experiment_resolves_request_to_a_variant() {
+    let agents = vec![variant_agent("alice-v1"), variant_agent("alice-v2")];
+    let experiments = vec![split_experiment("alice", &["alice-v1", "alice-v2"])];
+    let (app, state) = make_app_with_experiments(
+        agents,
+        experiments,
+        HashMap::new(),
+        vec![ScriptedReply::text("hello").with_usage(Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            ..Usage::default()
+        })],
+    )
+    .await;
+
+    let req = json_request(serde_json::json!({
+        "model": "alice",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "Hi"}],
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = collect(resp.into_body()).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // Client-facing model echoes what was sent.
+    assert_eq!(v["model"], "alice");
+
+    // Prompter actually saw a variant, not the experiment name.
+    let dispatched = state.prompter.dispatched_to();
+    assert_eq!(dispatched.len(), 1);
+    assert!(
+        dispatched[0] == "alice-v1" || dispatched[0] == "alice-v2",
+        "expected a variant, got {dispatched:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sticky_routing_keeps_same_user_on_same_variant() {
+    let agents = vec![variant_agent("alice-v1"), variant_agent("alice-v2")];
+    let experiments = vec![split_experiment("alice", &["alice-v1", "alice-v2"])];
+    let (app, state) = make_app_with_experiments(
+        agents,
+        experiments,
+        HashMap::new(),
+        vec![ScriptedReply::text("hi").with_usage(Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            ..Usage::default()
+        })],
+    )
+    .await;
+
+    for _ in 0..5 {
+        let req = json_request(serde_json::json!({
+            "model": "alice",
+            "safety_identifier": "alice",
+            "messages": [{"role": "user", "content": "Hi"}],
+        }));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        drop(collect(resp.into_body()).await);
+    }
+
+    let dispatched = state.prompter.dispatched_to();
+    assert_eq!(dispatched.len(), 5);
+    let first = &dispatched[0];
+    for got in &dispatched[1..] {
+        assert_eq!(got, first, "sticky routing drifted: {dispatched:?}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bandit_routes_to_the_highest_scoring_variant() {
+    let mut agent_v1 = variant_agent("alice-v1");
+    let mut agent_v2 = variant_agent("alice-v2");
+    agent_v1.judges = vec!["quality".into()];
+    agent_v2.judges = vec!["quality".into()];
+
+    let rubrics: BTreeMap<String, String> = [("helpfulness".into(), "answered".into())]
+        .into_iter()
+        .collect();
+    let judge = Judge::from_config(&JudgeConfig {
+        model: "gpt-scripted".into(),
+        name: "quality".into(),
+        provider: "openai".into(),
+        rubrics,
+        sampling_rate: 0.0, // disable judge run on this turn — we pre-seed scores
+    })
+    .unwrap();
+    let mut judges = HashMap::new();
+    judges.insert("quality".into(), Arc::new(judge));
+
+    let (app, state) = make_app_with_experiments(
+        vec![agent_v1, agent_v2],
+        vec![bandit_experiment(
+            "alice",
+            "quality.helpfulness",
+            5,
+            &["alice-v1", "alice-v2"],
+        )],
+        judges,
+        vec![ScriptedReply::text("hi")],
+    )
+    .await;
+
+    // Seed scores: alice-v1 leads (mean 9), alice-v2 trails (mean 2),
+    // both above min_samples=5. epsilon=0 in the experiment forces
+    // pure exploitation.
+    let user_id = UserId::from_string("alice");
+    let um = state.memory.for_user(user_id);
+    for _ in 0..6 {
+        let s = Score::new(
+            user_id,
+            MessageId::new(),
+            "alice-v1".into(),
+            "quality".into(),
+            "gpt-scripted".into(),
+            "helpfulness".into(),
+            9.0,
+            "leader".into(),
+        );
+        um.append_score(s).await.unwrap();
+    }
+    for _ in 0..6 {
+        let s = Score::new(
+            user_id,
+            MessageId::new(),
+            "alice-v2".into(),
+            "quality".into(),
+            "gpt-scripted".into(),
+            "helpfulness".into(),
+            2.0,
+            "laggard".into(),
+        );
+        um.append_score(s).await.unwrap();
+    }
+
+    let req = json_request(serde_json::json!({
+        "model": "alice",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "Hi"}],
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(collect(resp.into_body()).await);
+
+    let dispatched = state.prompter.dispatched_to();
+    assert_eq!(dispatched, vec!["alice-v1".to_string()]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bandit_forces_exploration_when_arms_are_under_sampled() {
+    let mut agent_v1 = variant_agent("alice-v1");
+    let mut agent_v2 = variant_agent("alice-v2");
+    agent_v1.judges = vec!["quality".into()];
+    agent_v2.judges = vec!["quality".into()];
+
+    let rubrics: BTreeMap<String, String> = [("helpfulness".into(), "answered".into())]
+        .into_iter()
+        .collect();
+    let judge = Judge::from_config(&JudgeConfig {
+        model: "gpt-scripted".into(),
+        name: "quality".into(),
+        provider: "openai".into(),
+        rubrics,
+        sampling_rate: 0.0,
+    })
+    .unwrap();
+    let mut judges = HashMap::new();
+    judges.insert("quality".into(), Arc::new(judge));
+
+    // min_samples=100 so neither arm is "ready". With no scores, both
+    // are forced; the picker still has to choose one without panicking.
+    let (app, state) = make_app_with_experiments(
+        vec![agent_v1, agent_v2],
+        vec![bandit_experiment(
+            "alice",
+            "quality.helpfulness",
+            100,
+            &["alice-v1", "alice-v2"],
+        )],
+        judges,
+        vec![ScriptedReply::text("hi")],
+    )
+    .await;
+
+    let req = json_request(serde_json::json!({
+        "model": "alice",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "Hi"}],
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(collect(resp.into_body()).await);
+
+    let dispatched = state.prompter.dispatched_to();
+    assert_eq!(dispatched.len(), 1);
+    assert!(matches!(dispatched[0].as_str(), "alice-v1" | "alice-v2"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
+    // Three replies in order:
+    // 1. Primary's answer (alice-v1, no judges)
+    // 2. Shadow's answer (alice-v2, scored)
+    // 3. Judge JSON for the shadow's reply
+    let judge_reply = r#"{"helpfulness": {"score": 4, "reasoning": "shadow ok"}}"#;
+    let replies = vec![
+        ScriptedReply::text("primary answer"),
+        ScriptedReply::text("shadow answer"),
+        ScriptedReply::text(judge_reply),
+    ];
+
+    let rubrics: BTreeMap<String, String> = [("helpfulness".into(), "answered".into())]
+        .into_iter()
+        .collect();
+    let judge = Judge::from_config(&JudgeConfig {
+        model: "gpt-scripted".into(),
+        name: "quality".into(),
+        provider: "openai".into(),
+        rubrics,
+        sampling_rate: 1.0,
+    })
+    .unwrap();
+    let mut judges = HashMap::new();
+    judges.insert("quality".into(), Arc::new(judge));
+
+    let mut agent_v1 = variant_agent("alice-v1");
+    let mut agent_v2 = variant_agent("alice-v2");
+    agent_v2.judges = vec!["quality".into()];
+    // Only alice-v2 carries the judge so the test can assert the score
+    // landed under that agent_name and not the primary's.
+    agent_v1.judges = vec![];
+
+    let (app, state) = make_app_with_experiments(
+        vec![agent_v1, agent_v2],
+        vec![shadow_experiment(
+            "alice",
+            "alice-v1",
+            &["alice-v1", "alice-v2"],
+        )],
+        judges,
+        replies,
+    )
+    .await;
+
+    let req = json_request(serde_json::json!({
+        "model": "alice",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "Hi"}],
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = collect(resp.into_body()).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // User saw the primary's reply, not the shadow's.
+    assert_eq!(v["choices"][0]["message"]["content"], "primary answer");
+
+    // Drain background shadow run + judge task.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let dispatched = state.prompter.dispatched_to();
+    assert!(
+        dispatched.contains(&"alice-v1".to_string()),
+        "primary dispatched: {dispatched:?}"
+    );
+    assert!(
+        dispatched.contains(&"alice-v2".to_string()),
+        "shadow dispatched: {dispatched:?}"
+    );
+
+    let um = state.memory.for_user(UserId::from_string("alice"));
+    // Only the primary's reply should be in messages — shadow does not pollute history.
+    let messages = um.messages().await.unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].content, "primary answer");
+
+    // The shadow's score should be attributed to alice-v2, not alice-v1.
+    let scores = um.scores().await.unwrap();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].agent_name, "alice-v2");
+    assert_eq!(scores[0].criterion, "helpfulness");
+    assert_eq!(scores[0].score, 4.0);
 }
 
 #[tokio::test(flavor = "current_thread")]

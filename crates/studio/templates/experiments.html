@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Experiments</h1>
+    <p class="mt-1 text-sm text-slate-400">A/B groups declared in <code class="font-mono text-xs">coulisse.yaml</code>. Clients address them as <code class="font-mono text-xs">model</code>; each request resolves to one of the variant agents.</p>
+  </div>
+  {% if experiments.is_empty() %}
+    <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+      No experiments configured. Add an <code class="font-mono text-xs">experiments:</code> entry to your config to start A/B testing.
+    </div>
+  {% else %}
+    {% for exp in experiments %}
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+        <div class="flex items-center gap-3">
+          <h2 class="font-mono text-sm font-semibold text-slate-100">{{ exp.name }}</h2>
+          <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-300">{{ exp.strategy }}</span>
+          {% if exp.sticky_by_user %}
+            <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-400">sticky-by-user</span>
+          {% endif %}
+        </div>
+        <span class="text-xs text-slate-500">{{ exp.variants.len() }} variant{% if exp.variants.len() != 1 %}s{% endif %}</span>
+      </div>
+      {% match exp.purpose %}
+        {% when Some with (text) %}
+        <div class="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">{{ text }}</div>
+        {% when None %}
+      {% endmatch %}
+      <div class="flex flex-wrap gap-x-6 gap-y-1 border-b border-slate-800 px-4 py-3 text-xs text-slate-500">
+        {% match exp.metric %}
+          {% when Some with (m) %}<div>metric: <span class="font-mono text-slate-300">{{ m }}</span></div>{% when None %}
+        {% endmatch %}
+        {% match exp.epsilon %}
+          {% when Some with (e) %}<div>epsilon: <span class="font-mono text-slate-300">{{ e }}</span></div>{% when None %}
+        {% endmatch %}
+        {% match exp.min_samples %}
+          {% when Some with (n) %}<div>min_samples: <span class="font-mono text-slate-300">{{ n }}</span></div>{% when None %}
+        {% endmatch %}
+        {% match exp.sampling_rate %}
+          {% when Some with (r) %}<div>sampling_rate: <span class="font-mono text-slate-300">{{ r }}</span></div>{% when None %}
+        {% endmatch %}
+        {% match exp.leader %}
+          {% when Some with (l) %}<div>leader: <span class="font-mono text-slate-300">{{ l }}</span></div>{% when None %}
+        {% endmatch %}
+      </div>
+      <table class="w-full text-left">
+        <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+          <tr>
+            <th class="px-4 py-2 font-medium">Variant agent</th>
+            <th class="px-4 py-2 text-right font-medium">Weight</th>
+            <th class="px-4 py-2 text-right font-medium">Share</th>
+            {% if exp.show_scores %}
+            <th class="px-4 py-2 text-right font-medium">Samples</th>
+            <th class="px-4 py-2 text-right font-medium">Mean</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+        {% for v in exp.variants %}
+          <tr class="border-t border-slate-800">
+            <td class="px-4 py-2 font-mono text-xs text-slate-200">
+              {{ v.agent }}
+              {% if v.is_primary %}
+                <span class="ml-2 inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">primary</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-2 text-right text-sm text-slate-300">{{ v.weight }}</td>
+            <td class="px-4 py-2 text-right text-sm text-slate-300">{{ v.share }}</td>
+            {% if exp.show_scores %}
+            <td class="px-4 py-2 text-right text-sm text-slate-300">
+              {% match v.samples %}{% when Some with (n) %}{{ n }}{% when None %}—{% endmatch %}
+            </td>
+            <td class="px-4 py-2 text-right text-sm text-slate-300">
+              {% match v.mean %}{% when Some with (m) %}{{ m }}{% when None %}—{% endmatch %}
+            </td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

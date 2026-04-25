@@ -237,8 +237,13 @@ impl Memory {
 /// Single criterion evaluation attached to an assistant message by an LLM judge.
 /// Each rubric on a judge produces one `Score` per scored turn; averages and
 /// trends are computed at read time (studio views), not aggregated here.
+///
+/// `agent_name` is the agent (or experiment variant) whose reply was
+/// scored — populated since experiments shipped so per-variant
+/// aggregation flows through the same table without a join.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Score {
+    pub agent_name: String,
     pub created_at: u64,
     pub criterion: String,
     pub id: ScoreId,
@@ -251,9 +256,11 @@ pub struct Score {
 }
 
 impl Score {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         user_id: UserId,
         message_id: MessageId,
+        agent_name: String,
         judge_name: String,
         judge_model: String,
         criterion: String,
@@ -261,6 +268,7 @@ impl Score {
         reasoning: String,
     ) -> Self {
         Self {
+            agent_name,
             created_at: now_secs(),
             criterion,
             id: ScoreId::new(),

@@ -22,7 +22,9 @@ use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
 use config::{AgentConfig, Config, McpServerConfig, ProviderKind};
+use memory::Store;
 
+use crate::experiment::ExperimentRouter;
 use crate::{Completion, PrompterError, Usage};
 
 const MAX_TURNS: usize = 8;
@@ -40,6 +42,16 @@ struct RigPrompterInner {
     agents: Vec<AgentConfig>,
     backends: HashMap<ProviderKind, Backend>,
     mcp_servers: HashMap<String, McpServer>,
+    /// A/B routing table. Populated from `config.experiments` at startup;
+    /// resolves an addressable name (agent or experiment) to a concrete
+    /// agent at request time. Empty when no experiments are configured —
+    /// `resolve` then short-circuits to passthrough.
+    router: ExperimentRouter,
+    /// Optional handle to the score store. Required for bandit-strategy
+    /// subagent calls (which need to read recent mean scores at call
+    /// time). When `None`, bandit subagents fall back to forced
+    /// exploration — fine for tests and small deployments.
+    score_store: Option<Arc<Store>>,
     /// Optional observability sink. When `Some`, every tool invocation
     /// (MCP or subagent, at any depth) is recorded as a `ToolCall` event.
     /// Kept off the hot path by short-circuiting when `None`, so tests and
@@ -125,6 +137,11 @@ type BuiltTools = (
 pub trait Prompter: Send + Sync {
     fn agents(&self) -> &[AgentConfig];
 
+    /// A/B routing table for this prompter. The proxy consults this
+    /// before dispatching so that experiment names addressable as
+    /// `model` resolve to a concrete variant per request.
+    fn router(&self) -> &ExperimentRouter;
+
     /// Run the named agent and return its final reply. `ctx` carries the
     /// per-request correlation id plus the parent `EventId` under which
     /// this completion's tool invocations should nest. The `parent` field
@@ -166,6 +183,7 @@ impl RigPrompter {
     pub async fn new(
         config: Config,
         telemetry: Option<Arc<TelemetrySink>>,
+        score_store: Option<Arc<Store>>,
     ) -> Result<Self, PrompterError> {
         let mut backends = HashMap::with_capacity(config.providers.len());
         for (kind, provider) in config.providers {
@@ -228,11 +246,14 @@ impl RigPrompter {
             mcp_servers.insert(name, server);
         }
 
+        let router = ExperimentRouter::new(config.experiments);
         Ok(Self {
             inner: Arc::new(RigPrompterInner {
                 agents: config.agents,
                 backends,
                 mcp_servers,
+                router,
+                score_store,
                 telemetry,
             }),
         })
@@ -242,6 +263,10 @@ impl RigPrompter {
 impl Prompter for RigPrompter {
     fn agents(&self) -> &[AgentConfig] {
         &self.inner.agents
+    }
+
+    fn router(&self) -> &ExperimentRouter {
+        &self.inner.router
     }
 
     async fn complete(
@@ -332,23 +357,37 @@ impl RigPrompterInner {
         let subagent_names: Arc<HashSet<String>> =
             Arc::new(agent.subagents.iter().cloned().collect());
         for sub_name in &agent.subagents {
-            let target = self
-                .find_agent(sub_name)
-                .expect("subagent existence is validated at config load");
-            let purpose = target
-                .purpose
-                .clone()
-                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", target.name));
+            let purpose = self.subagent_purpose(sub_name);
             tools.push(Box::new(SubagentTool {
                 ctx,
                 depth,
                 inner: Arc::clone(self),
                 purpose,
                 sink: self.telemetry.clone(),
-                target_name: target.name.clone(),
+                target_name: sub_name.clone(),
             }));
         }
         Ok((tools, subagent_names))
+    }
+
+    /// Tool description for a subagent reference. Subagent names share
+    /// the agent + experiment namespace, so look in both — the agent
+    /// table first since the names cannot collide. Validation already
+    /// guarantees the name exists somewhere.
+    fn subagent_purpose(&self, name: &str) -> String {
+        if let Some(agent) = self.find_agent(name) {
+            return agent
+                .purpose
+                .clone()
+                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", agent.name));
+        }
+        if let Some(experiment) = self.router.get(name) {
+            return experiment
+                .purpose
+                .clone()
+                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", experiment.name));
+        }
+        unreachable!("subagent name validated at config load: {name}")
     }
 
     async fn complete_with_depth(
@@ -477,6 +516,11 @@ impl RigPrompterInner {
 /// this tool's return value. Hop depth is captured at construction so
 /// pathological A→B→A→B chains are bounded by `MAX_SUBAGENT_DEPTH`.
 ///
+/// `target_name` is the addressable name as written in YAML — either an
+/// agent or an experiment. Resolution happens at call time so each
+/// subagent invocation goes through the router, picking a variant for
+/// the calling user.
+///
 /// When a telemetry `sink` is configured, this tool emits its own
 /// `ToolCall` event and passes a child context down so the subagent's
 /// inner tool calls nest under this one in the studio tree.
@@ -542,8 +586,34 @@ impl ToolDyn for SubagentTool {
                 content: message,
             }];
             let next_depth = depth.saturating_add(1);
+            // Subagent name may be an experiment — resolve per-user so
+            // the variant is picked at call time, consistent with the
+            // sticky-by-user hashing the proxy applies at the top level.
+            // Bandit experiments additionally consult recent mean
+            // scores; without a score store wired in, that lookup
+            // returns no data and the bandit falls back to forced
+            // exploration.
+            let scores = if let (Some(store), Some((judge, criterion, since))) = (
+                inner.score_store.as_ref(),
+                inner.router.bandit_query(&target),
+            ) {
+                store
+                    .mean_scores_by_agent(&judge, &criterion, since)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let resolved = inner
+                .router
+                .resolve_with_scores(&target, ctx.user_id, &scores);
+            let agent_name = resolved.agent.into_owned();
             let outcome = RigPrompterInner::complete_with_depth(
-                &inner, &target, messages, next_depth, child_ctx,
+                &inner,
+                &agent_name,
+                messages,
+                next_depth,
+                child_ctx,
             )
             .await;
             let duration_ms = started.elapsed().as_millis() as u64;

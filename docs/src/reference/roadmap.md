@@ -14,6 +14,7 @@ What's in Coulisse today, and what's coming.
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
 - Read-only studio UI at `/studio` for browsing conversations, memories, and judge scores.
 - LLM-as-judge evaluation — background scoring of agent replies against YAML-defined rubrics, with per-judge sampling and per-user persistence.
+- Experiments (A/B testing) — wrap multiple agents under one addressable name and route traffic between them with sticky-by-user defaults. Three strategies: `split` (weighted random), `shadow` (primary serves the user, others run in the background and are scored), and `bandit` (epsilon-greedy on a single judge criterion).
 - Streaming responses over SSE (`stream: true`, with `stream_options.include_usage`).
 - MCP tool integration over stdio and HTTP, with per-agent filtering.
 - Per-user token rate limiting (hour / day / month).

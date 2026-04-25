@@ -70,12 +70,14 @@ impl Judge {
 /// exchange and persists scores. Sampling decisions happen per-judge inside
 /// the task. Failures are logged and swallowed so the response path is
 /// never affected.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_score<P: Prompter + 'static>(
     judges: Vec<Arc<Judge>>,
     memory: Arc<Store>,
     prompter: Arc<P>,
     user_id: UserId,
     message_id: MessageId,
+    agent_name: String,
     user_message: String,
     assistant_message: String,
 ) {
@@ -93,6 +95,7 @@ pub fn spawn_score<P: Prompter + 'static>(
                 prompter.as_ref(),
                 user_id,
                 message_id,
+                &agent_name,
                 &user_message,
                 &assistant_message,
             )
@@ -109,12 +112,14 @@ pub fn spawn_score<P: Prompter + 'static>(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_score<P: Prompter>(
     judge: &Judge,
     memory: &Store,
     prompter: &P,
     user_id: UserId,
     message_id: MessageId,
+    agent_name: &str,
     user_message: &str,
     assistant_message: &str,
 ) -> Result<(), JudgeRunError> {
@@ -142,6 +147,7 @@ async fn run_score<P: Prompter>(
         let score = Score::new(
             user_id,
             message_id,
+            agent_name.to_string(),
             judge.name.clone(),
             judge.model.clone(),
             criterion.clone(),

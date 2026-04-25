@@ -1,6 +1,6 @@
 use askama::Template;
 
-use crate::views::{EventRow, MemoryRow, MessageRow, ScoresPanel, UserRow};
+use crate::views::{EventRow, ExperimentRow, MemoryRow, MessageRow, ScoresPanel, UserRow};
 
 #[derive(Template)]
 #[template(path = "users.html")]
@@ -21,4 +21,10 @@ pub struct ConversationPage {
 #[template(path = "events.html")]
 pub struct EventsFragment {
     pub rows: Vec<EventRow>,
+}
+
+#[derive(Template)]
+#[template(path = "experiments.html")]
+pub struct ExperimentsPage {
+    pub experiments: Vec<ExperimentRow>,
 }

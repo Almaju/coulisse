@@ -8,6 +8,7 @@ A complete reference for every field in `coulisse.yaml`.
 studio: { ... }                # optional; enables Basic auth on /studio/*
 agents: [ ... ]               # required, non-empty
 default_user_id: <string>     # optional, unset by default
+experiments: [ ... ]          # optional; A/B test groups over agents
 judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
 memory: { ... }               # optional; defaults to sqlite + hash embedder
@@ -218,6 +219,59 @@ agents:
 
 See [Multi-agent routing](../features/multi-agent.md) for the full subagent walkthrough.
 
+## `experiments`
+
+- **Type:** list of experiment configs
+- **Optional.** Omit (or leave empty) to skip A/B testing.
+
+An experiment wraps two or more agents under one addressable name. Clients send the experiment's `name` in the `model` field and the router picks a variant per request. Experiment names share the agent namespace — collisions are rejected at startup.
+
+See [Experiments](../features/experiments.md) for the end-to-end walkthrough.
+
+### Per-experiment fields
+
+| Field                    | Type             | Required          | Default          | Notes |
+|--------------------------|------------------|-------------------|------------------|-------|
+| `bandit_window_seconds`  | int              | no (`bandit`)     | `604800` (7 d)   | Bandit-only. Maximum age of scores included in mean-arm computations. |
+| `epsilon`                | float            | no (`bandit`)     | `0.1`            | Bandit-only. Probability in `[0.0, 1.0]` of routing to a random arm instead of the leader. |
+| `metric`                 | string           | yes (`bandit`)    | —                | Bandit-only. `judge.criterion` to optimise. The judge must declare the criterion in its rubrics, and every variant must opt into the judge. |
+| `min_samples`            | int              | no (`bandit`)     | `30`             | Bandit-only. Each arm must accumulate this many scores before exploitation is allowed. |
+| `name`                   | string           | yes               | —                | Addressable name; must not collide with any agent name. |
+| `primary`                | string           | yes (`shadow`)    | —                | Shadow-only. Variant agent that serves the user. Must be one of `variants`. |
+| `purpose`                | string           | no                | —                | Tool description when the experiment is exposed via another agent's `subagents:`. |
+| `sampling_rate`          | float            | no (`shadow`)     | `1.0`            | Shadow-only. Probability in `[0.0, 1.0]` that a turn also runs the non-primary variants in the background. |
+| `sticky_by_user`         | bool             | no                | `true`           | When `true`, the same user always lands on the same variant (deterministic hash, no DB writes). |
+| `strategy`               | enum             | yes               | —                | `split`, `shadow`, or `bandit`. |
+| `variants`               | `list<variant>`  | yes               | —                | Non-empty. Each entry references an agent. |
+
+### `variants` entry
+
+| Field    | Type   | Required | Default | Notes |
+|----------|--------|----------|---------|-------|
+| `agent`  | string | yes      | —       | Name of an agent declared under top-level `agents:`. Variants must reference concrete agents — nesting an experiment is rejected. |
+| `weight` | float  | no       | `1.0`   | Strictly positive. Normalised against the sum of all variant weights. |
+
+### Example
+
+```yaml
+agents:
+  - name: assistant-sonnet
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+  - name: assistant-gpt
+    provider: openai
+    model: gpt-4o
+
+experiments:
+  - name: assistant
+    strategy: split
+    variants:
+      - agent: assistant-sonnet
+        weight: 0.5
+      - agent: assistant-gpt
+        weight: 0.5
+```
+
 ## `judges`
 
 - **Type:** list of judge configs
@@ -262,9 +316,16 @@ On startup, Coulisse checks:
 - Agent names are unique.
 - Every agent's `provider` is configured.
 - Every referenced MCP server is configured.
-- Every name in `subagents` refers to another defined agent.
+- Every name in `subagents` refers to a defined agent or experiment.
 - No agent lists itself under `subagents`.
 - `subagents` entries are unique within an agent (no duplicates).
+- Experiment names are unique and do not collide with any agent name.
+- Each experiment declares at least one variant.
+- Each variant references a defined agent and has a strictly positive `weight`.
+- Variant agents within an experiment are unique.
+- Strategy-specific fields are only set on the matching strategy (e.g. `primary` only on `shadow`, `metric` only on `bandit`).
+- For `shadow`: `primary` is set and matches one of the variants; `sampling_rate` is in `[0.0, 1.0]`.
+- For `bandit`: `metric` is `judge.criterion`; the judge exists, declares the criterion in its rubrics, and every variant opts into the judge; `epsilon` is in `[0.0, 1.0]`.
 - Every referenced judge exists.
 - Judge names are unique.
 - Every judge's `provider` is configured and supported.

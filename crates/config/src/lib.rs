@@ -9,6 +9,7 @@ mod validate;
 
 pub use error::ConfigError;
 pub use schema::{
-    AgentConfig, Config, JudgeConfig, McpServerConfig, McpToolAccess, ProviderConfig, ProviderKind,
-    StudioBasicConfig, StudioConfig, StudioOidcConfig,
+    AgentConfig, Config, ExperimentConfig, JudgeConfig, McpServerConfig, McpToolAccess,
+    ProviderConfig, ProviderKind, Strategy, StudioBasicConfig, StudioConfig, StudioOidcConfig,
+    Variant,
 };

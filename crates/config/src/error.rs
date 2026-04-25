@@ -22,6 +22,66 @@ pub enum ConfigError {
     DuplicateJudge(String),
     #[error("agent '{agent}' lists subagent '{subagent}' more than once")]
     DuplicateSubagent { agent: String, subagent: String },
+    #[error(
+        "experiment '{0}' shares a name with an agent; rename one — experiment and agent names share a single namespace"
+    )]
+    ExperimentAgentNameCollision(String),
+    #[error("experiment '{experiment}' lists variant agent '{agent}' more than once")]
+    ExperimentDuplicateVariant { agent: String, experiment: String },
+    #[error("experiment '{experiment}' has variant '{agent}' with non-positive weight {weight}")]
+    ExperimentInvalidWeight {
+        agent: String,
+        experiment: String,
+        weight: f32,
+    },
+    #[error("duplicate experiment name in config: {0}")]
+    ExperimentNameCollision(String),
+    #[error(
+        "experiment '{experiment}' references variant agent '{agent}' which is not defined under `agents:`"
+    )]
+    ExperimentUnknownVariant { agent: String, experiment: String },
+    #[error("experiment '{0}' must declare at least one variant")]
+    ExperimentWithoutVariants(String),
+    #[error(
+        "experiment '{experiment}' uses strategy '{strategy}' but sets '{field}', which is only valid for {valid_for}"
+    )]
+    ExperimentFieldStrategyMismatch {
+        experiment: String,
+        field: &'static str,
+        strategy: &'static str,
+        valid_for: &'static str,
+    },
+    #[error("experiment '{experiment}' has epsilon={value}, must be in [0.0, 1.0]")]
+    ExperimentInvalidEpsilon { experiment: String, value: f32 },
+    #[error("experiment '{experiment}' has sampling_rate={value}, must be in [0.0, 1.0]")]
+    ExperimentInvalidSamplingRate { experiment: String, value: f32 },
+    #[error("experiment '{experiment}' metric '{metric}' must look like 'judge.criterion'")]
+    ExperimentMetricMalformed { experiment: String, metric: String },
+    #[error(
+        "experiment '{experiment}' metric references unknown criterion '{criterion}' on judge '{judge}'"
+    )]
+    ExperimentMetricUnknownCriterion {
+        criterion: String,
+        experiment: String,
+        judge: String,
+    },
+    #[error("experiment '{experiment}' metric references unknown judge '{judge}'")]
+    ExperimentMetricUnknownJudge { experiment: String, judge: String },
+    #[error(
+        "experiment '{experiment}' uses bandit metric '{metric}' but variant '{agent}' does not opt into judge '{judge}'"
+    )]
+    ExperimentMetricVariantMissingJudge {
+        agent: String,
+        experiment: String,
+        judge: String,
+        metric: String,
+    },
+    #[error("experiment '{experiment}' has primary '{primary}' which is not one of its variants")]
+    ExperimentPrimaryNotVariant { experiment: String, primary: String },
+    #[error("experiment '{0}' uses strategy 'shadow' but does not declare a primary variant")]
+    ShadowWithoutPrimary(String),
+    #[error("experiment '{0}' uses strategy 'bandit' but does not declare a metric")]
+    BanditWithoutMetric(String),
     #[error("judge '{judge}' has sampling_rate={value}, must be in [0.0, 1.0]")]
     InvalidSamplingRate { judge: String, value: f32 },
     #[error("agent '{agent}' references judge '{judge}' which is not configured")]

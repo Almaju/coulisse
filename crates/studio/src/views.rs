@@ -7,10 +7,104 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use config::ExperimentConfig;
 use memory::{
     Memory, MemoryKind, Role, Score, StoredMessage, StoredToolCall, ToolCallKind, UserSummary,
 };
 use telemetry::{Event, EventKind};
+
+pub struct ExperimentRow {
+    pub epsilon: Option<f32>,
+    pub leader: Option<String>,
+    pub metric: Option<String>,
+    pub min_samples: Option<u32>,
+    pub name: String,
+    pub purpose: Option<String>,
+    pub sampling_rate: Option<f32>,
+    pub show_scores: bool,
+    pub sticky_by_user: bool,
+    pub strategy: &'static str,
+    pub variants: Vec<VariantRow>,
+}
+
+pub struct VariantRow {
+    pub agent: String,
+    pub is_primary: bool,
+    pub mean: Option<String>,
+    pub samples: Option<u32>,
+    pub share: String,
+    pub weight: f32,
+}
+
+impl ExperimentRow {
+    /// Build the display row from a config + an optional table of
+    /// mean scores keyed by agent name. Pass an empty map when no
+    /// metric scores are available; the score columns then render as
+    /// "—".
+    pub fn build(
+        exp: &ExperimentConfig,
+        scores: &std::collections::HashMap<String, (f32, u32)>,
+    ) -> Self {
+        let total: f32 = exp.variants.iter().map(|v| v.weight).sum();
+        let primary = exp.primary.as_deref();
+        let show_scores = matches!(exp.strategy, config::Strategy::Bandit);
+        let leader = if show_scores {
+            exp.variants
+                .iter()
+                .max_by(|a, b| {
+                    let mean_a = scores.get(&a.agent).map(|s| s.0).unwrap_or(f32::MIN);
+                    let mean_b = scores.get(&b.agent).map(|s| s.0).unwrap_or(f32::MIN);
+                    mean_a
+                        .partial_cmp(&mean_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .filter(|v| scores.contains_key(&v.agent))
+                .map(|v| v.agent.clone())
+        } else {
+            None
+        };
+        let variants = exp
+            .variants
+            .iter()
+            .map(|v| {
+                let pct = if total > 0.0 {
+                    100.0 * v.weight / total
+                } else {
+                    0.0
+                };
+                let (mean, samples) = scores
+                    .get(&v.agent)
+                    .map(|(m, n)| (Some(format!("{m:.2}")), Some(*n)))
+                    .unwrap_or((None, None));
+                VariantRow {
+                    agent: v.agent.clone(),
+                    is_primary: Some(v.agent.as_str()) == primary,
+                    mean,
+                    samples,
+                    share: format!("{pct:.0}%"),
+                    weight: v.weight,
+                }
+            })
+            .collect();
+        Self {
+            epsilon: exp.epsilon,
+            leader,
+            metric: exp.metric.clone(),
+            min_samples: exp.min_samples,
+            name: exp.name.clone(),
+            purpose: exp.purpose.clone(),
+            sampling_rate: exp.sampling_rate,
+            show_scores,
+            sticky_by_user: exp.sticky_by_user,
+            strategy: match exp.strategy {
+                config::Strategy::Bandit => "bandit",
+                config::Strategy::Shadow => "shadow",
+                config::Strategy::Split => "split",
+            },
+            variants,
+        }
+    }
+}
 
 pub struct UserRow {
     pub last_activity_at: String,

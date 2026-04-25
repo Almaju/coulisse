@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 
 CREATE TABLE IF NOT EXISTS scores (
+    agent_name  TEXT    NOT NULL,
     created_at  INTEGER NOT NULL,
     criterion   TEXT    NOT NULL,
     id          TEXT    NOT NULL PRIMARY KEY,
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS scores (
     user_id     TEXT    NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_scores_agent   ON scores(agent_name);
 CREATE INDEX IF NOT EXISTS idx_scores_message ON scores(message_id);
 CREATE INDEX IF NOT EXISTS idx_scores_user    ON scores(user_id);
 

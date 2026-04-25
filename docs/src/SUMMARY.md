@@ -27,6 +27,7 @@
 - [Rate limiting](./features/rate-limiting.md)
 - [Response language](./features/language.md)
 - [LLM-as-judge evaluation](./features/evaluation.md)
+- [Experiments (A/B testing)](./features/experiments.md)
 
 # Reference
 

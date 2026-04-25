@@ -6,6 +6,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use config::Strategy;
 use judge::{Judge, spawn_score};
 use limits::Tracker;
 use memory::{Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
@@ -16,6 +17,7 @@ use crate::ChatCompletionRequest;
 use crate::chat::Message as ChatMessage;
 use crate::error::ApiError;
 use crate::extractor::{Extractor, spawn_extract};
+use crate::shadow::spawn_shadow_runs;
 use crate::stream::{StreamContext, sse_response};
 
 /// Shared state for the OpenAI-compatible proxy. Held in an `Arc` so axum
@@ -75,20 +77,55 @@ async fn chat_completions<P: Prompter + 'static>(
 ) -> Result<Response, ApiError> {
     let prepared = prepare_request(&state, &request).await?;
 
+    // Resolve the addressable name (an agent or an experiment) to a
+    // concrete variant agent for this user. Sticky-by-user routing means
+    // the same user lands on the same variant across requests when
+    // configured that way. The resolved name is what the prompter actually
+    // runs, what judges score, and what telemetry records — but the
+    // client-facing `model` echoed back in the response stays as the
+    // user wrote it (so OpenAI clients see the model id they sent).
+    //
+    // For a bandit experiment the resolution requires recent mean
+    // scores; for split/shadow/passthrough the lookup is a no-op.
+    let bandit_scores = match state.prompter.router().bandit_query(&request.model) {
+        Some((judge, criterion, since)) => state
+            .memory
+            .mean_scores_by_agent(&judge, &criterion, since)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let resolved = state.prompter.router().resolve_with_scores(
+        &request.model,
+        prepared.user_id,
+        &bandit_scores,
+    );
+    let agent_name = resolved.agent.clone().into_owned();
+    let experiment_name = resolved.experiment.map(str::to_owned);
+
     // Pre-generate the assistant message id so we can reuse its UUID as the
     // telemetry turn correlation id. One value joins the stored message to
     // the full event tree produced while generating it.
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
+    let turn_start_payload = match experiment_name.as_deref() {
+        Some(experiment) => serde_json::json!({
+            "agent": agent_name,
+            "experiment": experiment,
+            "user_message": prepared.user_message,
+            "variant": agent_name,
+        }),
+        None => serde_json::json!({
+            "agent": agent_name,
+            "user_message": prepared.user_message,
+        }),
+    };
     let turn_start = Event::new(
         turn_id,
         prepared.user_id,
         None,
         EventKind::TurnStart,
-        serde_json::json!({
-            "agent": request.model,
-            "user_message": prepared.user_message,
-        }),
+        turn_start_payload,
     );
     let turn_start_id = turn_start.id;
     if let Err(err) = state.telemetry.emit(turn_start).await {
@@ -100,12 +137,34 @@ async fn chat_completions<P: Prompter + 'static>(
         user_id: prepared.user_id,
     };
 
+    // Shadow setup: clone the inputs the primary will consume so the
+    // background variants can run against the same context. No-op for
+    // non-shadow strategies — the helper itself early-exits when the
+    // experiment isn't shadow or sampling drops the turn.
+    let shadow_inputs = state
+        .prompter
+        .router()
+        .get(&request.model)
+        .filter(|exp| matches!(exp.strategy, Strategy::Shadow))
+        .map(|exp| (exp.clone(), prepared.messages.clone()));
+
     if request.is_streaming() {
+        if let Some((experiment, messages)) = shadow_inputs {
+            spawn_shadow_runs(
+                Arc::clone(&state),
+                &experiment,
+                turn_id,
+                prepared.user_id,
+                prepared.user_message.clone(),
+                messages,
+            );
+        }
         let inner = state
             .prompter
-            .complete_streaming(&request.model, prepared.messages, ctx)
+            .complete_streaming(&agent_name, prepared.messages, ctx)
             .await?;
         let response = sse_response(StreamContext {
+            agent_name,
             assistant_message_id,
             include_usage: request.include_usage(),
             inner,
@@ -120,8 +179,18 @@ async fn chat_completions<P: Prompter + 'static>(
 
     let completion = state
         .prompter
-        .complete(&request.model, prepared.messages, ctx)
+        .complete(&agent_name, prepared.messages, ctx)
         .await?;
+    if let Some((experiment, messages)) = shadow_inputs {
+        spawn_shadow_runs(
+            Arc::clone(&state),
+            &experiment,
+            turn_id,
+            prepared.user_id,
+            prepared.user_message.clone(),
+            messages,
+        );
+    }
     if let Err(err) = state
         .tracker
         .record(&prepared.tracker_key, completion.usage.total_tokens)
@@ -151,13 +220,14 @@ async fn chat_completions<P: Prompter + 'static>(
         );
     }
 
-    let judges = judges_for_agent(&state, &request.model);
+    let judges = judges_for_agent(&state, &agent_name);
     spawn_score(
         judges,
         Arc::clone(&state.memory),
         Arc::clone(&state.prompter),
         prepared.user_id,
         assistant_message_id,
+        agent_name.clone(),
         prepared.user_message,
         completion.text.clone(),
     );
