@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 async-stream.workspace = true
 config.workspace = true
+coulisse-core.workspace = true
 futures.workspace = true
 memory.workspace = true
 oxilangtag.workspace = true

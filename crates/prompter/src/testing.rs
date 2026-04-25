@@ -1,16 +1,18 @@
 //! Real in-memory `Prompter` implementation for tests. Drives handlers
 //! deterministically without talking to a provider.
 
+use std::pin::Pin;
 use std::sync::Mutex;
 
 use async_stream::stream;
 
 use config::{AgentConfig, ExperimentConfig, ProviderKind};
+use coulisse_core::{OneShotError, OneShotPrompt};
 
 use crate::experiment::ExperimentRouter;
 use crate::{
-    Completion, CompletionStream, Message, Prompter, PrompterError, StreamEvent, ToolCallKind,
-    Usage,
+    Completion, CompletionStream, Message, Prompter, PrompterError, Role, StreamEvent,
+    ToolCallKind, Usage,
 };
 
 /// A `Prompter` that replays a scripted reply. Each call to `complete` or
@@ -236,6 +238,27 @@ impl Prompter for ScriptedPrompter {
         Ok(Completion {
             text: reply.full_text(),
             usage: reply.usage,
+        })
+    }
+}
+
+impl OneShotPrompt for ScriptedPrompter {
+    fn one_shot<'a>(
+        &'a self,
+        _provider: &'a str,
+        _model: &'a str,
+        _preamble: &'a str,
+        user_text: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
+        Box::pin(async move {
+            let messages = vec![Message {
+                content: user_text.to_string(),
+                role: Role::User,
+            }];
+            self.prompt_with(ProviderKind::Openai, "scripted", "", messages)
+                .await
+                .map(|c| c.text)
+                .map_err(|e| OneShotError::new(e.to_string()))
         })
     }
 }

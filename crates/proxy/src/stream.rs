@@ -18,7 +18,6 @@ use prompter::{
 use crate::chat::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
 };
-use crate::extractor::spawn_extract;
 use crate::server::{AppState, judges_for_agent};
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
@@ -231,11 +230,9 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
                     eprintln!("memory append failed for tool call: {err}");
                 }
             }
-            if let Some(extractor) = state.extractor.clone() {
-                spawn_extract(
-                    extractor,
+            if let Some(extractor) = state.extractor.as_ref() {
+                extractor.spawn(
                     Arc::clone(&state.memory),
-                    Arc::clone(&state.prompter),
                     user_id,
                     user_message.clone(),
                     accumulated.clone(),

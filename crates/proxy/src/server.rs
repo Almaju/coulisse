@@ -9,14 +9,13 @@ use axum::routing::{get, post};
 use config::Strategy;
 use judge::{Judge, spawn_score};
 use limits::Tracker;
-use memory::{Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
+use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use prompter::Prompter;
 use telemetry::{Ctx as TelemetryCtx, Event, EventKind, Sink as TelemetrySink, TurnId};
 
 use crate::ChatCompletionRequest;
 use crate::chat::Message as ChatMessage;
 use crate::error::ApiError;
-use crate::extractor::{Extractor, spawn_extract};
 use crate::shadow::spawn_shadow_runs;
 use crate::stream::{StreamContext, sse_response};
 
@@ -209,11 +208,9 @@ async fn chat_completions<P: Prompter + 'static>(
     )
     .await?;
 
-    if let Some(extractor) = state.extractor.clone() {
-        spawn_extract(
-            extractor,
+    if let Some(extractor) = state.extractor.as_ref() {
+        extractor.spawn(
             Arc::clone(&state.memory),
-            Arc::clone(&state.prompter),
             prepared.user_id,
             prepared.user_message.clone(),
             completion.text.clone(),

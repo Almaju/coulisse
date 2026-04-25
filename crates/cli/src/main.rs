@@ -8,9 +8,9 @@ use axum::routing::get;
 use config::{Config, JudgeConfig, ProviderKind, StudioConfig};
 use judge::Judge;
 use limits::Tracker;
-use memory::{BackendConfig, EmbedderConfig, Store, UserId};
+use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
 use prompter::{Prompter, RigPrompter};
-use proxy::{AppState, Extractor};
+use proxy::AppState;
 use studio::{OidcRuntime, StudioAuth, StudioCredentials, StudioState};
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
@@ -31,11 +31,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::open(config.memory.clone(), embedder_fallback_key.as_deref()).await?;
     let memory = Arc::new(store);
 
-    let extractor = match extractor_config {
-        Some(ref cfg) => Some(Arc::new(Extractor::from_config(cfg)?)),
-        None => None,
-    };
-
     let judges = build_judges(&judge_configs)?;
 
     let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
@@ -47,6 +42,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?,
     );
+
+    let extractor = extractor_config
+        .as_ref()
+        .map(|cfg| Arc::new(Extractor::new(cfg.clone(), Arc::clone(&prompter) as _)));
+
     let tracker = Tracker::open(memory.pool().clone()).await?;
     let proxy_state = Arc::new(AppState {
         default_user_id,

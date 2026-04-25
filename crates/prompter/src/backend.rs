@@ -22,6 +22,7 @@ use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
 use config::{AgentConfig, Config, McpServerConfig, ProviderKind};
+use coulisse_core::{OneShotError, OneShotPrompt};
 use memory::Store;
 
 use crate::experiment::ExperimentRouter;
@@ -298,6 +299,30 @@ impl Prompter for RigPrompter {
         self.inner
             .prompt_with(provider, model, preamble, messages)
             .await
+    }
+}
+
+impl OneShotPrompt for RigPrompter {
+    fn one_shot<'a>(
+        &'a self,
+        provider: &'a str,
+        model: &'a str,
+        preamble: &'a str,
+        user_text: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
+        Box::pin(async move {
+            let provider_kind = ProviderKind::parse(provider)
+                .ok_or_else(|| OneShotError::new(format!("unknown provider '{provider}'")))?;
+            let messages = vec![Message {
+                content: user_text.to_string(),
+                role: Role::User,
+            }];
+            self.inner
+                .prompt_with(provider_kind, model, preamble, messages)
+                .await
+                .map(|c| c.text)
+                .map_err(|e| OneShotError::new(e.to_string()))
+        })
     }
 }
 

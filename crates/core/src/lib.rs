@@ -5,6 +5,8 @@
 //! Feature crates depend on `coulisse-core`; they never depend on each
 //! other. If a type lives in only one feature, keep it there.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -182,4 +184,29 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Single-shot prompt against a named provider/model. Used by features that
+/// need to call an LLM out-of-band from the main agent flow — e.g. memory
+/// fact extraction, judge scoring. Implemented by whatever crate owns the
+/// LLM clients (currently `prompter`); consumed by feature crates so they
+/// don't need to depend on `prompter` directly.
+pub trait OneShotPrompt: Send + Sync {
+    fn one_shot<'a>(
+        &'a self,
+        provider: &'a str,
+        model: &'a str,
+        preamble: &'a str,
+        user_text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, OneShotError>> + Send + 'a>>;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct OneShotError(pub String);
+
+impl OneShotError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
 }
