@@ -236,7 +236,7 @@ impl Memory {
 
 /// Single criterion evaluation attached to an assistant message by an LLM judge.
 /// Each rubric on a judge produces one `Score` per scored turn; averages and
-/// trends are computed at read time (admin views), not aggregated here.
+/// trends are computed at read time (studio views), not aggregated here.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Score {
     pub created_at: u64,
@@ -275,7 +275,7 @@ impl Score {
 }
 
 /// Whether a tool invocation was serviced by an MCP server or by another
-/// agent acting as a tool (subagent). The distinction matters in the admin
+/// agent acting as a tool (subagent). The distinction matters in the studio
 /// UI where subagent calls carry different semantics (nested conversation,
 /// own token usage) from MCP calls (pure function invocation).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

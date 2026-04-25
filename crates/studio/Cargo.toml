@@ -1,5 +1,5 @@
 [package]
-name = "admin"
+name = "studio"
 edition = "2024"
 # Excluded from the root workspace so the standard `cargo build`/`cargo test`
 # loop (and the pre-commit hook) doesn't try to compile this Leptos app to

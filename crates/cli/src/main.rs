@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use config::{Config, JudgeConfig, ProviderKind, StudioConfig};
 use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Store, UserId};
-use prompter::{AdminConfig, Config, JudgeConfig, Prompter, ProviderKind, RigPrompter};
-use server::{AdminAuth, AdminCredentials, AppState, Extractor, OidcRuntime, Server};
+use prompter::{Prompter, RigPrompter};
+use server::{AppState, Extractor, OidcRuntime, Server, StudioAuth, StudioCredentials};
 use telemetry::Sink as TelemetrySink;
 
 #[tokio::main]
@@ -14,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path =
         std::env::var("COULISSE_CONFIG").unwrap_or_else(|_| "coulisse.yaml".to_string());
     let config = Config::from_path(&config_path)?;
-    let admin_auth = build_admin_auth(config.admin.as_ref()).await?;
+    let studio_auth = build_studio_auth(config.studio.as_ref()).await?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
     let embedder_fallback_key = embedder_fallback_key(&config);
@@ -35,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompter = Arc::new(RigPrompter::new(config, Some(Arc::clone(&telemetry))).await?);
     let tracker = Tracker::open(memory.pool().clone()).await?;
     let state = Arc::new(AppState {
-        admin_auth,
+        studio_auth,
         default_user_id,
         extractor,
         judges: Arc::new(judges),
@@ -48,10 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
     println!("coulisse listening on http://{addr}");
     println!("  memory: {memory_summary}");
-    match state.admin_auth.as_ref() {
-        Some(AdminAuth::Basic(_)) => println!("  admin: basic auth enabled"),
-        Some(AdminAuth::Oidc(_)) => println!("  admin: OIDC login enabled"),
-        None => println!("  admin: unauthenticated (set `admin.basic` or `admin.oidc`)"),
+    match state.studio_auth.as_ref() {
+        Some(StudioAuth::Basic(_)) => println!("  studio: basic auth enabled"),
+        Some(StudioAuth::Oidc(_)) => println!("  studio: OIDC login enabled"),
+        None => println!("  studio: unauthenticated (set `studio.basic` or `studio.oidc`)"),
     }
     if let Some(cfg) = &extractor_config {
         println!(
@@ -94,24 +95,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Resolve the YAML `admin` block into a runtime `AdminAuth`. Validation
+/// Resolve the YAML `studio` block into a runtime `StudioAuth`. Validation
 /// at config load already guarantees that at most one of `basic`/`oidc`
 /// is set when the block is present — so this function only needs to
 /// pick the branch that exists. OIDC builds an issuer-discovered client;
 /// any failure there surfaces as a fatal startup error.
-async fn build_admin_auth(
-    config: Option<&AdminConfig>,
-) -> Result<Option<AdminAuth>, Box<dyn std::error::Error>> {
+async fn build_studio_auth(
+    config: Option<&StudioConfig>,
+) -> Result<Option<StudioAuth>, Box<dyn std::error::Error>> {
     let Some(cfg) = config else { return Ok(None) };
     if let Some(basic) = &cfg.basic {
-        return Ok(Some(AdminAuth::Basic(AdminCredentials::new(
+        return Ok(Some(StudioAuth::Basic(StudioCredentials::new(
             basic.username.clone(),
             basic.password.clone(),
         ))));
     }
     if let Some(oidc) = &cfg.oidc {
         let runtime = OidcRuntime::discover(oidc).await?;
-        return Ok(Some(AdminAuth::Oidc(Box::new(runtime))));
+        return Ok(Some(StudioAuth::Oidc(Box::new(runtime))));
     }
     Ok(None)
 }

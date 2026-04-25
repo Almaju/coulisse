@@ -1,8 +1,8 @@
-//! Read-only JSON endpoints for the admin UI.
+//! Read-only JSON endpoints for the studio UI.
 //!
-//! These live under `/admin/api/*` and are intentionally minimal: list users,
+//! These live under `/studio/api/*` and are intentionally minimal: list users,
 //! read one user's messages, read one user's long-term memories. Writes and
-//! auth are deliberately out of scope — see `docs/src/features/admin-ui.md`.
+//! auth are deliberately out of scope — see `docs/src/features/studio-ui.md`.
 
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ pub fn router<P: Prompter + 'static>() -> Router<Arc<AppState<P>>> {
 
 async fn list_users<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
-) -> Result<Json<UsersResponse>, AdminError> {
+) -> Result<Json<UsersResponse>, StudioError> {
     let users = state
         .memory
         .list_user_summaries()
@@ -51,7 +51,7 @@ async fn list_users<P: Prompter>(
 async fn user_messages<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
-) -> Result<Json<MessagesResponse>, AdminError> {
+) -> Result<Json<MessagesResponse>, StudioError> {
     use std::collections::HashMap;
 
     let user_id = parse_user_id(&user_id)?;
@@ -88,7 +88,7 @@ async fn user_messages<P: Prompter>(
 async fn user_memories<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
-) -> Result<Json<MemoriesResponse>, AdminError> {
+) -> Result<Json<MemoriesResponse>, StudioError> {
     let user_id = parse_user_id(&user_id)?;
     let um = state.memory.for_user(user_id);
     let memories = um
@@ -103,7 +103,7 @@ async fn user_memories<P: Prompter>(
 async fn turn_events<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
     Path((user_id, turn_id)): Path<(String, String)>,
-) -> Result<Json<EventsResponse>, AdminError> {
+) -> Result<Json<EventsResponse>, StudioError> {
     let user_id = parse_user_id(&user_id)?;
     let turn_id = parse_turn_id(&turn_id)?;
     let events = state
@@ -119,7 +119,7 @@ async fn turn_events<P: Prompter>(
 async fn user_scores<P: Prompter>(
     State(state): State<Arc<AppState<P>>>,
     Path(user_id): Path<String>,
-) -> Result<Json<ScoresResponse>, AdminError> {
+) -> Result<Json<ScoresResponse>, StudioError> {
     let user_id = parse_user_id(&user_id)?;
     let um = state.memory.for_user(user_id);
     let scores: Vec<ScoreView> = um
@@ -161,42 +161,42 @@ fn average_by_criterion(scores: &[ScoreView]) -> Vec<CriterionAverage> {
     out
 }
 
-/// Admin endpoints expect a real UUID in the path — unlike chat requests,
+/// Studio endpoints expect a real UUID in the path — unlike chat requests,
 /// there's no sensible way to derive one from arbitrary strings here, since
 /// the caller is trying to look up a specific pre-existing record.
-fn parse_user_id(raw: &str) -> Result<UserId, AdminError> {
+fn parse_user_id(raw: &str) -> Result<UserId, StudioError> {
     Uuid::parse_str(raw)
         .map(UserId::from)
-        .map_err(|_| AdminError::InvalidUserId)
+        .map_err(|_| StudioError::InvalidUserId)
 }
 
-fn parse_turn_id(raw: &str) -> Result<TurnId, AdminError> {
+fn parse_turn_id(raw: &str) -> Result<TurnId, StudioError> {
     Uuid::parse_str(raw)
         .map(TurnId)
-        .map_err(|_| AdminError::InvalidTurnId)
+        .map_err(|_| StudioError::InvalidTurnId)
 }
 
 #[derive(Debug)]
-enum AdminError {
+enum StudioError {
     InvalidTurnId,
     InvalidUserId,
     Memory(MemoryError),
     Telemetry(TelemetryError),
 }
 
-impl From<MemoryError> for AdminError {
+impl From<MemoryError> for StudioError {
     fn from(err: MemoryError) -> Self {
         Self::Memory(err)
     }
 }
 
-impl From<TelemetryError> for AdminError {
+impl From<TelemetryError> for StudioError {
     fn from(err: TelemetryError) -> Self {
         Self::Telemetry(err)
     }
 }
 
-impl IntoResponse for AdminError {
+impl IntoResponse for StudioError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::InvalidTurnId => (
@@ -211,7 +211,7 @@ impl IntoResponse for AdminError {
             Self::Telemetry(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
         let body = Json(serde_json::json!({
-            "error": { "message": message, "type": "admin_error" }
+            "error": { "message": message, "type": "studio_error" }
         }));
         (status, body).into_response()
     }
@@ -380,7 +380,7 @@ pub struct EventsResponse {
     pub events: Vec<EventView>,
 }
 
-/// One telemetry row surfaced to the admin UI. `parent_id` is used to
+/// One telemetry row surfaced to the studio UI. `parent_id` is used to
 /// reconstruct the causal tree on the client — every event roots at the
 /// `turn_start` whose `id` matches the turn correlation id.
 #[derive(Clone, Debug, Serialize)]

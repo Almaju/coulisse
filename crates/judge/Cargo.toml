@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+config.workspace = true
 memory.workspace = true
 prompter.workspace = true
 rand = "0.8"

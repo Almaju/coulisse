@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use config::{JudgeConfig, ProviderKind};
 use memory::{MessageId, Score, Store, UserId};
-use prompter::{
-    JudgeConfig, Message as PrompterMessage, Prompter, ProviderKind, Role as PrompterRole,
-};
+use prompter::{Message as PrompterMessage, Prompter, Role as PrompterRole};
 use serde::Deserialize;
 
 /// Runtime judge built from YAML and validated at startup. Holds the

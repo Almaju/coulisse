@@ -140,7 +140,7 @@ pub fn sse_response<P: Prompter + 'static>(
 
 /// Tool invocation captured from the stream. `result` is filled when the
 /// paired ToolResult event arrives; left `None` if the stream ended first
-/// (e.g. client disconnect), so the admin view can still see that a call
+/// (e.g. client disconnect), so the studio view can still see that a call
 /// was attempted.
 struct PendingToolCall {
     args: String,

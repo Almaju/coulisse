@@ -1,6 +1,6 @@
 //! Operator-visibility storage for Coulisse. Captures what happened during a
 //! turn (tool calls, subagent calls, LLM round-trips) into an `events` table
-//! that the admin UI renders as a causal tree. Deliberately separate from
+//! that the studio UI renders as a causal tree. Deliberately separate from
 //! `memory` so observability growth never risks leaking into the prompt.
 
 mod ctx;

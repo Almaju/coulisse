@@ -105,19 +105,19 @@ Lists every agent defined in the config.
 
 Useful for UI dropdowns that want to populate a model picker from the server.
 
-## Admin endpoints
+## Studio endpoints
 
-Coulisse also serves a read-only admin surface under `/admin`:
+Coulisse also serves a read-only studio surface under `/studio`:
 
-| Method | Path                                   | Returns                                         |
-|--------|----------------------------------------|-------------------------------------------------|
-| `GET`  | `/admin`                               | The admin UI (Leptos WASM app). |
-| `GET`  | `/admin/api/users`                     | List of users with message/memory counts. |
-| `GET`  | `/admin/api/users/{user_id}/messages`  | Full conversation history for one user. |
-| `GET`  | `/admin/api/users/{user_id}/memories`  | Long-term memories for one user (no embeddings). |
+| Method | Path                                    | Returns                                         |
+|--------|-----------------------------------------|-------------------------------------------------|
+| `GET`  | `/studio`                               | The studio UI (Leptos WASM app). |
+| `GET`  | `/studio/api/users`                     | List of users with message/memory counts. |
+| `GET`  | `/studio/api/users/{user_id}/messages`  | Full conversation history for one user. |
+| `GET`  | `/studio/api/users/{user_id}/memories`  | Long-term memories for one user (no embeddings). |
 
-`{user_id}` must be a real UUID. See [Admin UI](../features/admin-ui.md) for what the interface does and how to build it.
+`{user_id}` must be a real UUID. See [Studio UI](../features/studio-ui.md) for what the interface does and how to build it.
 
 ## Auth
 
-Coulisse doesn't check the `Authorization` header. API keys set by your SDK are ignored — authentication and rate limiting in front of Coulisse are your responsibility (run it behind a reverse proxy or API gateway). This applies to `/admin` too: expose it only on trusted networks.
+Coulisse doesn't check the `Authorization` header. API keys set by your SDK are ignored — authentication and rate limiting in front of Coulisse are your responsibility (run it behind a reverse proxy or API gateway). This applies to `/studio` too: expose it only on trusted networks.

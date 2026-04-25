@@ -1,6 +1,6 @@
-# admin — Coulisse admin UI
+# studio — Coulisse studio UI
 
-Read-only Leptos WASM app for browsing Coulisse conversations and memories. Served by the main binary under `/admin`; the compiled bundle in `dist/` is embedded into the server via `rust-embed`.
+Read-only Leptos WASM app for browsing Coulisse conversations and memories. Served by the main binary under `/studio`; the compiled bundle in `dist/` is embedded into the server via `rust-embed`.
 
 This crate is **excluded from the root workspace** so `cargo build` / `cargo test` don't try to cross-compile it. Build it with `trunk` explicitly.
 
@@ -24,7 +24,7 @@ cd ../..
 cargo run
 ```
 
-Open `http://localhost:8421/admin`.
+Open `http://localhost:8421/studio`.
 
 ## Dev loop (hot reload)
 
@@ -32,16 +32,16 @@ Open `http://localhost:8421/admin`.
 # terminal 1 — main server on :8421
 cargo run
 
-# terminal 2 — Trunk on :4422, proxies /admin/api/* to :8421
-cd crates/admin
+# terminal 2 — Trunk on :4422, proxies /studio/api/* to :8421
+cd crates/studio
 trunk serve
 ```
 
-Then open `http://127.0.0.1:4422/admin/`. Edit `src/`, the page hot-reloads in ~1s.
+Then open `http://127.0.0.1:4422/studio/`. Edit `src/`, the page hot-reloads in ~1s.
 
 ## Layout
 
-- `src/api.rs` — typed client for `/admin/api/*`. Wire types mirror `crates/server/src/admin.rs` — keep them in sync.
+- `src/api.rs` — typed client for `/studio/api/*`. Wire types mirror `crates/server/src/studio.rs` — keep them in sync.
 - `src/components/` — shadcn-styled primitives (card, badge, spinner, empty state). Tailwind classes only.
 - `src/pages/` — users list, conversation view.
 - `index.html` — loads Tailwind via CDN.

@@ -47,7 +47,7 @@ curl http://localhost:8421/v1/chat/completions \
 
 The model may call the tool one or more times; Coulisse runs the tool loop internally and returns only the final assistant message.
 
-Under the hood, every invocation — tool name, arguments, result (or error) — is recorded against the assistant message that produced it, so you can replay the turn in the [admin UI](./admin-ui.md) and see which tools fired and what came back. This is tool-call capture for *debugging*, not an extension of the OpenAI surface: the wire response your SDK receives is unchanged.
+Under the hood, every invocation — tool name, arguments, result (or error) — is recorded against the assistant message that produced it, so you can replay the turn in the [studio UI](./studio-ui.md) and see which tools fired and what came back. This is tool-call capture for *debugging*, not an extension of the OpenAI surface: the wire response your SDK receives is unchanged.
 
 ## Transports
 
@@ -82,6 +82,6 @@ Coulisse caps a single request at 8 tool-call turns. If the model hasn't produce
 
 ## Capture limitations
 
-Tool-call capture only runs on the **streaming** path — every OpenAI SDK uses streaming for chat completions by default, so this covers normal usage. Non-streaming requests (`"stream": false`) still execute tools correctly; their invocations just aren't captured for the admin trail, because rig's non-streaming API doesn't expose intermediate events.
+Tool-call capture only runs on the **streaming** path — every OpenAI SDK uses streaming for chat completions by default, so this covers normal usage. Non-streaming requests (`"stream": false`) still execute tools correctly; their invocations just aren't captured for the studio trail, because rig's non-streaming API doesn't expose intermediate events.
 
-If a client disconnects mid-stream after a tool call has fired but before the result lands, the call is persisted with `result: null` so the admin UI still shows that the attempt happened.
+If a client disconnects mid-stream after a tool call has fired but before the result lands, the call is persisted with `result: null` so the studio UI still shows that the attempt happened.

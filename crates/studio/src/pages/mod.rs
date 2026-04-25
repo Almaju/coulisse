@@ -5,7 +5,7 @@ pub use conversation::ConversationPage;
 pub use users::UsersPage;
 
 /// Render a unix-seconds timestamp as a short relative label (e.g. "3m ago").
-/// Good enough for an admin overview; precision doesn't matter.
+/// Good enough for a studio overview; precision doesn't matter.
 ///
 /// `std::time::SystemTime` is unimplemented on `wasm32-unknown-unknown` and
 /// panics at runtime if called — we read the clock through `js_sys::Date`

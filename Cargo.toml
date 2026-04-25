@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/cli",
+    "crates/config",
     "crates/judge",
     "crates/limits",
     "crates/memory",
@@ -9,9 +10,9 @@ members = [
     "crates/server",
     "crates/telemetry",
 ]
-# `crates/admin` is a Leptos WASM app with its own lockfile. Kept out of the
+# `crates/studio` is a Leptos WASM app with its own lockfile. Kept out of the
 # workspace so `cargo test`/`cargo clippy` don't try to cross-compile it.
-exclude = ["crates/admin"]
+exclude = ["crates/studio"]
 
 [workspace.package]
 description = "OpenAI-compatible server with memory, tools, and multi-backend routing — configured with one YAML file."
@@ -23,6 +24,7 @@ version = "0.1.0"
 [workspace.dependencies]
 async-stream = "0.3"
 axum = "0.8"
+config = { path = "crates/config" }
 futures = "0.3"
 judge = { path = "crates/judge" }
 limits = { path = "crates/limits" }

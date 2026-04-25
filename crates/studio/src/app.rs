@@ -7,7 +7,7 @@ use crate::pages::{ConversationPage, UsersPage};
 #[component]
 pub fn App() -> impl IntoView {
     view! {
-        <Router base="/admin">
+        <Router base="/studio">
             <div class="flex min-h-screen flex-col bg-slate-950">
                 <Header/>
                 <main class="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
@@ -30,7 +30,7 @@ fn Header() -> impl IntoView {
                     <span class="inline-flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-xs font-bold text-slate-900">
                         "C"
                     </span>
-                    <span class="text-sm font-semibold text-slate-100">"Coulisse admin"</span>
+                    <span class="text-sm font-semibold text-slate-100">"Coulisse studio"</span>
                 </A>
                 <span class="text-xs text-slate-500">"Read-only · no auth"</span>
             </div>

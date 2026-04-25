@@ -5,9 +5,11 @@ use std::sync::Mutex;
 
 use async_stream::stream;
 
+use config::{AgentConfig, ProviderKind};
+
 use crate::{
-    AgentConfig, Completion, CompletionStream, Message, Prompter, PrompterError, ProviderKind,
-    StreamEvent, ToolCallKind, Usage,
+    Completion, CompletionStream, Message, Prompter, PrompterError, StreamEvent, ToolCallKind,
+    Usage,
 };
 
 /// A `Prompter` that replays a scripted reply. Each call to `complete` or
@@ -28,7 +30,7 @@ pub struct ScriptedReply {
 
 /// One scripted tool invocation emitted during a streaming reply. Fires
 /// before the text deltas so tests can assert that the server correlates
-/// call + result into the admin trail.
+/// call + result into the studio trail.
 #[derive(Clone)]
 pub struct ScriptedToolCall {
     pub args: String,

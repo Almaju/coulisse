@@ -12,7 +12,7 @@ What's in Coulisse today, and what's coming.
 - Tunable memory budgets (`context_budget`, `memory_budget_fraction`, `recall_k`) in YAML.
 - Multi-backend support (Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq).
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
-- Read-only admin UI at `/admin` for browsing conversations, memories, and judge scores.
+- Read-only studio UI at `/studio` for browsing conversations, memories, and judge scores.
 - LLM-as-judge evaluation — background scoring of agent replies against YAML-defined rubrics, with per-judge sampling and per-user persistence.
 - Streaming responses over SSE (`stream: true`, with `stream_options.include_usage`).
 - MCP tool integration over stdio and HTTP, with per-agent filtering.

@@ -18,7 +18,7 @@
 
 # Features
 
-- [Admin UI](./features/admin-ui.md)
+- [Studio UI](./features/studio-ui.md)
 - [Multi-agent routing](./features/multi-agent.md)
 - [Per-user memory](./features/memory.md)
 - [MCP tool integration](./features/tools.md)

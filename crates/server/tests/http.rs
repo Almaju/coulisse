@@ -14,12 +14,13 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
+use config::{AgentConfig, JudgeConfig, ProviderKind};
 use http_body_util::BodyExt;
 use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, MemoryConfig, Role as MemRole, Store, UserId};
 use prompter::testing::{ScriptedPrompter, ScriptedReply};
-use prompter::{AgentConfig, JudgeConfig, ProviderKind, ToolCallKind, Usage};
+use prompter::{ToolCallKind, Usage};
 use server::{AppState, Server};
 use tower::ServiceExt;
 
@@ -56,7 +57,7 @@ async fn make_app_full(
     agents: Vec<AgentConfig>,
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
-    admin_auth: Option<server::AdminAuth>,
+    studio_auth: Option<server::StudioAuth>,
 ) -> (Router, Arc<AppState<ScriptedPrompter>>) {
     let prompter = Arc::new(ScriptedPrompter::new(agents, replies));
     let config = MemoryConfig {
@@ -68,7 +69,7 @@ async fn make_app_full(
     let tracker = Tracker::open(memory.pool().clone()).await.unwrap();
     let telemetry = Arc::new(telemetry::Sink::open(memory.pool().clone()).await.unwrap());
     let state = Arc::new(AppState {
-        admin_auth,
+        studio_auth,
         default_user_id: None,
         extractor: None,
         judges: Arc::new(judges),
@@ -592,7 +593,7 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
     }
 }
 
-// ---------- Admin auth ----------
+// ---------- Studio auth ----------
 
 fn basic_auth_header(user: &str, pass: &str) -> String {
     use base64::Engine;
@@ -600,7 +601,7 @@ fn basic_auth_header(user: &str, pass: &str) -> String {
     format!("Basic {encoded}")
 }
 
-async fn make_app_with_admin_auth(
+async fn make_app_with_studio_auth(
     user: &str,
     pass: &str,
 ) -> (Router, Arc<AppState<ScriptedPrompter>>) {
@@ -608,14 +609,14 @@ async fn make_app_with_admin_auth(
         make_agents(),
         HashMap::new(),
         vec![],
-        Some(server::AdminAuth::Basic(server::AdminCredentials::new(
+        Some(server::StudioAuth::Basic(server::StudioCredentials::new(
             user, pass,
         ))),
     )
     .await
 }
 
-fn get_admin(uri: &str, auth: Option<&str>) -> Request<Body> {
+fn get_studio(uri: &str, auth: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().method("GET").uri(uri);
     if let Some(h) = auth {
         builder = builder.header("authorization", h);
@@ -624,10 +625,10 @@ fn get_admin(uri: &str, auth: Option<&str>) -> Request<Body> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admin_api_without_auth_returns_401_with_challenge() {
-    let (app, _) = make_app_with_admin_auth("admin", "s3cret").await;
+async fn studio_api_without_auth_returns_401_with_challenge() {
+    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
     let resp = app
-        .oneshot(get_admin("/admin/api/users", None))
+        .oneshot(get_studio("/studio/api/users", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -644,11 +645,11 @@ async fn admin_api_without_auth_returns_401_with_challenge() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admin_api_with_wrong_password_is_rejected() {
-    let (app, _) = make_app_with_admin_auth("admin", "s3cret").await;
+async fn studio_api_with_wrong_password_is_rejected() {
+    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
     let resp = app
-        .oneshot(get_admin(
-            "/admin/api/users",
+        .oneshot(get_studio(
+            "/studio/api/users",
             Some(&basic_auth_header("admin", "wrong")),
         ))
         .await
@@ -657,11 +658,11 @@ async fn admin_api_with_wrong_password_is_rejected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admin_api_with_correct_credentials_passes_through() {
-    let (app, _) = make_app_with_admin_auth("admin", "s3cret").await;
+async fn studio_api_with_correct_credentials_passes_through() {
+    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
     let resp = app
-        .oneshot(get_admin(
-            "/admin/api/users",
+        .oneshot(get_studio(
+            "/studio/api/users",
             Some(&basic_auth_header("admin", "s3cret")),
         ))
         .await
@@ -670,24 +671,24 @@ async fn admin_api_with_correct_credentials_passes_through() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admin_ui_without_auth_returns_401() {
-    let (app, _) = make_app_with_admin_auth("admin", "s3cret").await;
-    // Hit an SPA sub-route rather than `/admin/` itself — axum 0.8's nested
+async fn studio_ui_without_auth_returns_401() {
+    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
+    // Hit an SPA sub-route rather than `/studio/` itself — axum 0.8's nested
     // routers don't normalize trailing slashes, so the root is served via
     // the `{*path}` route that the SPA depends on for its client-side
     // routing anyway.
     let resp = app
-        .oneshot(get_admin("/admin/index.html", None))
+        .oneshot(get_studio("/studio/index.html", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn chat_endpoint_remains_unauthenticated_when_admin_auth_is_set() {
-    // Basic auth guards /admin only — /v1/chat/completions must stay open
+async fn chat_endpoint_remains_unauthenticated_when_studio_auth_is_set() {
+    // Basic auth guards /studio only — /v1/chat/completions must stay open
     // to existing OpenAI clients that don't speak Basic.
-    let (app, _) = make_app_with_admin_auth("admin", "s3cret").await;
+    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -699,17 +700,17 @@ async fn chat_endpoint_remains_unauthenticated_when_admin_auth_is_set() {
     assert_ne!(
         resp.status(),
         StatusCode::UNAUTHORIZED,
-        "chat endpoint must not be behind admin auth"
+        "chat endpoint must not be behind studio auth"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admin_api_without_configured_auth_is_open() {
-    // No `admin_credentials` → no middleware enforcement, matching the
+async fn studio_api_without_configured_auth_is_open() {
+    // No `studio_credentials` → no middleware enforcement, matching the
     // pre-auth behavior so existing dev setups keep working.
     let (app, _) = make_app(vec![]).await;
     let resp = app
-        .oneshot(get_admin("/admin/api/users", None))
+        .oneshot(get_studio("/studio/api/users", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

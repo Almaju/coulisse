@@ -5,7 +5,7 @@ A complete reference for every field in `coulisse.yaml`.
 ## Top-level
 
 ```yaml
-admin: { ... }                # optional; enables Basic auth on /admin/*
+studio: { ... }                # optional; enables Basic auth on /studio/*
 agents: [ ... ]               # required, non-empty
 default_user_id: <string>     # optional, unset by default
 judges: [ ... ]               # optional; empty/omitted = no evaluation
@@ -14,14 +14,14 @@ memory: { ... }               # optional; defaults to sqlite + hash embedder
 providers: { ... }            # required
 ```
 
-## `admin`
+## `studio`
 
 - **Type:** object
-- **Optional.** Omit to leave the admin UI and its JSON API unauthenticated.
+- **Optional.** Omit to leave the studio UI and its JSON API unauthenticated.
 
-When set, exactly one of `basic` or `oidc` must be declared. They are mutually exclusive — the server rejects a config that has both or neither. See [Admin UI](../features/admin-ui.md) for the end-to-end behavior.
+When set, exactly one of `basic` or `oidc` must be declared. They are mutually exclusive — the server rejects a config that has both or neither. See [Studio UI](../features/studio-ui.md) for the end-to-end behavior.
 
-### `admin.basic`
+### `studio.basic`
 
 Static HTTP Basic credentials. Best for local dev.
 
@@ -31,13 +31,13 @@ Static HTTP Basic credentials. Best for local dev.
 | `username` | string | no       | `admin`  | Non-empty when set. |
 
 ```yaml
-admin:
+studio:
   basic:
     password: choose-something-strong
     username: admin
 ```
 
-### `admin.oidc`
+### `studio.oidc`
 
 Authorization-code-with-PKCE login against an OIDC-compliant IdP (Authentik, Keycloak, Auth0, Google, etc.). Access control is delegated to the IdP's application policy — Coulisse accepts any successfully authenticated user.
 
@@ -46,16 +46,16 @@ Authorization-code-with-PKCE login against an OIDC-compliant IdP (Authentik, Key
 | `client_id`     | string          | yes      | —                 | Must match the client registered at the IdP. |
 | `client_secret` | string          | no       | —                 | Required for confidential clients (Authentik's default); omit for public clients using PKCE only. |
 | `issuer_url`    | string          | yes      | —                 | IdP issuer. For Authentik: `https://<host>/application/o/<app-slug>/`. |
-| `redirect_url`  | string          | yes      | —                 | Public base URL of the admin. Must be registered as the redirect URI at the IdP. axum-oidc allows every subpath of this URL as a valid redirect. |
+| `redirect_url`  | string          | yes      | —                 | Public base URL of the studio. Must be registered as the redirect URI at the IdP. axum-oidc allows every subpath of this URL as a valid redirect. |
 | `scopes`        | `list<string>`  | no       | `[email, profile]`| Extra OAuth2 scopes. `openid` is added automatically. |
 
 ```yaml
-admin:
+studio:
   oidc:
     issuer_url:    https://authentik.example.com/application/o/coulisse/
-    client_id:     coulisse-admin
+    client_id:     coulisse-studio
     client_secret: <secret>
-    redirect_url:  http://localhost:8421/admin/
+    redirect_url:  http://localhost:8421/studio/
 ```
 
 ## `default_user_id`
@@ -255,9 +255,9 @@ judges:
 
 On startup, Coulisse checks:
 
-- `admin` (when set) declares exactly one of `basic` or `oidc`.
-- `admin.basic.password` and `admin.basic.username` are non-empty.
-- `admin.oidc.client_id`, `issuer_url`, and `redirect_url` are non-empty.
+- `studio` (when set) declares exactly one of `basic` or `oidc`.
+- `studio.basic.password` and `studio.basic.username` are non-empty.
+- `studio.oidc.client_id`, `issuer_url`, and `redirect_url` are non-empty.
 - There is at least one agent.
 - Agent names are unique.
 - Every agent's `provider` is configured.

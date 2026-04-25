@@ -2,7 +2,7 @@ default:
     @just --list
 
 build:
-    cd crates/admin && trunk build --release
+    cd crates/studio && trunk build --release
     cargo build --release
 
 dev:
@@ -14,7 +14,7 @@ dev:
     # Gate trunk on the server binding :8421 so its proxy doesn't fire at a
     # dead socket during cold compile (or while the server blocks on OAuth).
     until nc -z 127.0.0.1 8421 2>/dev/null; do sleep 1; done
-    (cd crates/admin && trunk serve) &
+    (cd crates/studio && trunk serve) &
     wait
 
 install:

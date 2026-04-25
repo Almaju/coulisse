@@ -1,11 +1,11 @@
-//! HTTP client for the admin JSON API. Mirrors the wire types defined in
-//! `crates/server/src/admin.rs` — keep the two in sync when either side
+//! HTTP client for the studio JSON API. Mirrors the wire types defined in
+//! `crates/server/src/studio.rs` — keep the two in sync when either side
 //! changes.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const BASE: &str = "/admin/api";
+const BASE: &str = "/studio/api";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UserView {

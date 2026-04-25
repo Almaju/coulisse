@@ -9,6 +9,7 @@ async-stream.workspace = true
 axum.workspace = true
 axum-oidc = "0.6"
 base64 = "0.22"
+config.workspace = true
 futures.workspace = true
 http = "1"
 judge.workspace = true

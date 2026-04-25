@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use config::ProviderKind;
 use memory::{ExtractorConfig, MemoryKind, Store, UserId};
-use prompter::{Message as PrompterMessage, Prompter, ProviderKind, Role as PrompterRole};
+use prompter::{Message as PrompterMessage, Prompter, Role as PrompterRole};
 use serde::Deserialize;
 
 const PREAMBLE: &str = "You extract durable facts about a user from a single \

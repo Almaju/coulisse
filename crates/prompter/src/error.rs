@@ -1,7 +1,9 @@
+use config::ProviderKind;
 use thiserror::Error;
 
-use crate::ProviderKind;
-
+/// Runtime errors raised after config has loaded successfully. Anything
+/// that's a static schema/coverage failure lives in `config::ConfigError`
+/// instead.
 #[derive(Debug, Error)]
 pub enum PrompterError {
     #[error("failed to initialize {provider} client: {source}")]
@@ -10,24 +12,6 @@ pub enum PrompterError {
         #[source]
         source: rig::http_client::Error,
     },
-    #[error("admin block must declare exactly one of `basic` or `oidc`, not both (remove one)")]
-    AdminBothAuthMethods,
-    #[error(
-        "admin block must declare one of `basic` or `oidc` (or remove the block to disable auth)"
-    )]
-    AdminWithoutAuth,
-    #[error("admin.oidc.{0} must be non-empty")]
-    BlankAdminOidcField(&'static str),
-    #[error("admin.basic.password must be non-empty")]
-    BlankAdminPassword,
-    #[error("admin.basic.username must be non-empty")]
-    BlankAdminUsername,
-    #[error("default_user_id must be non-empty when set")]
-    BlankDefaultUserId,
-    #[error("duplicate agent name in config: {0}")]
-    DuplicateAgent(String),
-    #[error("agent '{agent}' lists subagent '{subagent}' more than once")]
-    DuplicateSubagent { agent: String, subagent: String },
     #[error("conversation has no user or assistant messages")]
     EmptyConversation,
     #[error("failed to connect to MCP server '{server}': {source}")]
@@ -50,43 +34,12 @@ pub enum PrompterError {
         server: String,
         tool: String,
     },
-    #[error("duplicate judge name in config: {0}")]
-    DuplicateJudge(String),
-    #[error("judge '{judge}' has sampling_rate={value}, must be in [0.0, 1.0]")]
-    InvalidSamplingRate { judge: String, value: f32 },
-    #[error("agent '{agent}' references judge '{judge}' which is not configured")]
-    JudgeNotConfigured { agent: String, judge: String },
-    #[error(
-        "judge '{judge}' references provider '{provider}' which is not declared under `providers:`"
-    )]
-    JudgeProviderNotConfigured {
-        judge: String,
-        provider: ProviderKind,
-    },
-    #[error(
-        "judge '{judge}' provider '{provider}' is not supported (anthropic, cohere, deepseek, gemini, groq, openai)"
-    )]
-    JudgeUnknownProvider { judge: String, provider: String },
-    #[error("judge '{0}' declares no rubrics; add at least one `criterion: description` entry")]
-    JudgeWithoutRubrics(String),
-    #[error("config must declare at least one agent")]
-    NoAgents,
-    #[error("failed to parse config: {0}")]
-    ParseConfig(serde_yaml::Error),
     #[error("provider request failed: {0}")]
     Provider(#[from] rig::completion::PromptError),
-    #[error("provider streaming failed: {0}")]
-    Streaming(String),
     #[error("agent '{agent}' references provider '{provider}' which is not configured")]
     ProviderNotConfigured {
         agent: String,
         provider: ProviderKind,
-    },
-    #[error("failed to read config file {path}: {source}")]
-    ReadConfig {
-        path: String,
-        #[source]
-        source: std::io::Error,
     },
     #[error("failed to spawn MCP server '{server}': {source}")]
     SpawnMcp {
@@ -94,18 +47,10 @@ pub enum PrompterError {
         #[source]
         source: std::io::Error,
     },
-    #[error("agent '{0}' cannot list itself as a subagent")]
-    SelfSubagent(String),
+    #[error("provider streaming failed: {0}")]
+    Streaming(String),
     #[error("subagent hop limit exceeded ({limit}) invoking '{subagent}'")]
     SubagentDepthExceeded { limit: usize, subagent: String },
     #[error("unknown agent: {0}")]
     UnknownAgent(String),
-    #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
-    UnknownSubagent { agent: String, subagent: String },
-}
-
-impl std::fmt::Display for ProviderKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
 }

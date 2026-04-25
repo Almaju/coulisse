@@ -21,7 +21,9 @@ use serde_json::json;
 use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
-use crate::{AgentConfig, Completion, Config, McpServerConfig, PrompterError, ProviderKind, Usage};
+use config::{AgentConfig, Config, McpServerConfig, ProviderKind};
+
+use crate::{Completion, PrompterError, Usage};
 
 const MAX_TURNS: usize = 8;
 /// How many nested subagent calls are allowed before the hop limit kicks in.
@@ -76,7 +78,7 @@ pub enum Role {
 /// One event in a streamed completion. `Delta` carries an incremental piece of
 /// the assistant's response; `Done` is yielded at the end with cumulative
 /// token usage. `ToolCall` and `ToolResult` expose rig's multi-turn tool
-/// dispatch so callers (the admin UI, observability sinks) can record what
+/// dispatch so callers (the studio UI, observability sinks) can record what
 /// the agent tried and what came back. Correlate the pair by `call_id`.
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
@@ -158,7 +160,7 @@ pub trait Prompter: Send + Sync {
 impl RigPrompter {
     /// Build a prompter from `config`, optionally wired to a telemetry
     /// sink. When `telemetry` is `Some`, every tool invocation at any depth
-    /// (MCP or subagent) is recorded as a `ToolCall` event so the admin UI
+    /// (MCP or subagent) is recorded as a `ToolCall` event so the studio UI
     /// can reconstruct nested subagent trees. Tests that don't care pass
     /// `None` and pay no observability cost.
     pub async fn new(
@@ -477,7 +479,7 @@ impl RigPrompterInner {
 ///
 /// When a telemetry `sink` is configured, this tool emits its own
 /// `ToolCall` event and passes a child context down so the subagent's
-/// inner tool calls nest under this one in the admin tree.
+/// inner tool calls nest under this one in the studio tree.
 struct SubagentTool {
     ctx: Ctx,
     depth: usize,
@@ -577,7 +579,7 @@ impl ToolDyn for SubagentTool {
 }
 
 /// Tool decorator that records a `ToolCall` event around any inner
-/// `ToolDyn`. Used to instrument MCP tools so the admin UI can see what
+/// `ToolDyn`. Used to instrument MCP tools so the studio UI can see what
 /// arguments were sent and what came back, including errors — the exact
 /// blind spot that let hallucinated "database error" replies hide real
 /// upstream failures.
@@ -844,8 +846,8 @@ impl Conversation {
 
 /// Collapse rig's `ToolResult.content` (a `OneOrMany<ToolResultContent>`) into
 /// a single plain-text string for persistence. Text parts are joined; images
-/// are rendered as a stable `"<image>"` placeholder so the admin UI at least
-/// shows that an image was returned. Lossy on purpose — the admin view is for
+/// are rendered as a stable `"<image>"` placeholder so the studio UI at least
+/// shows that an image was returned. Lossy on purpose — the studio view is for
 /// human debugging, not verbatim replay.
 fn flatten_tool_result(tool_result: &rig::completion::message::ToolResult) -> String {
     use rig::completion::message::ToolResultContent;

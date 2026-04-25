@@ -21,21 +21,21 @@ use tower::ServiceBuilder;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
-use crate::admin_auth::{AdminAuth, require_basic_auth};
 use crate::chat::Message as ChatMessage;
 use crate::error::ApiError;
 use crate::extractor::{Extractor, spawn_extract};
 use crate::stream::{StreamContext, sse_response};
+use crate::studio_auth::{StudioAuth, require_basic_auth};
 use crate::{ChatCompletionRequest, ServerError};
 
 /// Shared state for the HTTP server. Held in an `Arc` so axum handlers can
 /// cheaply clone the reference.
 pub struct AppState<P: Prompter> {
-    /// Admin-auth configuration. `None` leaves `/admin/*` unauthenticated —
+    /// Studio-auth configuration. `None` leaves `/studio/*` unauthenticated —
     /// acceptable only on a loopback-only dev box or behind a reverse proxy
     /// that handles auth upstream. When `Some`, the variant picks the
     /// scheme: static Basic credentials or an OIDC login flow.
-    pub admin_auth: Option<AdminAuth>,
+    pub studio_auth: Option<StudioAuth>,
     /// Fallback user id applied to requests that don't supply their own.
     /// `None` means such requests are rejected (multi-tenant posture).
     pub default_user_id: Option<UserId>,
@@ -104,21 +104,21 @@ impl<P: Prompter + 'static> Server<P> {
     pub fn router(&self) -> Router {
         let state = Arc::clone(&self.state);
 
-        // Assemble the full `/admin/*` subtree in one place so auth layers
+        // Assemble the full `/studio/*` subtree in one place so auth layers
         // cover every route uniformly: `/api/*` for JSON, everything else
         // for the Leptos SPA. Nested `/api` is more specific than the
         // SPA's `/{*path}` fallback, so axum routes correctly.
-        let admin = Router::new()
-            .nest("/api", crate::admin::router::<P>())
-            .merge(crate::admin_ui::router::<P>());
+        let studio = Router::new()
+            .nest("/api", crate::studio::router::<P>())
+            .merge(crate::studio_ui::router::<P>());
 
-        let admin = match state.admin_auth.as_ref() {
-            None => admin,
-            Some(AdminAuth::Basic(_)) => admin.route_layer(from_fn_with_state(
+        let studio = match state.studio_auth.as_ref() {
+            None => studio,
+            Some(StudioAuth::Basic(_)) => studio.route_layer(from_fn_with_state(
                 Arc::clone(&state),
                 require_basic_auth::<P>,
             )),
-            Some(AdminAuth::Oidc(runtime)) => {
+            Some(StudioAuth::Oidc(runtime)) => {
                 // Session → auth (reads session, sets extensions) → login
                 // (forces redirect when no valid ID token). `.layer()` calls
                 // are applied outermost-last; session must wrap everything
@@ -137,12 +137,12 @@ impl<P: Prompter + 'static> Server<P> {
                     .layer(OidcAuthLayer::<EmptyAdditionalClaims>::new(
                         runtime.client.clone(),
                     ));
-                admin.layer(oidc_login).layer(oidc_auth).layer(session)
+                studio.layer(oidc_login).layer(oidc_auth).layer(session)
             }
         };
 
         Router::new()
-            .nest("/admin", admin)
+            .nest("/studio", studio)
             .route("/v1/chat/completions", post(chat_completions::<P>))
             .route("/v1/models", get(models::<P>))
             .with_state(state)

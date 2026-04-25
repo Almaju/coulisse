@@ -1,0 +1,11 @@
+[package]
+name = "config"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+memory.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true

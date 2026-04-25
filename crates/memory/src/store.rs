@@ -76,7 +76,7 @@ impl Store {
     }
 
     /// Summaries of every user the store has seen, ordered by most recent
-    /// activity first. Intended for read-only admin views.
+    /// activity first. Intended for read-only studio views.
     pub async fn list_user_summaries(&self) -> Result<Vec<UserSummary>, MemoryError> {
         let rows = sqlx::query(
             "SELECT u.user_id AS user_id, \
@@ -426,7 +426,7 @@ pub struct AssembledContext {
 }
 
 /// Aggregate view of a single user's stored data. Returned by
-/// `Store::list_user_summaries` for admin-style overviews.
+/// `Store::list_user_summaries` for studio-style overviews.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct UserSummary {
     pub last_activity_at: u64,

@@ -1,21 +1,21 @@
-//! Authentication for the admin UI and its JSON API.
+//! Authentication for the studio UI and its JSON API.
 //!
 //! Two modes, mutually exclusive at the YAML layer:
 //!
-//! - **Basic auth** (`admin.basic`): static username/password checked in a
+//! - **Basic auth** (`studio.basic`): static username/password checked in a
 //!   middleware. Browsers prompt via the native login dialog on
 //!   `WWW-Authenticate: Basic`, cache credentials per origin, and replay
 //!   them on subsequent XHRs — so the Leptos SPA needs no awareness of auth.
-//! - **OIDC** (`admin.oidc`): full authorization-code-with-PKCE login flow
+//! - **OIDC** (`studio.oidc`): full authorization-code-with-PKCE login flow
 //!   against any OIDC-compliant IdP (Authentik, Keycloak, Google, etc.).
 //!   Implemented via `axum-oidc` + `tower-sessions`, layered onto the
-//!   `/admin/*` subtree only so the OpenAI-compatible `/v1/*` routes
+//!   `/studio/*` subtree only so the OpenAI-compatible `/v1/*` routes
 //!   stay cookie-free for SDK clients.
 //!
 //! Access control (who may log in) is intentionally not configured here:
 //! for Basic, the credentials themselves are the gate; for OIDC, the IdP's
 //! application bindings decide. Coulisse treats "successfully authenticated"
-//! as "authorized admin" to keep the surface area small.
+//! as "authorized studio user" to keep the surface area small.
 
 use std::sync::Arc;
 
@@ -26,31 +26,32 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum_oidc::{EmptyAdditionalClaims, OidcClient};
 use base64::Engine;
+use config::StudioOidcConfig;
 use http::Uri;
-use prompter::{AdminOidcConfig, Prompter};
+use prompter::Prompter;
 use thiserror::Error;
 
 use crate::AppState;
 
-/// Runtime admin-auth state, built once from YAML at startup. The OIDC
+/// Runtime studio-auth state, built once from YAML at startup. The OIDC
 /// variant is boxed because its internal openid-connect client is ~1KB
 /// while the Basic variant is two short strings — keeping the enum small
 /// avoids stack bloat on every handler that carries `AppState`.
 #[derive(Clone)]
-pub enum AdminAuth {
-    Basic(AdminCredentials),
+pub enum StudioAuth {
+    Basic(StudioCredentials),
     Oidc(Box<OidcRuntime>),
 }
 
 /// Parsed Basic-auth credentials. Held in `AppState`; never mutated after
 /// construction.
 #[derive(Clone, Debug)]
-pub struct AdminCredentials {
+pub struct StudioCredentials {
     password: String,
     username: String,
 }
 
-impl AdminCredentials {
+impl StudioCredentials {
     pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
         Self {
             password: password.into(),
@@ -95,7 +96,7 @@ impl OidcRuntime {
     /// and assemble a ready-to-use client. `openid` is added to the scope
     /// list unconditionally — it's required by the protocol and omitting it
     /// from YAML shouldn't silently break login.
-    pub async fn discover(config: &AdminOidcConfig) -> Result<Self, OidcBuildError> {
+    pub async fn discover(config: &StudioOidcConfig) -> Result<Self, OidcBuildError> {
         let base =
             Uri::try_from(&config.redirect_url).map_err(|source| OidcBuildError::BaseUrl {
                 source,
@@ -120,7 +121,7 @@ impl OidcRuntime {
 
 #[derive(Debug, Error)]
 pub enum OidcBuildError {
-    #[error("admin.oidc.redirect_url is not a valid URI ({value:?}): {source}")]
+    #[error("studio.oidc.redirect_url is not a valid URI ({value:?}): {source}")]
     BaseUrl {
         source: http::uri::InvalidUri,
         value: String,
@@ -129,8 +130,8 @@ pub enum OidcBuildError {
     Discovery(axum_oidc::error::Error),
 }
 
-/// Tower middleware for the Basic-auth branch. When `state.admin_auth` is
-/// `Some(AdminAuth::Basic(_))`, rejects requests that don't carry matching
+/// Tower middleware for the Basic-auth branch. When `state.studio_auth` is
+/// `Some(StudioAuth::Basic(_))`, rejects requests that don't carry matching
 /// `Authorization: Basic` credentials. When `None` or `Oidc`, passes
 /// through — the OIDC layers (if any) handle those modes on their own.
 pub async fn require_basic_auth<P: Prompter>(
@@ -138,7 +139,7 @@ pub async fn require_basic_auth<P: Prompter>(
     request: Request,
     next: Next,
 ) -> Response {
-    let Some(AdminAuth::Basic(creds)) = state.admin_auth.as_ref() else {
+    let Some(StudioAuth::Basic(creds)) = state.studio_auth.as_ref() else {
         return next.run(request).await;
     };
     let ok = request
@@ -155,14 +156,14 @@ pub async fn require_basic_auth<P: Prompter>(
 }
 
 /// 401 with the `WWW-Authenticate: Basic` challenge that tells browsers to
-/// pop the login dialog. Realm is fixed so bookmarked admin pages prompt
+/// pop the login dialog. Realm is fixed so bookmarked studio pages prompt
 /// once per origin, not per path.
 fn unauthorized() -> Response {
-    let mut response = Response::new(Body::from("admin authentication required"));
+    let mut response = Response::new(Body::from("studio authentication required"));
     *response.status_mut() = StatusCode::UNAUTHORIZED;
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        r#"Basic realm="Coulisse admin", charset="UTF-8""#
+        r#"Basic realm="Coulisse studio", charset="UTF-8""#
             .parse()
             .expect("static header value"),
     );
@@ -192,37 +193,37 @@ mod tests {
 
     #[test]
     fn matching_credentials_accepted() {
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         assert!(creds.verify_header(&header_for("admin", "s3cret")));
     }
 
     #[test]
     fn wrong_password_rejected() {
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         assert!(!creds.verify_header(&header_for("admin", "wrong")));
     }
 
     #[test]
     fn wrong_username_rejected() {
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         assert!(!creds.verify_header(&header_for("root", "s3cret")));
     }
 
     #[test]
     fn non_basic_scheme_rejected() {
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         assert!(!creds.verify_header("Bearer abc"));
     }
 
     #[test]
     fn malformed_base64_rejected() {
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         assert!(!creds.verify_header("Basic !!!not-base64!!!"));
     }
 
     #[test]
     fn missing_colon_rejected() {
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         let encoded = base64::engine::general_purpose::STANDARD.encode("no-colon-here");
         assert!(!creds.verify_header(&format!("Basic {encoded}")));
     }
@@ -230,7 +231,7 @@ mod tests {
     #[test]
     fn lowercase_basic_scheme_accepted() {
         // Some clients lowercase the scheme; RFC 7235 makes it case-insensitive.
-        let creds = AdminCredentials::new("admin", "s3cret");
+        let creds = StudioCredentials::new("admin", "s3cret");
         let encoded = base64::engine::general_purpose::STANDARD.encode("admin:s3cret");
         assert!(creds.verify_header(&format!("basic {encoded}")));
     }

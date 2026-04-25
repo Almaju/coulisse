@@ -57,7 +57,7 @@ impl Sink {
         Ok(())
     }
 
-    /// Every event for one turn, oldest first. Used by the admin UI to
+    /// Every event for one turn, oldest first. Used by the studio UI to
     /// rebuild the call tree rooted at the `TurnStart`.
     pub async fn fetch_turn(
         &self,
@@ -78,7 +78,7 @@ impl Sink {
     }
 
     /// Turn ids for `user_id`, most recently active first, capped at `limit`.
-    /// Used by the admin UI to list a user's recent turns without loading
+    /// Used by the studio UI to list a user's recent turns without loading
     /// the full event stream.
     pub async fn recent_turns(
         &self,
