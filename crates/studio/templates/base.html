@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Coulisse studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    html, body { height: 100%; }
+    body {
+      background: #020617;
+      color: #e2e8f0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+        Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    ::selection { background: #334155; color: #f8fafc; }
+  </style>
+</head>
+<body class="antialiased">
+  <div class="flex min-h-screen flex-col bg-slate-950">
+    <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur">
+      <div class="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
+        <a href="/studio/" class="flex items-center gap-2">
+          <span class="inline-flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-xs font-bold text-slate-900">C</span>
+          <span class="text-sm font-semibold text-slate-100">Coulisse studio</span>
+        </a>
+        <span class="text-xs text-slate-500">Read-only</span>
+      </div>
+    </header>
+    <main class="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

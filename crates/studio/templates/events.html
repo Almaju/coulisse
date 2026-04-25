@@ -1,0 +1,20 @@
+{% if rows.is_empty() %}
+  <span class="italic text-slate-500">No events for this turn (legacy message written before telemetry was enabled).</span>
+{% else %}
+  <div class="space-y-1">
+    {% for r in rows %}
+      <div style="margin-left: {{ r.indent_px }}px">
+        <details class="rounded border border-slate-800 bg-slate-950/80 px-2 py-1">
+          <summary class="flex cursor-pointer items-center justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {{ r.kind_class }}">{{ r.kind }}</span>
+              <span class="truncate font-mono text-[11px] text-slate-300">{{ r.label }}</span>
+            </div>
+            <span class="text-[10px] text-slate-500">{{ r.duration }}</span>
+          </summary>
+          <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-[11px] text-slate-300">{{ r.payload_pretty }}</pre>
+        </details>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}

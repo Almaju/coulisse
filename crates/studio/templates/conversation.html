@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-6">
+  <a href="/studio/" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to users</span>
+  </a>
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Conversation</h1>
+    <p class="mt-1 font-mono text-xs text-slate-400">{{ user_id }}</p>
+  </div>
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <div class="lg:col-span-2">
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Messages</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if messages.is_empty() %}
+            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+              No messages recorded for this user.
+            </div>
+          {% else %}
+          <div class="space-y-3">
+            {% for m in messages %}
+              <div class="space-y-2">
+                {% for t in m.tool_calls %}
+                  <details class="rounded-md border border-slate-800 bg-slate-950/80 px-3 py-2 text-sm text-slate-300">
+                    <summary class="flex cursor-pointer items-center justify-between gap-2">
+                      <div class="flex items-center gap-2 min-w-0">
+                        <span class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {{ t.kind_class }}">{{ t.kind_label }}</span>
+                        <span class="truncate font-mono text-xs text-slate-200">{{ t.tool_name }}</span>
+                      </div>
+                      <span class="text-xs text-slate-500">{{ t.outcome_label }}</span>
+                    </summary>
+                    <div class="mt-2 space-y-2">
+                      <div>
+                        <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Args</div>
+                        <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">{{ t.args }}</pre>
+                      </div>
+                      {% match t.error %}
+                      {% when Some with (err) %}
+                        <div>
+                          <div class="text-[10px] font-semibold uppercase tracking-wide text-rose-400">Error</div>
+                          <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-rose-300">{{ err }}</pre>
+                        </div>
+                      {% when None %}
+                        {% match t.result %}
+                        {% when Some with (res) %}
+                          <div>
+                            <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Result</div>
+                            <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">{{ res }}</pre>
+                          </div>
+                        {% when None %}
+                          <div class="text-[10px] italic text-slate-500">No result recorded (stream may have ended before the tool returned).</div>
+                        {% endmatch %}
+                      {% endmatch %}
+                    </div>
+                  </details>
+                {% endfor %}
+                <div class="rounded-lg border px-4 py-3 {{ m.role_tone }}">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold uppercase tracking-wide
+                      {% if m.is_assistant %}text-indigo-300{% else %}text-slate-300{% endif %}">
+                      {{ m.role_label }}
+                    </span>
+                    <div class="flex items-center gap-2 text-xs text-slate-500">
+                      <span>{{ m.token_count }} tok</span>
+                      <span>·</span>
+                      <span>{{ m.created_at }}</span>
+                    </div>
+                  </div>
+                  <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm text-slate-200">{{ m.content }}</pre>
+                </div>
+                {% if m.is_assistant %}
+                  <details class="mt-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+                    <summary class="cursor-pointer font-semibold uppercase tracking-wide text-slate-400">Telemetry</summary>
+                    <div class="mt-2"
+                         hx-get="/studio/users/{{ user_id }}/turns/{{ m.id }}/events"
+                         hx-trigger="toggle from:closest details once delay:50ms"
+                         hx-swap="innerHTML">
+                      <span class="italic text-slate-500">Loading…</span>
+                    </div>
+                  </details>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="space-y-6">
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Scores</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if scores.recent.is_empty() %}
+            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+              No judge scores recorded for this user.
+            </div>
+          {% else %}
+            <div class="space-y-4">
+              <div>
+                <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Averages</h3>
+                <div class="space-y-2">
+                  {% for a in scores.averages %}
+                    <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <div class="min-w-0">
+                        <div class="truncate text-sm text-slate-200">{{ a.criterion }}</div>
+                        <div class="text-xs text-slate-500">{{ a.judge_name }} · n={{ a.count }}</div>
+                      </div>
+                      <div class="ml-3 font-mono text-sm text-slate-100">{{ a.average }}</div>
+                    </div>
+                  {% endfor %}
+                </div>
+              </div>
+              <div>
+                <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent</h3>
+                <div class="space-y-2">
+                  {% for s in scores.recent %}
+                    <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <div class="mb-1 flex items-center justify-between">
+                        <div class="min-w-0">
+                          <span class="text-sm text-slate-200">{{ s.criterion }}</span>
+                          <span class="ml-1 text-xs text-slate-500">· {{ s.judge_name }}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <span class="font-mono text-sm text-slate-100">{{ s.score }}</span>
+                          <span class="text-xs text-slate-500">{{ s.created_at }}</span>
+                        </div>
+                      </div>
+                      <p class="text-xs text-slate-400">{{ s.reasoning }}</p>
+                    </div>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Memories</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if memories.is_empty() %}
+            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+              No long-term memories for this user.
+            </div>
+          {% else %}
+            <div class="space-y-2">
+              {% for m in memories %}
+                <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                  <div class="mb-1 flex items-center justify-between">
+                    <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200">{{ m.kind_label }}</span>
+                    <span class="text-xs text-slate-500">{{ m.created_at }}</span>
+                  </div>
+                  <p class="text-sm text-slate-200">{{ m.content }}</p>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
