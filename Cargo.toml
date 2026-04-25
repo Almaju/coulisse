@@ -7,11 +7,13 @@ members = [
     "crates/limits",
     "crates/memory",
     "crates/prompter",
-    "crates/server",
+    "crates/proxy",
     "crates/telemetry",
 ]
-# `crates/studio` is a Leptos WASM app with its own lockfile. Kept out of the
-# workspace so `cargo test`/`cargo clippy` don't try to cross-compile it.
+# `crates/studio` is currently the legacy Leptos WASM app, kept out of the
+# workspace so `cargo build`/`cargo test` don't try to cross-compile it.
+# Step 2 of the studio refactor replaces it with an Axum + htmx crate that
+# joins the workspace.
 exclude = ["crates/studio"]
 
 [workspace.package]
@@ -31,6 +33,7 @@ limits = { path = "crates/limits" }
 memory = { path = "crates/memory" }
 oxilangtag = "0.1"
 prompter = { path = "crates/prompter" }
+proxy = { path = "crates/proxy" }
 rig-core = { version = "0.35", features = ["rmcp"] }
 rmcp = { version = "1", features = [
     "client",
@@ -42,7 +45,6 @@ rmcp = { version = "1", features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-server = { path = "crates/server" }
 sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
 telemetry = { path = "crates/telemetry" }
 thiserror = "2"

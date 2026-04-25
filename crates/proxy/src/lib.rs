@@ -3,9 +3,6 @@ mod error;
 mod extractor;
 mod server;
 mod stream;
-mod studio;
-mod studio_auth;
-mod studio_ui;
 mod tool;
 
 pub use chat::{
@@ -14,8 +11,7 @@ pub use chat::{
 };
 pub use error::{ApiError, ServerError};
 pub use extractor::{Extractor, ExtractorBuildError};
-pub use server::{AppState, Server};
-pub use studio_auth::{OidcBuildError, OidcRuntime, StudioAuth, StudioCredentials};
+pub use server::{AppState, router};
 pub use tool::{
     Tool, ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolChoiceMode, ToolFunction,
 };

@@ -21,7 +21,7 @@ use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, MemoryConfig, Role as MemRole, Store, UserId};
 use prompter::testing::{ScriptedPrompter, ScriptedReply};
 use prompter::{ToolCallKind, Usage};
-use server::{AppState, Server};
+use proxy::AppState;
 use tower::ServiceExt;
 
 fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
@@ -50,15 +50,6 @@ async fn make_app_with(
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
 ) -> (Router, Arc<AppState<ScriptedPrompter>>) {
-    make_app_full(agents, judges, replies, None).await
-}
-
-async fn make_app_full(
-    agents: Vec<AgentConfig>,
-    judges: HashMap<String, Arc<Judge>>,
-    replies: Vec<ScriptedReply>,
-    studio_auth: Option<server::StudioAuth>,
-) -> (Router, Arc<AppState<ScriptedPrompter>>) {
     let prompter = Arc::new(ScriptedPrompter::new(agents, replies));
     let config = MemoryConfig {
         backend: BackendConfig::InMemory,
@@ -69,7 +60,6 @@ async fn make_app_full(
     let tracker = Tracker::open(memory.pool().clone()).await.unwrap();
     let telemetry = Arc::new(telemetry::Sink::open(memory.pool().clone()).await.unwrap());
     let state = Arc::new(AppState {
-        studio_auth,
         default_user_id: None,
         extractor: None,
         judges: Arc::new(judges),
@@ -78,8 +68,7 @@ async fn make_app_full(
         telemetry,
         tracker,
     });
-    let server = Server::new(([127, 0, 0, 1], 0).into(), Arc::clone(&state));
-    (server.router(), state)
+    (proxy::router(Arc::clone(&state)), state)
 }
 
 fn json_request(body: serde_json::Value) -> Request<Body> {
@@ -591,127 +580,4 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
             "unexpected assistant text: {assistant:?}"
         );
     }
-}
-
-// ---------- Studio auth ----------
-
-fn basic_auth_header(user: &str, pass: &str) -> String {
-    use base64::Engine;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
-    format!("Basic {encoded}")
-}
-
-async fn make_app_with_studio_auth(
-    user: &str,
-    pass: &str,
-) -> (Router, Arc<AppState<ScriptedPrompter>>) {
-    make_app_full(
-        make_agents(),
-        HashMap::new(),
-        vec![],
-        Some(server::StudioAuth::Basic(server::StudioCredentials::new(
-            user, pass,
-        ))),
-    )
-    .await
-}
-
-fn get_studio(uri: &str, auth: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("GET").uri(uri);
-    if let Some(h) = auth {
-        builder = builder.header("authorization", h);
-    }
-    builder.body(Body::empty()).unwrap()
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn studio_api_without_auth_returns_401_with_challenge() {
-    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
-    let resp = app
-        .oneshot(get_studio("/studio/api/users", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    let challenge = resp
-        .headers()
-        .get("www-authenticate")
-        .expect("challenge header")
-        .to_str()
-        .unwrap();
-    assert!(
-        challenge.starts_with("Basic "),
-        "unexpected challenge: {challenge}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn studio_api_with_wrong_password_is_rejected() {
-    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
-    let resp = app
-        .oneshot(get_studio(
-            "/studio/api/users",
-            Some(&basic_auth_header("admin", "wrong")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn studio_api_with_correct_credentials_passes_through() {
-    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
-    let resp = app
-        .oneshot(get_studio(
-            "/studio/api/users",
-            Some(&basic_auth_header("admin", "s3cret")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn studio_ui_without_auth_returns_401() {
-    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
-    // Hit an SPA sub-route rather than `/studio/` itself — axum 0.8's nested
-    // routers don't normalize trailing slashes, so the root is served via
-    // the `{*path}` route that the SPA depends on for its client-side
-    // routing anyway.
-    let resp = app
-        .oneshot(get_studio("/studio/index.html", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn chat_endpoint_remains_unauthenticated_when_studio_auth_is_set() {
-    // Basic auth guards /studio only — /v1/chat/completions must stay open
-    // to existing OpenAI clients that don't speak Basic.
-    let (app, _) = make_app_with_studio_auth("admin", "s3cret").await;
-    let req = json_request(serde_json::json!({
-        "model": "assistant",
-        "safety_identifier": "alice",
-        "messages": [{"role": "user", "content": "hi"}],
-    }));
-    // Scripted prompter has no reply queued; we only care about the status
-    // code from the auth middleware, not the completion outcome.
-    let resp = app.oneshot(req).await.unwrap();
-    assert_ne!(
-        resp.status(),
-        StatusCode::UNAUTHORIZED,
-        "chat endpoint must not be behind studio auth"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn studio_api_without_configured_auth_is_open() {
-    // No `studio_credentials` → no middleware enforcement, matching the
-    // pre-auth behavior so existing dev setups keep working.
-    let (app, _) = make_app(vec![]).await;
-    let resp = app
-        .oneshot(get_studio("/studio/api/users", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
 }

@@ -11,11 +11,12 @@ name = "coulisse"
 path = "src/main.rs"
 
 [dependencies]
+axum.workspace = true
 config.workspace = true
 judge.workspace = true
 limits.workspace = true
 memory.workspace = true
 prompter.workspace = true
-server.workspace = true
+proxy.workspace = true
 telemetry.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

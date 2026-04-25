@@ -2,20 +2,20 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use config::{Config, JudgeConfig, ProviderKind, StudioConfig};
+use config::{Config, JudgeConfig, ProviderKind};
 use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Store, UserId};
 use prompter::{Prompter, RigPrompter};
-use server::{AppState, Extractor, OidcRuntime, Server, StudioAuth, StudioCredentials};
+use proxy::{AppState, Extractor};
 use telemetry::Sink as TelemetrySink;
+use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path =
         std::env::var("COULISSE_CONFIG").unwrap_or_else(|_| "coulisse.yaml".to_string());
     let config = Config::from_path(&config_path)?;
-    let studio_auth = build_studio_auth(config.studio.as_ref()).await?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
     let embedder_fallback_key = embedder_fallback_key(&config);
@@ -36,7 +36,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompter = Arc::new(RigPrompter::new(config, Some(Arc::clone(&telemetry))).await?);
     let tracker = Tracker::open(memory.pool().clone()).await?;
     let state = Arc::new(AppState {
-        studio_auth,
         default_user_id,
         extractor,
         judges: Arc::new(judges),
@@ -49,11 +48,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
     println!("coulisse listening on http://{addr}");
     println!("  memory: {memory_summary}");
-    match state.studio_auth.as_ref() {
-        Some(StudioAuth::Basic(_)) => println!("  studio: basic auth enabled"),
-        Some(StudioAuth::Oidc(_)) => println!("  studio: OIDC login enabled"),
-        None => println!("  studio: unauthenticated (set `studio.basic` or `studio.oidc`)"),
-    }
     if let Some(cfg) = &extractor_config {
         println!(
             "  extractor: {} / {} (dedup_threshold={}, max_facts_per_turn={})",
@@ -91,30 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             judges,
         );
     }
-    Server::new(addr, state).run().await?;
+    let app = proxy::router(state);
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// Resolve the YAML `studio` block into a runtime `StudioAuth`. Validation
-/// at config load already guarantees that at most one of `basic`/`oidc`
-/// is set when the block is present — so this function only needs to
-/// pick the branch that exists. OIDC builds an issuer-discovered client;
-/// any failure there surfaces as a fatal startup error.
-async fn build_studio_auth(
-    config: Option<&StudioConfig>,
-) -> Result<Option<StudioAuth>, Box<dyn std::error::Error>> {
-    let Some(cfg) = config else { return Ok(None) };
-    if let Some(basic) = &cfg.basic {
-        return Ok(Some(StudioAuth::Basic(StudioCredentials::new(
-            basic.username.clone(),
-            basic.password.clone(),
-        ))));
-    }
-    if let Some(oidc) = &cfg.oidc {
-        let runtime = OidcRuntime::discover(oidc).await?;
-        return Ok(Some(StudioAuth::Oidc(Box::new(runtime))));
-    }
-    Ok(None)
 }
 
 fn build_judges(
