@@ -26,7 +26,7 @@ use coulisse_core::{OneShotError, OneShotPrompt};
 use experiments::ExperimentRouter;
 use memory::Store;
 
-use crate::{Completion, PrompterError, Usage};
+use crate::{AgentsError, Completion, Usage};
 
 const MAX_TURNS: usize = 8;
 /// How many nested subagent calls are allowed before the hop limit kicks in.
@@ -35,11 +35,11 @@ const MAX_TURNS: usize = 8;
 /// patterns without letting pathological loops burn tokens.
 const MAX_SUBAGENT_DEPTH: usize = 4;
 
-pub struct RigPrompter {
-    inner: Arc<RigPrompterInner>,
+pub struct RigAgents {
+    inner: Arc<AgentsInner>,
 }
 
-struct RigPrompterInner {
+struct AgentsInner {
     agents: Vec<AgentConfig>,
     backends: Backends,
     mcp_servers: HashMap<String, McpServer>,
@@ -111,9 +111,9 @@ pub enum ToolCallKind {
     Subagent,
 }
 
-pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, PrompterError>> + Send>>;
+pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, AgentsError>> + Send>>;
 
-/// Result of `RigPrompterInner::build_tools`: the full `ToolDyn` list to
+/// Result of `AgentsInner::build_tools`: the full `ToolDyn` list to
 /// hand to rig, plus a snapshot of subagent names so the streaming
 /// classifier can tag outgoing tool events as Subagent vs Mcp. Aliased to
 /// dodge the `clippy::type_complexity` lint on the return type.
@@ -126,7 +126,7 @@ type BuiltTools = (
 /// requests — either as a single response or as a stream of incremental
 /// events. The server talks to this trait so tests can drive the HTTP
 /// handler with a scripted implementation instead of a real provider.
-pub trait Prompter: Send + Sync {
+pub trait Agents: Send + Sync {
     fn agents(&self) -> &[AgentConfig];
 
     /// A/B routing table for this prompter. The proxy consults this
@@ -144,14 +144,14 @@ pub trait Prompter: Send + Sync {
         agent_name: &str,
         messages: Vec<Message>,
         ctx: Ctx,
-    ) -> impl std::future::Future<Output = Result<Completion, PrompterError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
 
     fn complete_streaming(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
         ctx: Ctx,
-    ) -> impl std::future::Future<Output = Result<CompletionStream, PrompterError>> + Send;
+    ) -> impl std::future::Future<Output = Result<CompletionStream, AgentsError>> + Send;
 
     /// One-off prompt bypassing agent-config lookup. No MCP tools, no
     /// preamble merging — just `provider`, `model`, the supplied preamble
@@ -163,10 +163,10 @@ pub trait Prompter: Send + Sync {
         model: &str,
         preamble: &str,
         messages: Vec<Message>,
-    ) -> impl std::future::Future<Output = Result<Completion, PrompterError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
 }
 
-impl RigPrompter {
+impl RigAgents {
     /// Build a prompter from `config`, optionally wired to a telemetry
     /// sink. When `telemetry` is `Some`, every tool invocation at any depth
     /// (MCP or subagent) is recorded as a `ToolCall` event so the studio UI
@@ -176,8 +176,8 @@ impl RigPrompter {
         config: Config,
         telemetry: Option<Arc<TelemetrySink>>,
         score_store: Option<Arc<Store>>,
-    ) -> Result<Self, PrompterError> {
-        let backends = Backends::new(config.providers).map_err(PrompterError::from)?;
+    ) -> Result<Self, AgentsError> {
+        let backends = Backends::new(config.providers).map_err(AgentsError::from)?;
 
         let mut mcp_servers = HashMap::with_capacity(config.mcp.len());
         for (name, cfg) in config.mcp {
@@ -187,7 +187,7 @@ impl RigPrompter {
 
         let router = ExperimentRouter::new(config.experiments);
         Ok(Self {
-            inner: Arc::new(RigPrompterInner {
+            inner: Arc::new(AgentsInner {
                 agents: config.agents,
                 backends,
                 mcp_servers,
@@ -199,7 +199,7 @@ impl RigPrompter {
     }
 }
 
-impl Prompter for RigPrompter {
+impl Agents for RigAgents {
     fn agents(&self) -> &[AgentConfig] {
         &self.inner.agents
     }
@@ -213,8 +213,8 @@ impl Prompter for RigPrompter {
         agent_name: &str,
         messages: Vec<Message>,
         ctx: Ctx,
-    ) -> Result<Completion, PrompterError> {
-        RigPrompterInner::complete_with_depth(&self.inner, agent_name, messages, 0, ctx).await
+    ) -> Result<Completion, AgentsError> {
+        AgentsInner::complete_with_depth(&self.inner, agent_name, messages, 0, ctx).await
     }
 
     async fn complete_streaming(
@@ -222,9 +222,8 @@ impl Prompter for RigPrompter {
         agent_name: &str,
         messages: Vec<Message>,
         ctx: Ctx,
-    ) -> Result<CompletionStream, PrompterError> {
-        RigPrompterInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, ctx)
-            .await
+    ) -> Result<CompletionStream, AgentsError> {
+        AgentsInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, ctx).await
     }
 
     async fn prompt_with(
@@ -233,14 +232,14 @@ impl Prompter for RigPrompter {
         model: &str,
         preamble: &str,
         messages: Vec<Message>,
-    ) -> Result<Completion, PrompterError> {
+    ) -> Result<Completion, AgentsError> {
         self.inner
             .prompt_with(provider, model, preamble, messages)
             .await
     }
 }
 
-impl OneShotPrompt for RigPrompter {
+impl OneShotPrompt for RigAgents {
     fn one_shot<'a>(
         &'a self,
         provider: &'a str,
@@ -264,7 +263,7 @@ impl OneShotPrompt for RigPrompter {
     }
 }
 
-impl RigPrompterInner {
+impl AgentsInner {
     fn find_agent(&self, name: &str) -> Option<&AgentConfig> {
         self.agents.iter().find(|a| a.name == name)
     }
@@ -279,13 +278,13 @@ impl RigPrompterInner {
         agent: &AgentConfig,
         depth: usize,
         ctx: Ctx,
-    ) -> Result<BuiltTools, PrompterError> {
+    ) -> Result<BuiltTools, AgentsError> {
         use std::collections::HashSet;
 
         let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
         for access in &agent.mcp_tools {
             let server = self.mcp_servers.get(&access.server).ok_or_else(|| {
-                PrompterError::McpServerNotConfigured {
+                AgentsError::McpServerNotConfigured {
                     agent: agent.name.clone(),
                     server: access.server.clone(),
                 }
@@ -295,7 +294,7 @@ impl RigPrompterInner {
                     .iter()
                     .map(|name| {
                         server.tools.get(name).cloned().ok_or_else(|| {
-                            PrompterError::McpToolNotFound {
+                            AgentsError::McpToolNotFound {
                                 agent: agent.name.clone(),
                                 server: access.server.clone(),
                                 tool: name.clone(),
@@ -359,18 +358,18 @@ impl RigPrompterInner {
         messages: Vec<Message>,
         depth: usize,
         ctx: Ctx,
-    ) -> Result<Completion, PrompterError> {
+    ) -> Result<Completion, AgentsError> {
         if depth > MAX_SUBAGENT_DEPTH {
-            return Err(PrompterError::SubagentDepthExceeded {
+            return Err(AgentsError::SubagentDepthExceeded {
                 limit: MAX_SUBAGENT_DEPTH,
                 subagent: agent_name.to_string(),
             });
         }
         let agent = self
             .find_agent(agent_name)
-            .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
+            .ok_or_else(|| AgentsError::UnknownAgent(agent_name.to_string()))?;
         let backend = self.backends.get(agent.provider).ok_or_else(|| {
-            PrompterError::ProviderNotConfigured {
+            AgentsError::ProviderNotConfigured {
                 agent: agent.name.clone(),
                 provider: agent.provider,
             }
@@ -385,7 +384,7 @@ impl RigPrompterInner {
             Backend::Groq(c) => conversation.send(c, &agent.model, tools).await,
             Backend::Openai(c) => conversation.send(c, &agent.model, tools).await,
         };
-        result.map_err(PrompterError::from)
+        result.map_err(AgentsError::from)
     }
 
     async fn complete_streaming_with_depth(
@@ -394,18 +393,18 @@ impl RigPrompterInner {
         messages: Vec<Message>,
         depth: usize,
         ctx: Ctx,
-    ) -> Result<CompletionStream, PrompterError> {
+    ) -> Result<CompletionStream, AgentsError> {
         if depth > MAX_SUBAGENT_DEPTH {
-            return Err(PrompterError::SubagentDepthExceeded {
+            return Err(AgentsError::SubagentDepthExceeded {
                 limit: MAX_SUBAGENT_DEPTH,
                 subagent: agent_name.to_string(),
             });
         }
         let agent = self
             .find_agent(agent_name)
-            .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
+            .ok_or_else(|| AgentsError::UnknownAgent(agent_name.to_string()))?;
         let backend = self.backends.get(agent.provider).ok_or_else(|| {
-            PrompterError::ProviderNotConfigured {
+            AgentsError::ProviderNotConfigured {
                 agent: agent.name.clone(),
                 provider: agent.provider,
             }
@@ -452,11 +451,11 @@ impl RigPrompterInner {
         model: &str,
         preamble: &str,
         messages: Vec<Message>,
-    ) -> Result<Completion, PrompterError> {
+    ) -> Result<Completion, AgentsError> {
         let backend = self
             .backends
             .get(provider)
-            .ok_or(PrompterError::ProviderNotConfigured {
+            .ok_or(AgentsError::ProviderNotConfigured {
                 agent: "<internal>".into(),
                 provider,
             })?;
@@ -469,7 +468,7 @@ impl RigPrompterInner {
             Backend::Groq(c) => conversation.send(c, model, vec![]).await,
             Backend::Openai(c) => conversation.send(c, model, vec![]).await,
         };
-        result.map_err(PrompterError::from)
+        result.map_err(AgentsError::from)
     }
 }
 
@@ -490,7 +489,7 @@ impl RigPrompterInner {
 struct SubagentTool {
     ctx: Ctx,
     depth: usize,
-    inner: Arc<RigPrompterInner>,
+    inner: Arc<AgentsInner>,
     purpose: String,
     sink: Option<Arc<TelemetrySink>>,
     target_name: String,
@@ -571,7 +570,7 @@ impl ToolDyn for SubagentTool {
                 .router
                 .resolve_with_scores(&target, ctx.user_id, &scores);
             let agent_name = resolved.agent.into_owned();
-            let outcome = RigPrompterInner::complete_with_depth(
+            let outcome = AgentsInner::complete_with_depth(
                 &inner,
                 &agent_name,
                 messages,
@@ -688,13 +687,13 @@ fn tool_call_payload(
 }
 
 impl McpServer {
-    async fn connect(name: &str, config: McpServerConfig) -> Result<Self, PrompterError> {
+    async fn connect(name: &str, config: McpServerConfig) -> Result<Self, AgentsError> {
         let service = match config {
             McpServerConfig::Http { url } => {
                 let transport = StreamableHttpClientTransport::from_uri(url);
                 ().serve(transport)
                     .await
-                    .map_err(|source| PrompterError::McpConnect {
+                    .map_err(|source| AgentsError::McpConnect {
                         server: name.to_string(),
                         source: Box::new(source),
                     })?
@@ -706,13 +705,13 @@ impl McpServer {
                     cmd.envs(&env);
                 }
                 let transport =
-                    TokioChildProcess::new(cmd).map_err(|source| PrompterError::SpawnMcp {
+                    TokioChildProcess::new(cmd).map_err(|source| AgentsError::SpawnMcp {
                         server: name.to_string(),
                         source,
                     })?;
                 ().serve(transport)
                     .await
-                    .map_err(|source| PrompterError::McpConnect {
+                    .map_err(|source| AgentsError::McpConnect {
                         server: name.to_string(),
                         source: Box::new(source),
                     })?
@@ -721,7 +720,7 @@ impl McpServer {
         let listed = service
             .list_tools(Default::default())
             .await
-            .map_err(|source| PrompterError::McpListTools {
+            .map_err(|source| AgentsError::McpListTools {
                 server: name.to_string(),
                 source,
             })?;
@@ -746,7 +745,7 @@ struct Conversation {
 }
 
 impl Conversation {
-    fn from_messages(messages: Vec<Message>, agent_preamble: &str) -> Result<Self, PrompterError> {
+    fn from_messages(messages: Vec<Message>, agent_preamble: &str) -> Result<Self, AgentsError> {
         let mut preamble_parts = Vec::new();
         if !agent_preamble.is_empty() {
             preamble_parts.push(agent_preamble.to_string());
@@ -763,7 +762,7 @@ impl Conversation {
                 Role::User => turns.push(RigMessage::user(m.content)),
             }
         }
-        let prompt = turns.pop().ok_or(PrompterError::EmptyConversation)?;
+        let prompt = turns.pop().ok_or(AgentsError::EmptyConversation)?;
         Ok(Self {
             history: turns,
             preamble: preamble_parts.join("\n\n"),
@@ -807,7 +806,7 @@ impl Conversation {
         model: &str,
         tools: Vec<Box<dyn ToolDyn>>,
         subagent_names: Arc<std::collections::HashSet<String>>,
-    ) -> Result<CompletionStream, PrompterError>
+    ) -> Result<CompletionStream, AgentsError>
     where
         C: CompletionClient,
         C::CompletionModel: 'static,
@@ -869,7 +868,7 @@ impl Conversation {
                         usage: fr.usage().into(),
                     })),
                     Ok(_) => None,
-                    Err(e) => Some(Err(PrompterError::Streaming(e.to_string()))),
+                    Err(e) => Some(Err(AgentsError::Streaming(e.to_string()))),
                 }
             }
         });

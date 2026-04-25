@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use agents::{Agents, Message as AgentMessage, Role as AgentRole};
 use config::{JudgeConfig, ProviderKind};
 use memory::{MessageId, Score, Store, UserId};
-use prompter::{Message as PrompterMessage, Prompter, Role as PrompterRole};
 use serde::Deserialize;
 
 /// Runtime judge built from YAML and validated at startup. Holds the
@@ -71,10 +71,10 @@ impl Judge {
 /// the task. Failures are logged and swallowed so the response path is
 /// never affected.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_score<P: Prompter + 'static>(
+pub fn spawn_score<P: Agents + 'static>(
     judges: Vec<Arc<Judge>>,
     memory: Arc<Store>,
-    prompter: Arc<P>,
+    agents: Arc<P>,
     user_id: UserId,
     message_id: MessageId,
     agent_name: String,
@@ -92,7 +92,7 @@ pub fn spawn_score<P: Prompter + 'static>(
             if let Err(err) = run_score(
                 &judge,
                 &memory,
-                prompter.as_ref(),
+                agents.as_ref(),
                 user_id,
                 message_id,
                 &agent_name,
@@ -113,7 +113,7 @@ pub fn spawn_score<P: Prompter + 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_score<P: Prompter>(
+async fn run_score<P: Agents>(
     judge: &Judge,
     memory: &Store,
     prompter: &P,
@@ -123,11 +123,11 @@ async fn run_score<P: Prompter>(
     user_message: &str,
     assistant_message: &str,
 ) -> Result<(), JudgeRunError> {
-    let turn = PrompterMessage {
+    let turn = AgentMessage {
         content: format!(
             "User message:\n{user_message}\n\nAssistant reply:\n{assistant_message}\n\nReturn the JSON object now."
         ),
-        role: PrompterRole::User,
+        role: AgentRole::User,
     };
     let completion = prompter
         .prompt_with(judge.provider, &judge.model, &judge.preamble, vec![turn])
@@ -232,7 +232,7 @@ enum JudgeRunError {
     #[error("parse: {0}")]
     Parse(String),
     #[error("prompt: {0}")]
-    Prompt(prompter::PrompterError),
+    Prompt(agents::AgentsError),
 }
 
 #[cfg(test)]

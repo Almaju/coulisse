@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use agents::Agents;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -10,7 +11,6 @@ use config::Strategy;
 use judge::{Judge, spawn_score};
 use limits::Tracker;
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
-use prompter::Prompter;
 use telemetry::{Ctx as TelemetryCtx, Event, EventKind, Sink as TelemetrySink, TurnId};
 
 use crate::ChatCompletionRequest;
@@ -21,7 +21,7 @@ use crate::stream::{StreamContext, sse_response};
 
 /// Shared state for the OpenAI-compatible proxy. Held in an `Arc` so axum
 /// handlers can cheaply clone the reference.
-pub struct AppState<P: Prompter> {
+pub struct AppState<P: Agents> {
     /// Fallback user id applied to requests that don't supply their own.
     /// `None` means such requests are rejected (multi-tenant posture).
     pub default_user_id: Option<UserId>,
@@ -33,14 +33,14 @@ pub struct AppState<P: Prompter> {
     /// these apply to the agent being called.
     pub judges: Arc<HashMap<String, Arc<Judge>>>,
     pub memory: Arc<Store>,
-    pub prompter: Arc<P>,
+    pub agents: Arc<P>,
     pub telemetry: Arc<TelemetrySink>,
     pub tracker: Tracker,
 }
 
 /// Build the OpenAI-compatible router. The cli composes this with other
 /// routers (e.g. the studio UI) before binding a listener.
-pub fn router<P: Prompter + 'static>(state: Arc<AppState<P>>) -> Router {
+pub fn router<P: Agents + 'static>(state: Arc<AppState<P>>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions::<P>))
         .route("/v1/models", get(models::<P>))
@@ -51,16 +51,11 @@ pub fn router<P: Prompter + 'static>(state: Arc<AppState<P>>) -> Router {
 /// declared on the agent so log output is stable. Unknown judge names are
 /// skipped silently — validation at config load already rejects dangling
 /// references, so any miss here is a programmer error, not user input.
-pub(crate) fn judges_for_agent<P: Prompter>(
+pub(crate) fn judges_for_agent<P: Agents>(
     state: &AppState<P>,
     agent_name: &str,
 ) -> Vec<Arc<Judge>> {
-    let Some(agent) = state
-        .prompter
-        .agents()
-        .iter()
-        .find(|a| a.name == agent_name)
-    else {
+    let Some(agent) = state.agents.agents().iter().find(|a| a.name == agent_name) else {
         return Vec::new();
     };
     agent
@@ -70,7 +65,7 @@ pub(crate) fn judges_for_agent<P: Prompter>(
         .collect()
 }
 
-async fn chat_completions<P: Prompter + 'static>(
+async fn chat_completions<P: Agents + 'static>(
     State(state): State<Arc<AppState<P>>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
@@ -86,7 +81,7 @@ async fn chat_completions<P: Prompter + 'static>(
     //
     // For a bandit experiment the resolution requires recent mean
     // scores; for split/shadow/passthrough the lookup is a no-op.
-    let bandit_scores = match state.prompter.router().bandit_query(&request.model) {
+    let bandit_scores = match state.agents.router().bandit_query(&request.model) {
         Some((judge, criterion, since)) => state
             .memory
             .mean_scores_by_agent(&judge, &criterion, since)
@@ -94,11 +89,11 @@ async fn chat_completions<P: Prompter + 'static>(
             .unwrap_or_default(),
         None => Vec::new(),
     };
-    let resolved = state.prompter.router().resolve_with_scores(
-        &request.model,
-        prepared.user_id,
-        &bandit_scores,
-    );
+    let resolved =
+        state
+            .agents
+            .router()
+            .resolve_with_scores(&request.model, prepared.user_id, &bandit_scores);
     let agent_name = resolved.agent.clone().into_owned();
     let experiment_name = resolved.experiment.map(str::to_owned);
 
@@ -141,7 +136,7 @@ async fn chat_completions<P: Prompter + 'static>(
     // non-shadow strategies — the helper itself early-exits when the
     // experiment isn't shadow or sampling drops the turn.
     let shadow_inputs = state
-        .prompter
+        .agents
         .router()
         .get(&request.model)
         .filter(|exp| matches!(exp.strategy, Strategy::Shadow))
@@ -159,7 +154,7 @@ async fn chat_completions<P: Prompter + 'static>(
             );
         }
         let inner = state
-            .prompter
+            .agents
             .complete_streaming(&agent_name, prepared.messages, ctx)
             .await?;
         let response = sse_response(StreamContext {
@@ -177,7 +172,7 @@ async fn chat_completions<P: Prompter + 'static>(
     }
 
     let completion = state
-        .prompter
+        .agents
         .complete(&agent_name, prepared.messages, ctx)
         .await?;
     if let Some((experiment, messages)) = shadow_inputs {
@@ -221,7 +216,7 @@ async fn chat_completions<P: Prompter + 'static>(
     spawn_score(
         judges,
         Arc::clone(&state.memory),
-        Arc::clone(&state.prompter),
+        Arc::clone(&state.agents),
         prepared.user_id,
         assistant_message_id,
         agent_name.clone(),
@@ -232,9 +227,9 @@ async fn chat_completions<P: Prompter + 'static>(
     Ok(Json(request.response_with(completion.text, completion.usage)).into_response())
 }
 
-async fn models<P: Prompter>(State(state): State<Arc<AppState<P>>>) -> Json<serde_json::Value> {
+async fn models<P: Agents>(State(state): State<Arc<AppState<P>>>) -> Json<serde_json::Value> {
     let data: Vec<_> = state
-        .prompter
+        .agents
         .agents()
         .iter()
         .map(|agent| {
@@ -256,13 +251,13 @@ async fn models<P: Prompter>(State(state): State<Arc<AppState<P>>>) -> Json<serd
 /// branches: which user this is, their rate-limit key, the new user message,
 /// and the assembled context to forward to the model.
 struct PreparedRequest {
-    messages: Vec<prompter::Message>,
+    messages: Vec<agents::Message>,
     tracker_key: String,
     user_id: UserId,
     user_message: String,
 }
 
-async fn prepare_request<P: Prompter>(
+async fn prepare_request<P: Agents>(
     state: &Arc<AppState<P>>,
     request: &ChatCompletionRequest,
 ) -> Result<PreparedRequest, ApiError> {
@@ -285,38 +280,38 @@ async fn prepare_request<P: Prompter>(
     let budget = state.memory.config().context_budget;
     let assembled = um.assemble_context(&user_message, budget).await?;
 
-    let mut messages: Vec<prompter::Message> = Vec::new();
+    let mut messages: Vec<agents::Message> = Vec::new();
     if let Some(tag) = language {
-        messages.push(prompter::Message {
+        messages.push(agents::Message {
             content: tag.instruction(),
-            role: prompter::Role::System,
+            role: agents::Role::System,
         });
     }
     for sys in request.system_messages() {
-        messages.push(prompter::Message {
+        messages.push(agents::Message {
             content: sys.content_or_empty().to_string(),
-            role: prompter::Role::System,
+            role: agents::Role::System,
         });
     }
     if !assembled.memories.is_empty() {
-        messages.push(prompter::Message {
+        messages.push(agents::Message {
             content: format_memory_block(&assembled.memories),
-            role: prompter::Role::System,
+            role: agents::Role::System,
         });
     }
     for m in assembled.messages {
-        messages.push(prompter::Message {
+        messages.push(agents::Message {
             content: m.content,
             role: match m.role {
-                MemRole::Assistant => prompter::Role::Assistant,
-                MemRole::System => prompter::Role::System,
-                MemRole::User => prompter::Role::User,
+                MemRole::Assistant => agents::Role::Assistant,
+                MemRole::System => agents::Role::System,
+                MemRole::User => agents::Role::User,
             },
         });
     }
-    messages.push(prompter::Message {
+    messages.push(agents::Message {
         content: user_message.clone(),
-        role: prompter::Role::User,
+        role: agents::Role::User,
     });
 
     Ok(PreparedRequest {

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use agents::{LanguageTag, LanguageTagError};
 use limits::{LimitError, RequestLimits};
 use memory::UserId;
-use prompter::{LanguageTag, LanguageTagError};
 use serde::{Deserialize, Serialize};
 
 use crate::{Tool, ToolCall, ToolChoice};
@@ -79,7 +79,7 @@ impl ChatCompletionRequest {
         RequestLimits::from_metadata(&self.metadata)
     }
 
-    pub fn response_with(&self, text: String, usage: prompter::Usage) -> ChatCompletionResponse {
+    pub fn response_with(&self, text: String, usage: agents::Usage) -> ChatCompletionResponse {
         let created = now_secs();
         let message = Message {
             content: Some(text),
@@ -98,7 +98,7 @@ impl ChatCompletionRequest {
             id: response_id(created),
             model: self.model.clone(),
             object: "chat.completion".into(),
-            usage: Usage::from_prompter(usage),
+            usage: Usage::from_agents(usage),
         }
     }
 
@@ -208,7 +208,7 @@ pub struct Usage {
 }
 
 impl Usage {
-    pub fn from_prompter(usage: prompter::Usage) -> Self {
+    pub fn from_agents(usage: agents::Usage) -> Self {
         Self {
             completion_tokens: clamp_u32(usage.output_tokens),
             prompt_tokens: clamp_u32(usage.input_tokens),

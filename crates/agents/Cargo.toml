@@ -1,5 +1,5 @@
 [package]
-name = "prompter"
+name = "agents"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

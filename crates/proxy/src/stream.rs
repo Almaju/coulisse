@@ -1,6 +1,10 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
+use agents::{
+    Agents, CompletionStream, StreamEvent, ToolCallKind as PromptToolCallKind,
+    Usage as ProviderUsage,
+};
 use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
@@ -9,10 +13,6 @@ use judge::spawn_score;
 use memory::{
     MessageId, Role as MemRole, StoredToolCall, ToolCallInvocation,
     ToolCallKind as MemToolCallKind, UserId,
-};
-use prompter::{
-    CompletionStream, Prompter, StreamEvent, ToolCallKind as PromptToolCallKind,
-    Usage as ProviderUsage,
 };
 
 use crate::chat::{
@@ -29,7 +29,7 @@ use crate::server::{AppState, judges_for_agent};
 /// stays under clippy's `too_many_arguments` lint, and so new per-request
 /// fields (telemetry turn id, future flags) can be added without breaking
 /// callers.
-pub struct StreamContext<P: Prompter + 'static> {
+pub struct StreamContext<P: Agents + 'static> {
     /// Resolved agent name — what judges score and what `judges_for_agent`
     /// looks up. Differs from `model` when the request hit an experiment:
     /// `model` echoes back the experiment name the client sent, while
@@ -45,7 +45,7 @@ pub struct StreamContext<P: Prompter + 'static> {
     pub user_message: String,
 }
 
-pub fn sse_response<P: Prompter + 'static>(
+pub fn sse_response<P: Agents + 'static>(
     cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     let StreamContext {
@@ -131,7 +131,7 @@ pub fn sse_response<P: Prompter + 'static>(
 
         if !errored {
             let usage = if include_usage {
-                Some(Usage::from_prompter(*final_usage.lock().unwrap()))
+                Some(Usage::from_agents(*final_usage.lock().unwrap()))
             } else {
                 None
             };
@@ -168,7 +168,7 @@ fn to_mem_tool_kind(k: PromptToolCallKind) -> MemToolCallKind {
 /// Drop guard: persists the conversation to memory and records token usage
 /// when the SSE stream ends, regardless of whether it ended normally or the
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
-struct MemoryFlush<P: Prompter + 'static> {
+struct MemoryFlush<P: Agents + 'static> {
     accumulated: Arc<Mutex<String>>,
     /// Resolved agent name; used for `judges_for_agent`. See
     /// `StreamContext::agent_name` for the rationale.
@@ -182,7 +182,7 @@ struct MemoryFlush<P: Prompter + 'static> {
     user_message: String,
 }
 
-impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
+impl<P: Agents + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
         let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
         let agent_name = std::mem::take(&mut self.agent_name);
@@ -242,7 +242,7 @@ impl<P: Prompter + 'static> Drop for MemoryFlush<P> {
             spawn_score(
                 judges,
                 Arc::clone(&state.memory),
-                Arc::clone(&state.prompter),
+                Arc::clone(&state.agents),
                 user_id,
                 assistant_message_id,
                 agent_name.clone(),

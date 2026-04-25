@@ -8,7 +8,7 @@ use crate::id::EventId;
 /// share a single correlation id and form a parent-linked tree.
 ///
 /// Lightweight by design: carries only ids, never the sink — the sink is a
-/// process-level resource held by the `RigPrompter`. Clone freely across
+/// process-level resource held by the `RigAgents`. Clone freely across
 /// await points.
 #[derive(Clone, Copy, Debug)]
 pub struct Ctx {

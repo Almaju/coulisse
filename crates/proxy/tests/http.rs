@@ -1,6 +1,6 @@
 //! HTTP-level integration tests for the chat completions endpoint. Drives
 //! the real axum router through `tower::ServiceExt::oneshot` against a
-//! `ScriptedPrompter` — no network, no real provider. The streaming tests
+//! `ScriptedAgents` — no network, no real provider. The streaming tests
 //! also exercise the `MemoryFlush` Drop guard by dropping the response body
 //! mid-stream.
 //!
@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use agents::testing::{ScriptedAgents, ScriptedReply};
+use agents::{ToolCallKind, Usage};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
@@ -21,8 +23,6 @@ use limits::Tracker;
 use memory::{
     BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Score, Store, UserId,
 };
-use prompter::testing::{ScriptedPrompter, ScriptedReply};
-use prompter::{ToolCallKind, Usage};
 use proxy::AppState;
 use tower::ServiceExt;
 
@@ -43,7 +43,7 @@ fn make_agents() -> Vec<AgentConfig> {
     vec![agent_with_judges(vec![])]
 }
 
-async fn make_app(replies: Vec<ScriptedReply>) -> (Router, Arc<AppState<ScriptedPrompter>>) {
+async fn make_app(replies: Vec<ScriptedReply>) -> (Router, Arc<AppState<ScriptedAgents>>) {
     make_app_with(make_agents(), HashMap::new(), replies).await
 }
 
@@ -51,7 +51,7 @@ async fn make_app_with(
     agents: Vec<AgentConfig>,
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
-) -> (Router, Arc<AppState<ScriptedPrompter>>) {
+) -> (Router, Arc<AppState<ScriptedAgents>>) {
     make_app_with_experiments(agents, vec![], judges, replies).await
 }
 
@@ -60,8 +60,8 @@ async fn make_app_with_experiments(
     experiments: Vec<ExperimentConfig>,
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
-) -> (Router, Arc<AppState<ScriptedPrompter>>) {
-    let prompter = Arc::new(ScriptedPrompter::with_experiments(
+) -> (Router, Arc<AppState<ScriptedAgents>>) {
+    let agents_runner = Arc::new(ScriptedAgents::with_experiments(
         agents,
         experiments,
         replies,
@@ -75,11 +75,11 @@ async fn make_app_with_experiments(
     let tracker = Tracker::open(memory.pool().clone()).await.unwrap();
     let telemetry = Arc::new(telemetry::Sink::open(memory.pool().clone()).await.unwrap());
     let state = Arc::new(AppState {
+        agents: agents_runner,
         default_user_id: None,
         extractor: None,
         judges: Arc::new(judges),
         memory,
-        prompter,
         telemetry,
         tracker,
     });
@@ -284,8 +284,8 @@ async fn experiment_resolves_request_to_a_variant() {
     // Client-facing model echoes what was sent.
     assert_eq!(v["model"], "alice");
 
-    // Prompter actually saw a variant, not the experiment name.
-    let dispatched = state.prompter.dispatched_to();
+    // Agents actually saw a variant, not the experiment name.
+    let dispatched = state.agents.dispatched_to();
     assert_eq!(dispatched.len(), 1);
     assert!(
         dispatched[0] == "alice-v1" || dispatched[0] == "alice-v2",
@@ -321,7 +321,7 @@ async fn sticky_routing_keeps_same_user_on_same_variant() {
         drop(collect(resp.into_body()).await);
     }
 
-    let dispatched = state.prompter.dispatched_to();
+    let dispatched = state.agents.dispatched_to();
     assert_eq!(dispatched.len(), 5);
     let first = &dispatched[0];
     for got in &dispatched[1..] {
@@ -404,7 +404,7 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
     assert_eq!(resp.status(), StatusCode::OK);
     drop(collect(resp.into_body()).await);
 
-    let dispatched = state.prompter.dispatched_to();
+    let dispatched = state.agents.dispatched_to();
     assert_eq!(dispatched, vec!["alice-v1".to_string()]);
 }
 
@@ -453,7 +453,7 @@ async fn bandit_forces_exploration_when_arms_are_under_sampled() {
     assert_eq!(resp.status(), StatusCode::OK);
     drop(collect(resp.into_body()).await);
 
-    let dispatched = state.prompter.dispatched_to();
+    let dispatched = state.agents.dispatched_to();
     assert_eq!(dispatched.len(), 1);
     assert!(matches!(dispatched[0].as_str(), "alice-v1" | "alice-v2"));
 }
@@ -519,7 +519,7 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
     // Drain background shadow run + judge task.
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    let dispatched = state.prompter.dispatched_to();
+    let dispatched = state.agents.dispatched_to();
     assert!(
         dispatched.contains(&"alice-v1".to_string()),
         "primary dispatched: {dispatched:?}"
@@ -571,7 +571,7 @@ async fn history_is_loaded_on_the_second_request() {
     assert_eq!(resp.status(), StatusCode::OK);
     drop(collect(resp.into_body()).await);
 
-    let captured = state.prompter.calls();
+    let captured = state.agents.calls();
     assert_eq!(captured.len(), 2);
     let turn2 = &captured[1];
     // Should contain: turn-1 user ("first"), turn-1 assistant ("first reply"),
@@ -603,7 +603,7 @@ async fn users_cannot_see_each_others_history() {
     }));
     let _ = app.oneshot(req).await.unwrap();
 
-    let captured = state.prompter.calls();
+    let captured = state.agents.calls();
     assert_eq!(captured.len(), 2);
     let bob_call = &captured[1];
     for m in bob_call {

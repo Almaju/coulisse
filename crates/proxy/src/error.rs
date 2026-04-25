@@ -1,9 +1,9 @@
+use agents::{AgentsError, LanguageTagError};
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use limits::LimitError;
 use memory::MemoryError;
-use prompter::{LanguageTagError, PrompterError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,7 +25,7 @@ pub enum ApiError {
     #[error("memory backend error: {0}")]
     Memory(#[from] MemoryError),
     #[error("{0}")]
-    Prompter(#[from] PrompterError),
+    Agents(#[from] AgentsError),
 }
 
 impl IntoResponse for ApiError {
@@ -45,9 +45,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
             Self::Memory(_) => (StatusCode::INTERNAL_SERVER_ERROR, "memory_error"),
-            Self::Prompter(err) => match err {
-                PrompterError::EmptyConversation => (StatusCode::BAD_REQUEST, "invalid_request"),
-                PrompterError::UnknownAgent(_) => (StatusCode::NOT_FOUND, "not_found"),
+            Self::Agents(err) => match err {
+                AgentsError::EmptyConversation => (StatusCode::BAD_REQUEST, "invalid_request"),
+                AgentsError::UnknownAgent(_) => (StatusCode::NOT_FOUND, "not_found"),
                 _ => (StatusCode::BAD_GATEWAY, "upstream_error"),
             },
         };

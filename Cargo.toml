@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/agents",
     "crates/backends",
     "crates/cli",
     "crates/config",
@@ -9,7 +10,6 @@ members = [
     "crates/judge",
     "crates/limits",
     "crates/memory",
-    "crates/prompter",
     "crates/proxy",
     "crates/studio",
     "crates/telemetry",
@@ -23,6 +23,7 @@ repository = "https://github.com/Almaju/coulisse"
 version = "0.1.0"
 
 [workspace.dependencies]
+agents = { path = "crates/agents" }
 async-stream = "0.3"
 axum = "0.8"
 backends = { path = "crates/backends" }
@@ -34,7 +35,6 @@ judge = { path = "crates/judge" }
 limits = { path = "crates/limits" }
 memory = { path = "crates/memory" }
 oxilangtag = "0.1"
-prompter = { path = "crates/prompter" }
 proxy = { path = "crates/proxy" }
 rig-core = { version = "0.35", features = ["rmcp"] }
 rmcp = { version = "1", features = [

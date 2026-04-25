@@ -1,4 +1,4 @@
-//! Real in-memory `Prompter` implementation for tests. Drives handlers
+//! Real in-memory `Agents` implementation for tests. Drives handlers
 //! deterministically without talking to a provider.
 
 use std::pin::Pin;
@@ -11,15 +11,15 @@ use coulisse_core::{OneShotError, OneShotPrompt};
 use experiments::ExperimentRouter;
 
 use crate::{
-    Completion, CompletionStream, Message, Prompter, PrompterError, Role, StreamEvent,
-    ToolCallKind, Usage,
+    Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent, ToolCallKind,
+    Usage,
 };
 
-/// A `Prompter` that replays a scripted reply. Each call to `complete` or
+/// A `Agents` that replays a scripted reply. Each call to `complete` or
 /// `complete_streaming` captures the incoming messages in `calls` and the
 /// dispatched agent name in `dispatched_to`, then returns the next
 /// scripted response (or loops on the last one).
-pub struct ScriptedPrompter {
+pub struct ScriptedAgents {
     agents: Vec<AgentConfig>,
     calls: Mutex<Vec<Vec<Message>>>,
     dispatched_to: Mutex<Vec<String>>,
@@ -107,7 +107,7 @@ impl ScriptedReply {
     }
 }
 
-impl ScriptedPrompter {
+impl ScriptedAgents {
     pub fn new(agents: Vec<AgentConfig>, replies: Vec<ScriptedReply>) -> Self {
         Self::with_experiments(agents, Vec::new(), replies)
     }
@@ -141,9 +141,9 @@ impl ScriptedPrompter {
         self.calls.lock().unwrap().clone()
     }
 
-    fn next_reply(&self, agent_name: &str) -> Result<ScriptedReply, PrompterError> {
+    fn next_reply(&self, agent_name: &str) -> Result<ScriptedReply, AgentsError> {
         if !self.agents.iter().any(|a| a.name == agent_name) {
-            return Err(PrompterError::UnknownAgent(agent_name.to_string()));
+            return Err(AgentsError::UnknownAgent(agent_name.to_string()));
         }
         self.dispatched_to
             .lock()
@@ -151,7 +151,7 @@ impl ScriptedPrompter {
             .push(agent_name.to_string());
         let mut replies = self.replies.lock().unwrap();
         match replies.len() {
-            0 => Err(PrompterError::Streaming(
+            0 => Err(AgentsError::Streaming(
                 "scripted prompter has no replies left".into(),
             )),
             1 => Ok(replies[0].clone()),
@@ -160,7 +160,7 @@ impl ScriptedPrompter {
     }
 }
 
-impl Prompter for ScriptedPrompter {
+impl Agents for ScriptedAgents {
     fn agents(&self) -> &[AgentConfig] {
         &self.agents
     }
@@ -174,7 +174,7 @@ impl Prompter for ScriptedPrompter {
         agent_name: &str,
         messages: Vec<Message>,
         _ctx: telemetry::Ctx,
-    ) -> Result<Completion, PrompterError> {
+    ) -> Result<Completion, AgentsError> {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         Ok(Completion {
@@ -188,7 +188,7 @@ impl Prompter for ScriptedPrompter {
         agent_name: &str,
         messages: Vec<Message>,
         _ctx: telemetry::Ctx,
-    ) -> Result<CompletionStream, PrompterError> {
+    ) -> Result<CompletionStream, AgentsError> {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
@@ -221,13 +221,13 @@ impl Prompter for ScriptedPrompter {
         _model: &str,
         _preamble: &str,
         messages: Vec<Message>,
-    ) -> Result<Completion, PrompterError> {
+    ) -> Result<Completion, AgentsError> {
         self.calls.lock().unwrap().push(messages);
         let reply = {
             let mut replies = self.replies.lock().unwrap();
             match replies.len() {
                 0 => {
-                    return Err(PrompterError::Streaming(
+                    return Err(AgentsError::Streaming(
                         "scripted prompter has no replies left".into(),
                     ));
                 }
@@ -242,7 +242,7 @@ impl Prompter for ScriptedPrompter {
     }
 }
 
-impl OneShotPrompt for ScriptedPrompter {
+impl OneShotPrompt for ScriptedAgents {
     fn one_shot<'a>(
         &'a self,
         _provider: &'a str,

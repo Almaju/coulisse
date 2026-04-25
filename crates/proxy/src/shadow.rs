@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 
+use agents::{Agents, Message as AgentMessage};
 use config::ExperimentConfig;
 use judge::{Judge, spawn_score};
 use memory::{MessageId, Store, UserId};
-use prompter::{Message as PrompterMessage, Prompter};
 use telemetry::{Ctx as TelemetryCtx, TurnId};
 
 use crate::server::AppState;
@@ -24,23 +24,23 @@ use crate::server::judges_for_agent;
 /// its output, and persists the scores. Failures are logged and
 /// swallowed — shadow is best-effort.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_shadow_runs<P: Prompter + 'static>(
+pub fn spawn_shadow_runs<P: Agents + 'static>(
     state: Arc<AppState<P>>,
     experiment: &ExperimentConfig,
     parent_turn: TurnId,
     user_id: UserId,
     user_message: String,
-    messages: Vec<PrompterMessage>,
+    messages: Vec<AgentMessage>,
 ) {
     if !state
-        .prompter
+        .agents
         .router()
         .shadow_should_sample(experiment, user_id)
     {
         return;
     }
     let variants: Vec<String> = state
-        .prompter
+        .agents
         .router()
         .shadow_variants(experiment)
         .map(|v| v.agent.clone())
@@ -63,13 +63,13 @@ pub fn spawn_shadow_runs<P: Prompter + 'static>(
     }
 }
 
-async fn run_shadow<P: Prompter + 'static>(
+async fn run_shadow<P: Agents + 'static>(
     state: Arc<AppState<P>>,
     parent_turn: TurnId,
     user_id: UserId,
     agent_name: String,
     user_message: String,
-    messages: Vec<PrompterMessage>,
+    messages: Vec<AgentMessage>,
 ) {
     let shadow_message_id = MessageId::new();
     // Reuse the parent turn's correlation id so shadow events nest
@@ -80,14 +80,14 @@ async fn run_shadow<P: Prompter + 'static>(
         parent: None,
         user_id,
     };
-    let outcome = state.prompter.complete(&agent_name, messages, ctx).await;
+    let outcome = state.agents.complete(&agent_name, messages, ctx).await;
     match outcome {
         Ok(completion) => {
             let judges: Vec<Arc<Judge>> = judges_for_agent(&state, &agent_name);
             spawn_score(
                 judges,
                 Arc::<Store>::clone(&state.memory),
-                Arc::clone(&state.prompter),
+                Arc::clone(&state.agents),
                 user_id,
                 shadow_message_id,
                 agent_name,

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use agents::{Agents, RigAgents};
 use axum::Router;
 use axum::response::Redirect;
 use axum::routing::get;
@@ -9,7 +10,6 @@ use config::{Config, JudgeConfig, ProviderKind, StudioConfig};
 use judge::Judge;
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
-use prompter::{Prompter, RigPrompter};
 use proxy::AppState;
 use studio::{OidcRuntime, StudioAuth, StudioCredentials, StudioState};
 use telemetry::Sink as TelemetrySink;
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
     let prompter = Arc::new(
-        RigPrompter::new(
+        RigAgents::new(
             config,
             Some(Arc::clone(&telemetry)),
             Some(Arc::clone(&memory)),
@@ -49,11 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tracker = Tracker::open(memory.pool().clone()).await?;
     let proxy_state = Arc::new(AppState {
+        agents: Arc::clone(&prompter),
         default_user_id,
         extractor,
         judges: Arc::new(judges),
         memory: Arc::clone(&memory),
-        prompter: Arc::clone(&prompter),
         telemetry: Arc::clone(&telemetry),
         tracker,
     });
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             variants.join(", "),
         );
     }
-    for agent in proxy_state.prompter.agents() {
+    for agent in proxy_state.agents.agents() {
         let judges = if agent.judges.is_empty() {
             String::new()
         } else {

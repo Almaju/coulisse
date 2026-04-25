@@ -5,9 +5,9 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+agents.workspace = true
 config.workspace = true
 memory.workspace = true
-prompter.workspace = true
 rand = "0.8"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

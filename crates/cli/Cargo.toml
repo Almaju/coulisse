@@ -11,12 +11,12 @@ name = "coulisse"
 path = "src/main.rs"
 
 [dependencies]
+agents.workspace = true
 axum.workspace = true
 config.workspace = true
 judge.workspace = true
 limits.workspace = true
 memory.workspace = true
-prompter.workspace = true
 proxy.workspace = true
 studio.workspace = true
 telemetry.workspace = true

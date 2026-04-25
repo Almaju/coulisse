@@ -5,7 +5,7 @@ use thiserror::Error;
 /// that's a static schema/coverage failure lives in `config::ConfigError`
 /// instead.
 #[derive(Debug, Error)]
-pub enum PrompterError {
+pub enum AgentsError {
     #[error(transparent)]
     ClientInit(#[from] ClientInitError),
     #[error("conversation has no user or assistant messages")]
