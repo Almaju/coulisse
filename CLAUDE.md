@@ -8,6 +8,8 @@ The goal is to collapse the plumbing that every multi-agent project ends up re-i
 
 One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `backends` (`providers:`), `experiments`, `judges`, `limits`, `memory`, `mcp`, `studio`, `telemetry`. Each is its own crate.
 
+**Layout.** Feature crates live under `crates/`. The orchestrator binary lives at `cli/` (top level), separate from the features it composes — its role is structurally distinct, so its location is too. The workspace root holds nothing but the workspace manifest and project-level files (`coulisse.yaml`, `docs/`, `Justfile`, `.githooks/`).
+
 **Dependency rule.** Feature crates depend only on `coulisse-core` (a tiny crate of shared domain types and traits). Feature crates never depend on each other. The `cli` crate is the only place that depends on every feature crate; it is the orchestrator.
 
 The single defensible exception: `agents → backends`, because backends is an interface to the outside world (LLM APIs), not a feature in the same sense. If that line ever feels wrong, replace it with a `Completer` trait in `coulisse-core`.
