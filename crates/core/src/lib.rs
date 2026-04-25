@@ -169,8 +169,8 @@ impl ScoreLookupError {
 /// Single-shot prompt against a named provider/model. Used by features that
 /// need to call an LLM out-of-band from the main agent flow — e.g. memory
 /// fact extraction, judge scoring. Implemented by whatever crate owns the
-/// LLM clients (currently `prompter`); consumed by feature crates so they
-/// don't need to depend on `prompter` directly.
+/// LLM clients (`agents::RigAgents`); consumed by feature crates so they
+/// don't need to depend on `agents` directly.
 pub trait OneShotPrompt: Send + Sync {
     fn one_shot<'a>(
         &'a self,

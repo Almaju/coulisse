@@ -15,10 +15,12 @@ The single defensible exception: `agents → backends`, because backends is an i
 **Each feature crate owns:**
 
 - its `Config` struct (parses its own YAML slice)
-- its state and storage (its own SQLite tables, files, etc.)
-- its public methods, named for what they do (`Limits::check`, `Memory::assemble_context`, `Agents::complete`, `Judges::spawn_score`)
+- its tables and queries — `memory` owns `messages`/`memories`, `judge` owns `scores`, `telemetry` owns `events`/`tool_calls`, `limits` owns `rate_limit_windows`. Cli opens one shared SQLite pool (via `memory::open_pool`) and hands clones to each crate; each crate runs its own `CREATE TABLE IF NOT EXISTS`. No crate exposes its pool to siblings, and no crate is the de-facto database layer.
+- its public methods, named for what they do (`Limits::check`, `Memory::assemble_context`, `Agents::complete`, `Judges::append_score`)
 - its admin HTTP router via `admin_router(&self) -> Option<Router>`, mounted by cli at `/admin/<name>`
 - its background tasks (the feature spawns its own `tokio::spawn`; cli does not manage task lifecycles)
+
+`memory` is **AI memory**, not "the persistence layer." It only owns conversation history and long-term facts. Anything else (scores, observability rows, rate-limit windows) belongs to the feature that produces it. If a sibling crate needs to read what another crate stores, expose a narrow trait in `coulisse-core` (e.g. `ScoreLookup`) and let the read flow through that — never through a shared `pool()` accessor.
 
 **`cli` is the request-flow spec.** The chat handler in `cli` reads top-to-bottom as the documentation of what happens to a request. No middleware framework, no event bus, no `Feature` trait, no `TurnContext` god struct. If you want to know the order of operations, read the handler.
 
@@ -26,7 +28,7 @@ The single defensible exception: `agents → backends`, because backends is an i
 
 **Adding a feature** = new crate, new YAML section, lines added to cli (load config, add to `AppState`, call from handler, optional `nest()` for admin). **Disabling a feature** = remove those lines.
 
-**Resist `coulisse-core` growth.** It holds domain primitives (`UserId`, `TurnId`, `Message`, `Role`, `Score`) and the smallest possible cross-cutting traits (`Completer`, `Embedder`). If it grows past ~200 lines, we've put too much in. Most types belong inside one feature crate.
+**Resist `coulisse-core` growth.** It holds domain primitives (`UserId`, `TurnId`, `MessageId`, `Message`, `Role`, `ToolCallKind`, `AgentScoreSummary`) and tiny cross-cutting traits (`OneShotPrompt`, `ScoreLookup`). If it grows past ~250 lines, we've put too much in. Types referenced by core traits live in core (otherwise the trait can't be implemented without taking a feature dep); everything else belongs in the feature that owns it.
 
 **No shared `proxy` crate as orchestrator.** `proxy` is a leaf crate: OpenAI wire schema, SSE helpers, error mapping. The handler lives in `cli`.
 
