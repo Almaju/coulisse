@@ -89,14 +89,7 @@ pub enum StreamEvent {
     },
 }
 
-/// How a tool invocation was serviced — an MCP server, or another agent
-/// exposed as a tool (subagent). The classifier in `Backend::stream` uses
-/// the caller-supplied `subagent_names` set to tag each `ToolCall` event.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ToolCallKind {
-    Mcp,
-    Subagent,
-}
+pub use coulisse_core::ToolCallKind;
 
 pub type CompletionStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, CallError>> + Send>>;
 

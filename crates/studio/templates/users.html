@@ -23,7 +23,6 @@
               <th class="px-4 py-2 font-medium">User id</th>
               <th class="px-4 py-2 text-right font-medium">Messages</th>
               <th class="px-4 py-2 text-right font-medium">Memories</th>
-              <th class="px-4 py-2 text-right font-medium">Tool calls</th>
               <th class="px-4 py-2 text-right font-medium">Last activity</th>
             </tr>
           </thead>
@@ -40,7 +39,6 @@
                   {{ u.memory_count }}
                 </span>
               </td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ u.tool_call_count }}</td>
               <td class="px-4 py-3 text-right text-sm text-slate-400">{{ u.last_activity_at }}</td>
             </tr>
           {% endfor %}

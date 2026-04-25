@@ -1,5 +1,4 @@
-use coulisse_core::TurnId;
-use memory::UserId;
+use coulisse_core::{TurnId, UserId};
 
 use crate::id::EventId;
 

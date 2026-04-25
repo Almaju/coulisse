@@ -86,6 +86,20 @@ pub enum Role {
     User,
 }
 
+/// Whether a tool invocation was serviced by an MCP server or by another
+/// agent acting as a tool (subagent). The distinction matters in the
+/// studio UI where subagent calls carry different semantics (nested
+/// conversation, own token usage) from MCP calls (pure function
+/// invocation). Lives in core because it's emitted on the streaming
+/// path (`backends`) and persisted on the observability path
+/// (`telemetry`).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolCallKind {
+    Mcp,
+    Subagent,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
     pub content: String,

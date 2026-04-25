@@ -33,6 +33,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coulisse-core.workspace = true
 http-body-util = "0.1"
 sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }

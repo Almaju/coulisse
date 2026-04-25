@@ -8,6 +8,7 @@ mod error;
 mod event;
 mod id;
 mod sink;
+mod tool_call;
 
 pub use coulisse_core::TurnId;
 pub use ctx::Ctx;
@@ -15,3 +16,4 @@ pub use error::TelemetryError;
 pub use event::{Event, EventKind};
 pub use id::EventId;
 pub use sink::Sink;
+pub use tool_call::{ToolCall, ToolCallId, ToolCallInvocation};

@@ -11,7 +11,4 @@ pub use embedder::{BundledEmbedder, HashEmbedder};
 pub use error::{ConfigError, EmbedError, MemoryError};
 pub use extractor::Extractor;
 pub use store::{AssembledContext, Store, UserMemory, UserSummary};
-pub use types::{
-    Memory, MemoryId, MemoryKind, StoredMessage, StoredToolCall, TokenCount, ToolCallId,
-    ToolCallInvocation, ToolCallKind,
-};
+pub use types::{Memory, MemoryId, MemoryKind, StoredMessage, TokenCount};

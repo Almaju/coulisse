@@ -86,7 +86,7 @@ async fn conversation(
     let user_id = parse_user_id(&user_id)?;
     let um = state.memory.for_user(user_id);
     let messages = um.messages().await?;
-    let tool_calls = um.tool_calls().await?;
+    let tool_calls = state.telemetry.tool_calls_for_user(user_id).await?;
     let memories = um.memories().await?.into_iter().map(Into::into).collect();
     let scores = ScoresPanel::build(state.judges.scores(user_id).await?);
     render(ConversationPage {

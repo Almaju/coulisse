@@ -1,7 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use coulisse_core::TurnId;
-use memory::UserId;
+use coulisse_core::{TurnId, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::id::EventId;

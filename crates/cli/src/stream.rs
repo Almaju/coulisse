@@ -1,20 +1,15 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
-use agents::{
-    Agents, CompletionStream, StreamEvent, ToolCallKind as PromptToolCallKind,
-    Usage as ProviderUsage,
-};
+use agents::{Agents, CompletionStream, StreamEvent, Usage as ProviderUsage};
 use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
-use coulisse_core::OneShotPrompt;
+use coulisse_core::{OneShotPrompt, ToolCallKind};
 use futures::StreamExt;
 use judge::spawn_score;
-use memory::{
-    MessageId, Role as MemRole, StoredToolCall, ToolCallInvocation,
-    ToolCallKind as MemToolCallKind, UserId,
-};
+use memory::{MessageId, Role as MemRole, UserId};
+use telemetry::ToolCallInvocation;
 
 use proxy::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
@@ -105,7 +100,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                     buf.push(PendingToolCall {
                         args,
                         call_id,
-                        kind: to_mem_tool_kind(kind),
+                        kind,
                         ordinal,
                         result: None,
                         tool_name,
@@ -152,19 +147,10 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
 struct PendingToolCall {
     args: String,
     call_id: String,
-    kind: MemToolCallKind,
+    kind: ToolCallKind,
     ordinal: u32,
     result: Option<String>,
     tool_name: String,
-}
-
-/// Cross-crate conversion — orphan rules forbid a `From` impl here, so a
-/// free helper does the translation at the prompter → memory boundary.
-fn to_mem_tool_kind(k: PromptToolCallKind) -> MemToolCallKind {
-    match k {
-        PromptToolCallKind::Mcp => MemToolCallKind::Mcp,
-        PromptToolCallKind::Subagent => MemToolCallKind::Subagent,
-    }
 }
 
 /// Drop guard: persists the conversation to memory and records token usage
@@ -217,19 +203,24 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                 warn_memory_append_failed("assistant", err);
                 return;
             }
+            // Tool calls are anchored on the turn correlation id, which
+            // for top-level requests is the assistant message id (the
+            // chat handler reuses the UUID). Subagent tool calls also
+            // record their own turn ids inside the `agents` crate.
+            let turn_id = telemetry::TurnId(assistant_message_id.0);
             for pc in tool_calls {
-                let stored = StoredToolCall::new(ToolCallInvocation {
+                let invocation = ToolCallInvocation {
                     args: pc.args,
                     error: None,
                     kind: pc.kind,
-                    message_id: assistant_message_id,
                     ordinal: pc.ordinal,
                     result: pc.result,
                     tool_name: pc.tool_name,
+                    turn_id,
                     user_id,
-                });
-                if let Err(err) = um.append_tool_call(stored).await {
-                    eprintln!("memory append failed for tool call: {err}");
+                };
+                if let Err(err) = state.telemetry.append_tool_call(invocation).await {
+                    eprintln!("telemetry append failed for tool call: {err}");
                 }
             }
             if let Some(extractor) = state.extractor.as_ref() {

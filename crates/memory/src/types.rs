@@ -21,22 +21,6 @@ impl Default for MemoryId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct ToolCallId(pub Uuid);
-
-impl ToolCallId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for ToolCallId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct TokenCount(pub u32);
@@ -133,71 +117,6 @@ impl Memory {
             content,
         }
     }
-}
-
-/// Whether a tool invocation was serviced by an MCP server or by another
-/// agent acting as a tool (subagent). The distinction matters in the studio
-/// UI where subagent calls carry different semantics (nested conversation,
-/// own token usage) from MCP calls (pure function invocation).
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToolCallKind {
-    Mcp,
-    Subagent,
-}
-
-/// A single tool invocation that happened during an assistant turn. Each
-/// turn that used tools produces zero or more `StoredToolCall` rows linked
-/// to the assistant message that was eventually returned to the user, in
-/// the order they fired (`ordinal`).
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct StoredToolCall {
-    pub args: String,
-    pub created_at: u64,
-    pub error: Option<String>,
-    pub id: ToolCallId,
-    pub kind: ToolCallKind,
-    pub message_id: MessageId,
-    pub ordinal: u32,
-    pub result: Option<String>,
-    pub tool_name: String,
-    pub user_id: UserId,
-}
-
-impl StoredToolCall {
-    /// Build a fresh `StoredToolCall` for the given invocation. `id` and
-    /// `created_at` are auto-filled; callers pass in only the domain data
-    /// grouped into one `ToolCallInvocation` struct (rather than a long
-    /// argument list) so adding a field in the future doesn't break
-    /// every call site.
-    pub fn new(invocation: ToolCallInvocation) -> Self {
-        Self {
-            args: invocation.args,
-            created_at: now_secs(),
-            error: invocation.error,
-            id: ToolCallId::new(),
-            kind: invocation.kind,
-            message_id: invocation.message_id,
-            ordinal: invocation.ordinal,
-            result: invocation.result,
-            tool_name: invocation.tool_name,
-            user_id: invocation.user_id,
-        }
-    }
-}
-
-/// The domain data needed to create a `StoredToolCall`, bundled together
-/// so the constructor stays readable.
-#[derive(Clone, Debug)]
-pub struct ToolCallInvocation {
-    pub args: String,
-    pub error: Option<String>,
-    pub kind: ToolCallKind,
-    pub message_id: MessageId,
-    pub ordinal: u32,
-    pub result: Option<String>,
-    pub tool_name: String,
-    pub user_id: UserId,
 }
 
 pub(crate) fn now_secs() -> u64 {

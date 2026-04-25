@@ -7,10 +7,11 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use coulisse_core::ToolCallKind;
 use experiments::{ExperimentConfig, Strategy};
 use judge::Score;
-use memory::{Memory, MemoryKind, Role, StoredMessage, StoredToolCall, ToolCallKind, UserSummary};
-use telemetry::{Event, EventKind};
+use memory::{Memory, MemoryKind, Role, StoredMessage, UserSummary};
+use telemetry::{Event, EventKind, ToolCall};
 
 pub struct ExperimentRow {
     pub epsilon: Option<f32>,
@@ -109,7 +110,6 @@ pub struct UserRow {
     pub last_activity_at: String,
     pub memory_count: u32,
     pub message_count: u32,
-    pub tool_call_count: u32,
     pub user_id: String,
 }
 
@@ -119,7 +119,6 @@ impl From<UserSummary> for UserRow {
             last_activity_at: relative_time(s.last_activity_at),
             memory_count: s.memory_count,
             message_count: s.message_count,
-            tool_call_count: s.tool_call_count,
             user_id: s.user_id.0.to_string(),
         }
     }
@@ -146,8 +145,8 @@ pub struct ToolCallRow {
     pub tool_name: String,
 }
 
-impl From<StoredToolCall> for ToolCallRow {
-    fn from(t: StoredToolCall) -> Self {
+impl From<ToolCall> for ToolCallRow {
+    fn from(t: ToolCall) -> Self {
         let (kind_label, kind_class) = match t.kind {
             ToolCallKind::Mcp => ("mcp", "bg-amber-950/60 text-amber-300 border-amber-900/60"),
             ToolCallKind::Subagent => (
@@ -174,13 +173,14 @@ impl From<StoredToolCall> for ToolCallRow {
     }
 }
 
-pub fn message_rows(
-    messages: Vec<StoredMessage>,
-    tool_calls: Vec<StoredToolCall>,
-) -> Vec<MessageRow> {
+pub fn message_rows(messages: Vec<StoredMessage>, tool_calls: Vec<ToolCall>) -> Vec<MessageRow> {
+    // Tool calls are anchored on `turn_id`; the chat handler reuses
+    // the assistant message id as the turn correlation id, so joining
+    // by `turn_id == message.id` reconstructs the per-message
+    // tool-call panel without a schema change in studio.
     let mut by_message: HashMap<String, Vec<(u32, ToolCallRow)>> = HashMap::new();
     for tc in tool_calls {
-        let key = tc.message_id.0.to_string();
+        let key = tc.turn_id.0.to_string();
         let ord = tc.ordinal;
         by_message.entry(key).or_default().push((ord, tc.into()));
     }

@@ -2,16 +2,14 @@
 -- When the schema changes, replace the contents with the ALTER/CREATE/DROP
 -- statements needed to bring a prior database up to date.
 
-CREATE TABLE IF NOT EXISTS events (
-    correlation_id  TEXT    NOT NULL,
-    created_at      INTEGER NOT NULL,
-    duration_ms     INTEGER,
-    id              TEXT    NOT NULL PRIMARY KEY,
-    kind            TEXT    NOT NULL,
-    parent_id       TEXT,
-    payload         TEXT    NOT NULL,
-    user_id         TEXT    NOT NULL
-);
+-- The tool_calls table moved here from the memory crate. On legacy
+-- databases it has a `message_id` column anchoring each row to a
+-- memory message. Rename it to `turn_id` — these were always the same
+-- UUID value (the chat handler reuses the assistant message id as the
+-- turn correlation id), the new column name reflects that tool calls
+-- belong to a turn, not a message. On fresh databases the column was
+-- already named `turn_id` by schema.sql and this ALTER is a no-op
+-- (it errors with "duplicate column" and the runtime swallows it).
+ALTER TABLE tool_calls RENAME COLUMN message_id TO turn_id;
 
-CREATE INDEX IF NOT EXISTS idx_events_correlation ON events(correlation_id);
-CREATE INDEX IF NOT EXISTS idx_events_user_time   ON events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_turn ON tool_calls(turn_id);

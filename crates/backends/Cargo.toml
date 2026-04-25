@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+coulisse-core.workspace = true
 futures.workspace = true
 rig-core.workspace = true
 serde.workspace = true

@@ -906,27 +906,30 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
     // Drop guard spawns the persistence task; give it time to complete.
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    let um = state.memory.for_user(UserId::from_string("alice"));
+    let user_id = UserId::from_string("alice");
+    let um = state.memory.for_user(user_id);
     let messages = um.messages().await.unwrap();
     assert_eq!(messages.len(), 2);
     let assistant = &messages[1];
     assert_eq!(assistant.role, MemRole::Assistant);
 
-    let mut tool_calls = um.tool_calls().await.unwrap();
+    let mut tool_calls = state.telemetry.tool_calls_for_user(user_id).await.unwrap();
     tool_calls.sort_by_key(|t| t.ordinal);
     assert_eq!(tool_calls.len(), 2);
     assert_eq!(tool_calls[0].tool_name, "web_search");
     assert_eq!(tool_calls[0].ordinal, 0);
-    assert_eq!(tool_calls[0].kind, memory::ToolCallKind::Mcp);
+    assert_eq!(tool_calls[0].kind, coulisse_core::ToolCallKind::Mcp);
     assert_eq!(tool_calls[0].args, r#"{"q":"capital of France"}"#);
     assert_eq!(
         tool_calls[0].result.as_deref(),
         Some("Paris is the capital of France.")
     );
-    assert_eq!(tool_calls[0].message_id, assistant.id);
+    // Tool calls anchor on turn_id; for top-level requests the turn id
+    // shares its UUID with the assistant message id.
+    assert_eq!(tool_calls[0].turn_id.0, assistant.id.0);
     assert_eq!(tool_calls[1].tool_name, "specialist_agent");
     assert_eq!(tool_calls[1].ordinal, 1);
-    assert_eq!(tool_calls[1].kind, memory::ToolCallKind::Subagent);
+    assert_eq!(tool_calls[1].kind, coulisse_core::ToolCallKind::Subagent);
 }
 
 #[tokio::test(flavor = "current_thread")]
