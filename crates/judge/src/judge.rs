@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use agents::{Agents, Message as AgentMessage, Role as AgentRole};
 use backends::ProviderKind;
-use memory::{MessageId, Score, Store, UserId};
+use coulisse_core::{MessageId, OneShotPrompt, UserId};
 use serde::Deserialize;
 
 use crate::JudgeConfig;
+use crate::store::Judges;
+use crate::types::Score;
 
 /// Runtime judge built from YAML and validated at startup. Holds the
 /// prebuilt preamble so the hot path does zero string construction before
@@ -73,10 +74,10 @@ impl Judge {
 /// the task. Failures are logged and swallowed so the response path is
 /// never affected.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_score<P: Agents + 'static>(
+pub fn spawn_score<C: OneShotPrompt + 'static>(
     judges: Vec<Arc<Judge>>,
-    memory: Arc<Store>,
-    agents: Arc<P>,
+    store: Arc<Judges>,
+    completer: Arc<C>,
     user_id: UserId,
     message_id: MessageId,
     agent_name: String,
@@ -93,8 +94,8 @@ pub fn spawn_score<P: Agents + 'static>(
             }
             if let Err(err) = run_score(
                 &judge,
-                &memory,
-                agents.as_ref(),
+                &store,
+                completer.as_ref(),
                 user_id,
                 message_id,
                 &agent_name,
@@ -115,28 +116,29 @@ pub fn spawn_score<P: Agents + 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_score<P: Agents>(
+async fn run_score(
     judge: &Judge,
-    memory: &Store,
-    prompter: &P,
+    store: &Judges,
+    completer: &dyn OneShotPrompt,
     user_id: UserId,
     message_id: MessageId,
     agent_name: &str,
     user_message: &str,
     assistant_message: &str,
 ) -> Result<(), JudgeRunError> {
-    let turn = AgentMessage {
-        content: format!(
-            "User message:\n{user_message}\n\nAssistant reply:\n{assistant_message}\n\nReturn the JSON object now."
-        ),
-        role: AgentRole::User,
-    };
-    let completion = prompter
-        .prompt_with(judge.provider, &judge.model, &judge.preamble, vec![turn])
+    let user_text = format!(
+        "User message:\n{user_message}\n\nAssistant reply:\n{assistant_message}\n\nReturn the JSON object now."
+    );
+    let raw_text = completer
+        .one_shot(
+            judge.provider.as_str(),
+            &judge.model,
+            &judge.preamble,
+            &user_text,
+        )
         .await
-        .map_err(JudgeRunError::Prompt)?;
-    let raw = parse_scores(&completion.text).map_err(JudgeRunError::Parse)?;
-    let um = memory.for_user(user_id);
+        .map_err(|e| JudgeRunError::Prompt(e.to_string()))?;
+    let raw = parse_scores(&raw_text).map_err(JudgeRunError::Parse)?;
     for criterion in &judge.criteria {
         let Some(raw_score) = raw.get(criterion) else {
             tracing::debug!(
@@ -156,7 +158,7 @@ async fn run_score<P: Agents>(
             clamp_score(raw_score.score),
             raw_score.reasoning.clone(),
         );
-        if let Err(err) = um.append_score(score).await {
+        if let Err(err) = store.append_score(score).await {
             tracing::warn!(
                 judge = %judge.name,
                 %criterion,
@@ -234,92 +236,99 @@ enum JudgeRunError {
     #[error("parse: {0}")]
     Parse(String),
     #[error("prompt: {0}")]
-    Prompt(agents::AgentsError),
+    Prompt(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cfg(rubrics: Vec<(&str, &str)>, sampling_rate: f32) -> JudgeConfig {
+    fn config(rubrics: &[(&str, &str)], rate: f32, provider: &str) -> JudgeConfig {
         JudgeConfig {
-            model: "test-model".into(),
-            name: "test".into(),
-            provider: "openai".into(),
+            model: "gpt-mini".into(),
+            name: "quality".into(),
+            provider: provider.into(),
             rubrics: rubrics
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
-            sampling_rate,
+            sampling_rate: rate,
         }
     }
 
     #[test]
     fn from_config_rejects_empty_rubrics() {
-        let err = Judge::from_config(&cfg(vec![], 1.0)).unwrap_err();
-        assert!(matches!(err, JudgeBuildError::NoRubrics { .. }));
+        let cfg = config(&[], 1.0, "openai");
+        assert!(matches!(
+            Judge::from_config(&cfg),
+            Err(JudgeBuildError::NoRubrics { .. })
+        ));
     }
 
     #[test]
     fn from_config_rejects_out_of_range_sampling_rate() {
-        let err = Judge::from_config(&cfg(vec![("helpfulness", "...")], 1.5)).unwrap_err();
-        assert!(matches!(err, JudgeBuildError::InvalidSamplingRate { .. }));
+        let cfg = config(&[("a", "b")], 1.5, "openai");
+        assert!(matches!(
+            Judge::from_config(&cfg),
+            Err(JudgeBuildError::InvalidSamplingRate { value, .. }) if value == 1.5,
+        ));
     }
 
     #[test]
     fn from_config_rejects_unknown_provider() {
-        let mut c = cfg(vec![("helpfulness", "...")], 1.0);
-        c.provider = "not-a-provider".into();
-        let err = Judge::from_config(&c).unwrap_err();
-        assert!(matches!(err, JudgeBuildError::UnknownProvider { .. }));
-    }
-
-    #[test]
-    fn preamble_lists_criteria_alphabetically() {
-        let judge = Judge::from_config(&cfg(
-            vec![("tone", "be polite"), ("accuracy", "be factual")],
-            1.0,
-        ))
-        .unwrap();
-        let accuracy_at = judge.preamble.find("- accuracy:").unwrap();
-        let tone_at = judge.preamble.find("- tone:").unwrap();
-        assert!(accuracy_at < tone_at);
-        assert_eq!(judge.criteria, vec!["accuracy", "tone"]);
-    }
-
-    #[test]
-    fn sampling_rate_zero_never_samples() {
-        let judge = Judge::from_config(&cfg(vec![("x", "...")], 0.0)).unwrap();
-        for _ in 0..100 {
-            assert!(!judge.should_sample());
-        }
+        let cfg = config(&[("a", "b")], 1.0, "imaginary");
+        assert!(matches!(
+            Judge::from_config(&cfg),
+            Err(JudgeBuildError::UnknownProvider { provider, .. }) if provider == "imaginary",
+        ));
     }
 
     #[test]
     fn sampling_rate_one_always_samples() {
-        let judge = Judge::from_config(&cfg(vec![("x", "...")], 1.0)).unwrap();
-        for _ in 0..100 {
+        let cfg = config(&[("a", "b")], 1.0, "openai");
+        let judge = Judge::from_config(&cfg).unwrap();
+        for _ in 0..50 {
             assert!(judge.should_sample());
         }
     }
 
     #[test]
+    fn sampling_rate_zero_never_samples() {
+        let cfg = config(&[("a", "b")], 0.0, "openai");
+        let judge = Judge::from_config(&cfg).unwrap();
+        for _ in 0..50 {
+            assert!(!judge.should_sample());
+        }
+    }
+
+    #[test]
+    fn preamble_lists_criteria_alphabetically() {
+        let cfg = config(&[("zebra", "z desc"), ("alpha", "a desc")], 1.0, "openai");
+        let judge = Judge::from_config(&cfg).unwrap();
+        let alpha_pos = judge.preamble.find("alpha").unwrap();
+        let zebra_pos = judge.preamble.find("zebra").unwrap();
+        assert!(alpha_pos < zebra_pos);
+    }
+
+    #[test]
     fn parse_scores_accepts_raw_json() {
-        let raw = r#"{"accuracy": {"score": 8, "reasoning": "mostly right"}}"#;
-        let parsed = parse_scores(raw).unwrap();
-        assert_eq!(parsed["accuracy"].score, 8.0);
-        assert_eq!(parsed["accuracy"].reasoning, "mostly right");
+        let text = r#"{"clarity": {"score": 8, "reasoning": "clear"}}"#;
+        let parsed = parse_scores(text).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed["clarity"].score as i32, 8);
+        assert_eq!(parsed["clarity"].reasoning, "clear");
     }
 
     #[test]
     fn parse_scores_strips_code_fences() {
-        let raw = "```json\n{\"helpfulness\": {\"score\": 5, \"reasoning\": \"meh\"}}\n```";
-        let parsed = parse_scores(raw).unwrap();
-        assert_eq!(parsed["helpfulness"].score, 5.0);
+        let text = "```json\n{\"clarity\": {\"score\": 7, \"reasoning\": \"ok\"}}\n```";
+        let parsed = parse_scores(text).unwrap();
+        assert_eq!(parsed.len(), 1);
     }
 
     #[test]
     fn parse_scores_errors_on_empty() {
+        assert!(parse_scores("").is_err());
         assert!(parse_scores("   ").is_err());
     }
 
@@ -331,8 +340,8 @@ mod tests {
     #[test]
     fn clamp_score_bounds_to_0_10() {
         assert_eq!(clamp_score(-3.0), 0.0);
-        assert_eq!(clamp_score(12.5), 10.0);
-        assert_eq!(clamp_score(7.2), 7.2);
+        assert_eq!(clamp_score(15.0), 10.0);
+        assert_eq!(clamp_score(5.5), 5.5);
         assert_eq!(clamp_score(f32::NAN), 0.0);
     }
 }

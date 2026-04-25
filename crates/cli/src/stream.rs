@@ -8,6 +8,7 @@ use agents::{
 use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
+use coulisse_core::OneShotPrompt;
 use futures::StreamExt;
 use judge::spawn_score;
 use memory::{
@@ -30,7 +31,7 @@ use crate::server::{AppState, judges_for_agent};
 /// stays under clippy's `too_many_arguments` lint, and so new per-request
 /// fields (telemetry turn id, future flags) can be added without breaking
 /// callers.
-pub struct StreamContext<P: Agents + 'static> {
+pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     /// Resolved agent name — what judges score and what `judges_for_agent`
     /// looks up. Differs from `model` when the request hit an experiment:
     /// `model` echoes back the experiment name the client sent, while
@@ -46,7 +47,7 @@ pub struct StreamContext<P: Agents + 'static> {
     pub user_message: String,
 }
 
-pub fn sse_response<P: Agents + 'static>(
+pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
     cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     let StreamContext {
@@ -169,7 +170,7 @@ fn to_mem_tool_kind(k: PromptToolCallKind) -> MemToolCallKind {
 /// Drop guard: persists the conversation to memory and records token usage
 /// when the SSE stream ends, regardless of whether it ended normally or the
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
-struct MemoryFlush<P: Agents + 'static> {
+struct MemoryFlush<P: Agents + OneShotPrompt + 'static> {
     accumulated: Arc<Mutex<String>>,
     /// Resolved agent name; used for `judges_for_agent`. See
     /// `StreamContext::agent_name` for the rationale.
@@ -183,7 +184,7 @@ struct MemoryFlush<P: Agents + 'static> {
     user_message: String,
 }
 
-impl<P: Agents + 'static> Drop for MemoryFlush<P> {
+impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
         let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
         let agent_name = std::mem::take(&mut self.agent_name);
@@ -242,7 +243,7 @@ impl<P: Agents + 'static> Drop for MemoryFlush<P> {
             let judges = judges_for_agent(&state, &agent_name);
             spawn_score(
                 judges,
-                Arc::clone(&state.memory),
+                Arc::clone(&state.judge_store),
                 Arc::clone(&state.agents),
                 user_id,
                 assistant_message_id,

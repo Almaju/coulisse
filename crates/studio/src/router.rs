@@ -10,6 +10,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum_oidc::error::MiddlewareError;
 use axum_oidc::{EmptyAdditionalClaims, OidcAuthLayer, OidcLoginLayer};
+use judge::JudgeStoreError;
 use memory::{MemoryError, UserId};
 use telemetry::{TelemetryError, TurnId};
 use time::Duration;
@@ -87,7 +88,7 @@ async fn conversation(
     let messages = um.messages().await?;
     let tool_calls = um.tool_calls().await?;
     let memories = um.memories().await?.into_iter().map(Into::into).collect();
-    let scores = ScoresPanel::build(um.scores().await?);
+    let scores = ScoresPanel::build(state.judges.scores(user_id).await?);
     render(ConversationPage {
         memories,
         messages: message_rows(messages, tool_calls),
@@ -111,7 +112,7 @@ async fn experiments(State(state): State<Arc<StudioState>>) -> Result<Html<Strin
                 .unwrap_or(0);
             let since = now.saturating_sub(window);
             for s in state
-                .memory
+                .judges
                 .mean_scores_by_agent(judge, criterion, since)
                 .await?
             {
@@ -156,9 +157,16 @@ fn parse_turn_id(raw: &str) -> Result<TurnId, StudioError> {
 enum StudioError {
     InvalidTurnId,
     InvalidUserId,
+    Judge(JudgeStoreError),
     Memory(MemoryError),
     Render(askama::Error),
     Telemetry(TelemetryError),
+}
+
+impl From<JudgeStoreError> for StudioError {
+    fn from(err: JudgeStoreError) -> Self {
+        Self::Judge(err)
+    }
 }
 
 impl From<MemoryError> for StudioError {
@@ -190,6 +198,7 @@ impl IntoResponse for StudioError {
                 StatusCode::BAD_REQUEST,
                 "user_id must be a valid UUID".to_string(),
             ),
+            Self::Judge(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             Self::Memory(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             Self::Render(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             Self::Telemetry(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),

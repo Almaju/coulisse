@@ -1,13 +1,13 @@
 //! Cross-crate primitives shared by every feature crate.
 //!
-//! This crate stays small on purpose. It holds domain types (`UserId`,
-//! `TurnId`, `Message`, `Role`, `Score`) that cross feature boundaries.
-//! Feature crates depend on `coulisse-core`; they never depend on each
-//! other. If a type lives in only one feature, keep it there.
+//! This crate stays small on purpose. It holds domain types
+//! (`UserId`, `TurnId`, `Message`, `Role`, `AgentScoreSummary`) and
+//! tiny cross-cutting traits (`OneShotPrompt`, `ScoreLookup`) that
+//! sit at feature-crate boundaries. If a type lives in only one
+//! feature, keep it there.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -42,22 +42,6 @@ impl MessageId {
 }
 
 impl Default for MessageId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct ScoreId(pub Uuid);
-
-impl ScoreId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for ScoreId {
     fn default() -> Self {
         Self::new()
     }
@@ -131,31 +115,12 @@ impl Message {
     }
 }
 
-/// Single criterion evaluation attached to an assistant message by an LLM judge.
-/// Each rubric on a judge produces one `Score` per scored turn; averages and
-/// trends are computed at read time (studio views), not aggregated here.
-///
-/// `agent_name` is the agent (or experiment variant) whose reply was
-/// scored — populated since experiments shipped so per-variant
-/// aggregation flows through the same table without a join.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Score {
-    pub agent_name: String,
-    pub created_at: u64,
-    pub criterion: String,
-    pub id: ScoreId,
-    pub judge_model: String,
-    pub judge_name: String,
-    pub message_id: MessageId,
-    pub reasoning: String,
-    pub score: f32,
-    pub user_id: UserId,
-}
-
 /// Per-agent score summary aggregated over a time window. One row per
 /// agent that has any score in the window; absence means "not enough
-/// data". Produced by storage queries (e.g. `memory::Store`) and consumed
-/// by routing logic (e.g. `experiments`).
+/// data". Produced by `judge` (the score authority) and consumed by
+/// routing logic in `agents`/`experiments`. Lives in core only because
+/// it sits at the trait boundary (`ScoreLookup`); the score storage
+/// itself lives in the `judge` crate.
 #[derive(Clone, Debug)]
 pub struct AgentScoreSummary {
     pub agent_name: String,
@@ -163,38 +128,28 @@ pub struct AgentScoreSummary {
     pub samples: u32,
 }
 
-impl Score {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        user_id: UserId,
-        message_id: MessageId,
-        agent_name: String,
-        judge_name: String,
-        judge_model: String,
-        criterion: String,
-        score: f32,
-        reasoning: String,
-    ) -> Self {
-        Self {
-            agent_name,
-            created_at: now_secs(),
-            criterion,
-            id: ScoreId::new(),
-            judge_model,
-            judge_name,
-            message_id,
-            reasoning,
-            score,
-            user_id,
-        }
-    }
+/// Read-only view onto judge score aggregates. Implemented by whichever
+/// crate owns the score storage (currently `judge`); consumed by feature
+/// crates that need to read scores at runtime — e.g. `agents` for
+/// bandit-strategy variant selection during subagent dispatch — without
+/// taking a hard dep on the score-storage crate.
+pub trait ScoreLookup: Send + Sync {
+    fn mean_scores_by_agent<'a>(
+        &'a self,
+        judge: &'a str,
+        criterion: &'a str,
+        since: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AgentScoreSummary>, ScoreLookupError>> + Send + 'a>>;
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ScoreLookupError(pub String);
+
+impl ScoreLookupError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
 }
 
 /// Single-shot prompt against a named provider/model. Used by features that

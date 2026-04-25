@@ -9,8 +9,9 @@ use axum::routing::get;
 use backends::ProviderKind;
 use coulisse::config::Config;
 use coulisse::server::{self, AppState};
+use coulisse_core::ScoreLookup;
 use experiments::Strategy;
-use judge::{Judge, JudgeConfig};
+use judge::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
 use studio::{OidcRuntime, StudioAuth, StudioConfig, StudioCredentials, StudioState};
@@ -36,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let judges = build_judges(&judge_configs)?;
 
     let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
+    let judge_store = Arc::new(Judges::open(memory.pool().clone()).await?);
     let prompter = Arc::new(
         RigAgents::new(
             BootConfig {
@@ -45,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 providers: config.providers,
             },
             Some(Arc::clone(&telemetry)),
-            Some(Arc::clone(&memory)),
+            Some(Arc::clone(&judge_store) as Arc<dyn ScoreLookup>),
         )
         .await?,
     );
@@ -60,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         default_user_id,
         extractor,
         judges: Arc::new(judges),
+        judge_store: Arc::clone(&judge_store),
         memory: Arc::clone(&memory),
         telemetry: Arc::clone(&telemetry),
         tracker,
@@ -67,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let studio_state = Arc::new(StudioState {
         auth: studio_auth,
         experiments: experiment_configs.clone(),
+        judges: judge_store,
         memory,
         telemetry,
     });

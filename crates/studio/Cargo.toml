@@ -11,6 +11,7 @@ axum-oidc = "0.6"
 base64 = "0.22"
 experiments.workspace = true
 http = "1"
+judge.workspace = true
 memory.workspace = true
 serde.workspace = true
 serde_json.workspace = true

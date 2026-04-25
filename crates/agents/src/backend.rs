@@ -6,9 +6,8 @@ use std::time::Instant;
 use backends::{
     Backends, Completion, CompletionStream, Conversation, Message, ProviderKind, Role, ToolCallKind,
 };
-use coulisse_core::{OneShotError, OneShotPrompt};
+use coulisse_core::{OneShotError, OneShotPrompt, ScoreLookup};
 use experiments::ExperimentRouter;
-use memory::Store;
 use rig::completion::ToolDefinition;
 use rig::tool::rmcp::McpTool;
 use rig::tool::{ToolDyn, ToolError};
@@ -42,11 +41,11 @@ struct AgentsInner {
     /// agent at request time. Empty when no experiments are configured —
     /// `resolve` then short-circuits to passthrough.
     router: ExperimentRouter,
-    /// Optional handle to the score store. Required for bandit-strategy
+    /// Optional handle to a score reader. Required for bandit-strategy
     /// subagent calls (which need to read recent mean scores at call
     /// time). When `None`, bandit subagents fall back to forced
     /// exploration — fine for tests and small deployments.
-    score_store: Option<Arc<Store>>,
+    scores: Option<Arc<dyn ScoreLookup>>,
     /// Optional observability sink. When `Some`, every tool invocation
     /// (MCP or subagent, at any depth) is recorded as a `ToolCall` event.
     /// Kept off the hot path by short-circuiting when `None`, so tests and
@@ -133,7 +132,7 @@ impl RigAgents {
     pub async fn new(
         config: BootConfig,
         telemetry: Option<Arc<TelemetrySink>>,
-        score_store: Option<Arc<Store>>,
+        scores: Option<Arc<dyn ScoreLookup>>,
     ) -> Result<Self, AgentsError> {
         let backends = Backends::new(config.providers).map_err(AgentsError::from)?;
 
@@ -150,7 +149,7 @@ impl RigAgents {
                 backends,
                 mcp_servers,
                 router,
-                score_store,
+                scores,
                 telemetry,
             }),
         })
@@ -475,11 +474,10 @@ impl ToolDyn for SubagentTool {
             // scores; without a score store wired in, that lookup
             // returns no data and the bandit falls back to forced
             // exploration.
-            let scores = if let (Some(store), Some((judge, criterion, since))) = (
-                inner.score_store.as_ref(),
-                inner.router.bandit_query(&target),
-            ) {
-                store
+            let scores = if let (Some(scores), Some((judge, criterion, since))) =
+                (inner.scores.as_ref(), inner.router.bandit_query(&target))
+            {
+                scores
                     .mean_scores_by_agent(&judge, &criterion, since)
                     .await
                     .unwrap_or_default()
@@ -661,7 +659,7 @@ impl McpServer {
 #[cfg(test)]
 mod telemetry_tool_tests {
     use super::*;
-    use memory::UserId;
+    use coulisse_core::UserId;
     use rig::completion::ToolDefinition;
     use sqlx::SqlitePool;
     use sqlx::sqlite::SqliteConnectOptions;

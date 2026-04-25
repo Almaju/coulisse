@@ -11,9 +11,10 @@
 use std::sync::Arc;
 
 use agents::{Agents, Message as AgentMessage};
+use coulisse_core::OneShotPrompt;
 use experiments::ExperimentConfig;
 use judge::{Judge, spawn_score};
-use memory::{MessageId, Store, UserId};
+use memory::{MessageId, UserId};
 use telemetry::{Ctx as TelemetryCtx, TurnId};
 
 use crate::server::AppState;
@@ -24,7 +25,7 @@ use crate::server::judges_for_agent;
 /// its output, and persists the scores. Failures are logged and
 /// swallowed — shadow is best-effort.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_shadow_runs<P: Agents + 'static>(
+pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
     state: Arc<AppState<P>>,
     experiment: &ExperimentConfig,
     parent_turn: TurnId,
@@ -63,7 +64,7 @@ pub fn spawn_shadow_runs<P: Agents + 'static>(
     }
 }
 
-async fn run_shadow<P: Agents + 'static>(
+async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
     state: Arc<AppState<P>>,
     parent_turn: TurnId,
     user_id: UserId,
@@ -86,7 +87,7 @@ async fn run_shadow<P: Agents + 'static>(
             let judges: Vec<Arc<Judge>> = judges_for_agent(&state, &agent_name);
             spawn_score(
                 judges,
-                Arc::<Store>::clone(&state.memory),
+                Arc::clone(&state.judge_store),
                 Arc::clone(&state.agents),
                 user_id,
                 shadow_message_id,

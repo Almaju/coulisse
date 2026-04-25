@@ -8,9 +8,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use experiments::{ExperimentConfig, Strategy};
-use memory::{
-    Memory, MemoryKind, Role, Score, StoredMessage, StoredToolCall, ToolCallKind, UserSummary,
-};
+use judge::Score;
+use memory::{Memory, MemoryKind, Role, StoredMessage, StoredToolCall, ToolCallKind, UserSummary};
 use telemetry::{Event, EventKind};
 
 pub struct ExperimentRow {
@@ -110,7 +109,6 @@ pub struct UserRow {
     pub last_activity_at: String,
     pub memory_count: u32,
     pub message_count: u32,
-    pub score_count: u32,
     pub tool_call_count: u32,
     pub user_id: String,
 }
@@ -121,7 +119,6 @@ impl From<UserSummary> for UserRow {
             last_activity_at: relative_time(s.last_activity_at),
             memory_count: s.memory_count,
             message_count: s.message_count,
-            score_count: s.score_count,
             tool_call_count: s.tool_call_count,
             user_id: s.user_id.0.to_string(),
         }

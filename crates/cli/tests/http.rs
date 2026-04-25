@@ -21,11 +21,10 @@ use backends::ProviderKind;
 use coulisse::server::AppState;
 use experiments::{ExperimentConfig, Strategy, Variant};
 use http_body_util::BodyExt;
-use judge::Judge;
-use judge::JudgeConfig;
+use judge::{Judge, JudgeConfig, Judges, Score};
 use limits::Tracker;
 use memory::{
-    BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Score, Store, UserId,
+    BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Store, UserId,
 };
 use tower::ServiceExt;
 
@@ -77,11 +76,13 @@ async fn make_app_with_experiments(
     let memory = Arc::new(Store::open(config, None).await.unwrap());
     let tracker = Tracker::open(memory.pool().clone()).await.unwrap();
     let telemetry = Arc::new(telemetry::Sink::open(memory.pool().clone()).await.unwrap());
+    let judge_store = Arc::new(Judges::open(memory.pool().clone()).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
         default_user_id: None,
         extractor: None,
         judges: Arc::new(judges),
+        judge_store,
         memory,
         telemetry,
         tracker,
@@ -370,7 +371,6 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
     // both above min_samples=5. epsilon=0 in the experiment forces
     // pure exploitation.
     let user_id = UserId::from_string("alice");
-    let um = state.memory.for_user(user_id);
     for _ in 0..6 {
         let s = Score::new(
             user_id,
@@ -382,7 +382,7 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
             9.0,
             "leader".into(),
         );
-        um.append_score(s).await.unwrap();
+        state.judge_store.append_score(s).await.unwrap();
     }
     for _ in 0..6 {
         let s = Score::new(
@@ -395,7 +395,7 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
             2.0,
             "laggard".into(),
         );
-        um.append_score(s).await.unwrap();
+        state.judge_store.append_score(s).await.unwrap();
     }
 
     let req = json_request(serde_json::json!({
@@ -532,14 +532,15 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
         "shadow dispatched: {dispatched:?}"
     );
 
-    let um = state.memory.for_user(UserId::from_string("alice"));
+    let user_id = UserId::from_string("alice");
+    let um = state.memory.for_user(user_id);
     // Only the primary's reply should be in messages — shadow does not pollute history.
     let messages = um.messages().await.unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[1].content, "primary answer");
 
     // The shadow's score should be attributed to alice-v2, not alice-v1.
-    let scores = um.scores().await.unwrap();
+    let scores = state.judge_store.scores(user_id).await.unwrap();
     assert_eq!(scores.len(), 1);
     assert_eq!(scores[0].agent_name, "alice-v2");
     assert_eq!(scores[0].criterion, "helpfulness");
@@ -783,8 +784,8 @@ async fn judge_scores_are_persisted_after_a_turn() {
     // Give the spawned judge task time to persist.
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    let um = state.memory.for_user(UserId::from_string("alice"));
-    let mut scores = um.scores().await.unwrap();
+    let user_id = UserId::from_string("alice");
+    let mut scores = state.judge_store.scores(user_id).await.unwrap();
     scores.sort_by(|a, b| a.criterion.cmp(&b.criterion));
     assert_eq!(scores.len(), 2);
     assert_eq!(scores[0].criterion, "accuracy");
@@ -834,8 +835,8 @@ async fn judge_scores_are_persisted_after_a_streaming_turn() {
     // MemoryFlush spawns on Drop; the judge spawns again from inside.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let um = state.memory.for_user(UserId::from_string("alice"));
-    let scores = um.scores().await.unwrap();
+    let user_id = UserId::from_string("alice");
+    let scores = state.judge_store.scores(user_id).await.unwrap();
     assert_eq!(scores.len(), 1);
     assert_eq!(scores[0].criterion, "helpfulness");
     assert_eq!(scores[0].score, 7.0);
@@ -872,8 +873,8 @@ async fn judge_sampling_rate_zero_records_nothing() {
 
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    let um = state.memory.for_user(UserId::from_string("alice"));
-    assert_eq!(um.scores().await.unwrap().len(), 0);
+    let user_id = UserId::from_string("alice");
+    assert_eq!(state.judge_store.scores(user_id).await.unwrap().len(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -5,12 +5,13 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-agents.workspace = true
 backends.workspace = true
-memory.workspace = true
+coulisse-core.workspace = true
 rand = "0.8"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tracing.workspace = true
+uuid = { workspace = true, features = ["serde", "v4"] }

@@ -7,8 +7,9 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use coulisse_core::OneShotPrompt;
 use experiments::Strategy;
-use judge::{Judge, spawn_score};
+use judge::{Judge, Judges, spawn_score};
 use limits::Tracker;
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use telemetry::{Ctx as TelemetryCtx, Event, EventKind, Sink as TelemetrySink, TurnId};
@@ -22,7 +23,7 @@ use crate::stream::{StreamContext, sse_response};
 
 /// Shared state for the OpenAI-compatible proxy. Held in an `Arc` so axum
 /// handlers can cheaply clone the reference.
-pub struct AppState<P: Agents> {
+pub struct AppState<P: Agents + OneShotPrompt> {
     /// Fallback user id applied to requests that don't supply their own.
     /// `None` means such requests are rejected (multi-tenant posture).
     pub default_user_id: Option<UserId>,
@@ -33,6 +34,10 @@ pub struct AppState<P: Agents> {
     /// judge names on themselves — the per-request handler looks up which of
     /// these apply to the agent being called.
     pub judges: Arc<HashMap<String, Arc<Judge>>>,
+    /// Persistent score store owned by the judge crate. Reads (for
+    /// bandit aggregates) and writes (from background scoring tasks)
+    /// both go here.
+    pub judge_store: Arc<Judges>,
     pub memory: Arc<Store>,
     pub agents: Arc<P>,
     pub telemetry: Arc<TelemetrySink>,
@@ -41,7 +46,7 @@ pub struct AppState<P: Agents> {
 
 /// Build the OpenAI-compatible router. The cli composes this with other
 /// routers (e.g. the studio UI) before binding a listener.
-pub fn router<P: Agents + 'static>(state: Arc<AppState<P>>) -> Router {
+pub fn router<P: Agents + OneShotPrompt + 'static>(state: Arc<AppState<P>>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions::<P>))
         .route("/v1/models", get(models::<P>))
@@ -52,7 +57,7 @@ pub fn router<P: Agents + 'static>(state: Arc<AppState<P>>) -> Router {
 /// declared on the agent so log output is stable. Unknown judge names are
 /// skipped silently — validation at config load already rejects dangling
 /// references, so any miss here is a programmer error, not user input.
-pub(crate) fn judges_for_agent<P: Agents>(
+pub(crate) fn judges_for_agent<P: Agents + OneShotPrompt>(
     state: &AppState<P>,
     agent_name: &str,
 ) -> Vec<Arc<Judge>> {
@@ -66,7 +71,7 @@ pub(crate) fn judges_for_agent<P: Agents>(
         .collect()
 }
 
-async fn chat_completions<P: Agents + 'static>(
+async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     State(state): State<Arc<AppState<P>>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
@@ -84,7 +89,7 @@ async fn chat_completions<P: Agents + 'static>(
     // scores; for split/shadow/passthrough the lookup is a no-op.
     let bandit_scores = match state.agents.router().bandit_query(&request.model) {
         Some((judge, criterion, since)) => state
-            .memory
+            .judge_store
             .mean_scores_by_agent(&judge, &criterion, since)
             .await
             .unwrap_or_default(),
@@ -216,7 +221,7 @@ async fn chat_completions<P: Agents + 'static>(
     let judges = judges_for_agent(&state, &agent_name);
     spawn_score(
         judges,
-        Arc::clone(&state.memory),
+        Arc::clone(&state.judge_store),
         Arc::clone(&state.agents),
         prepared.user_id,
         assistant_message_id,
@@ -228,7 +233,9 @@ async fn chat_completions<P: Agents + 'static>(
     Ok(Json(request.response_with(completion.text, completion.usage)).into_response())
 }
 
-async fn models<P: Agents>(State(state): State<Arc<AppState<P>>>) -> Json<serde_json::Value> {
+async fn models<P: Agents + OneShotPrompt>(
+    State(state): State<Arc<AppState<P>>>,
+) -> Json<serde_json::Value> {
     let data: Vec<_> = state
         .agents
         .agents()
@@ -258,7 +265,7 @@ struct PreparedRequest {
     user_message: String,
 }
 
-async fn prepare_request<P: Agents>(
+async fn prepare_request<P: Agents + OneShotPrompt>(
     state: &Arc<AppState<P>>,
     request: &ChatCompletionRequest,
 ) -> Result<PreparedRequest, ApiError> {
