@@ -7,17 +7,19 @@ use uuid::Uuid;
 use crate::error::TelemetryError;
 use crate::event::{Event, EventKind};
 use crate::id::EventId;
-use crate::tool_call::{ToolCall, ToolCallId, ToolCallInvocation};
+use crate::tool_call::{ToolCall, ToolCallId};
 
 const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
 const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
 
-/// SQLite-backed observability sink. Owns the events and tool_calls
-/// tables — shares a pool with the rest of the workspace (same file on
-/// disk) so operators back up one thing, but writes never touch tables
-/// that feed the prompt.
+/// Read-only handle onto the telemetry tables. Writes flow exclusively
+/// through `SqliteLayer`, which mirrors `tracing` spans into the same
+/// `events` and `tool_calls` tables that this struct reads back for the
+/// studio UI. `Sink::open` is still the entry point that applies the
+/// schema migrations, so cli runs it once at startup before the layer
+/// starts emitting rows.
 ///
-/// Clone cheaply via the wrapping `Arc` callers are expected to hold.
+/// Cheap to clone via the wrapping `Arc` callers are expected to hold.
 pub struct Sink {
     pool: SqlitePool,
 }
@@ -43,29 +45,6 @@ impl Sink {
             }
         }
         Ok(Self { pool })
-    }
-
-    /// Persist a single event. Called on span completion; callers are free
-    /// to `tokio::spawn` this to keep it off the request's critical path,
-    /// but SQLite writes are fast enough that awaiting is usually fine.
-    pub async fn emit(&self, event: Event) -> Result<(), TelemetryError> {
-        let payload = serde_json::to_string(&event.payload)?;
-        sqlx::query(
-            "INSERT INTO events (correlation_id, created_at, duration_ms, id, kind, \
-             parent_id, payload, user_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(event.correlation_id.0.to_string())
-        .bind(event.created_at as i64)
-        .bind(event.duration_ms.map(|d| d as i64))
-        .bind(event.id.0.to_string())
-        .bind(kind_as_str(event.kind))
-        .bind(event.parent_id.map(|p| p.0.to_string()))
-        .bind(payload)
-        .bind(event.user_id.0.to_string())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
     }
 
     /// Every event for one turn, oldest first. Used by the studio UI to
@@ -118,34 +97,6 @@ impl Sink {
                 Ok(TurnId(uuid))
             })
             .collect()
-    }
-
-    /// Persist one tool invocation. Called once per tool call from the
-    /// streaming path after the turn completes — `ordinal` reflects the
-    /// order rig fired the tools within the turn.
-    pub async fn append_tool_call(
-        &self,
-        invocation: ToolCallInvocation,
-    ) -> Result<ToolCallId, TelemetryError> {
-        let tc = ToolCall::new(invocation);
-        sqlx::query(
-            "INSERT INTO tool_calls (args, created_at, error, id, kind, ordinal, result, \
-             tool_name, turn_id, user_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&tc.args)
-        .bind(tc.created_at as i64)
-        .bind(tc.error.as_deref())
-        .bind(tc.id.0.to_string())
-        .bind(tool_call_kind_as_str(tc.kind))
-        .bind(tc.ordinal as i64)
-        .bind(tc.result.as_deref())
-        .bind(&tc.tool_name)
-        .bind(tc.turn_id.0.to_string())
-        .bind(tc.user_id.0.to_string())
-        .execute(&self.pool)
-        .await?;
-        Ok(tc.id)
     }
 
     /// All tool calls for one user, chronological. Studio uses this to
@@ -223,13 +174,6 @@ fn row_to_tool_call(row: SqliteRow) -> Result<ToolCall, TelemetryError> {
     })
 }
 
-fn tool_call_kind_as_str(kind: ToolCallKind) -> &'static str {
-    match kind {
-        ToolCallKind::Mcp => "mcp",
-        ToolCallKind::Subagent => "subagent",
-    }
-}
-
 fn parse_tool_call_kind(s: &str) -> Result<ToolCallKind, TelemetryError> {
     match s {
         "mcp" => Ok(ToolCallKind::Mcp),
@@ -273,15 +217,6 @@ fn row_to_event(row: SqliteRow) -> Result<Event, TelemetryError> {
     })
 }
 
-fn kind_as_str(kind: EventKind) -> &'static str {
-    match kind {
-        EventKind::LlmCall => "llm_call",
-        EventKind::ToolCall => "tool_call",
-        EventKind::TurnFinish => "turn_finish",
-        EventKind::TurnStart => "turn_start",
-    }
-}
-
 fn kind_from_str(s: &str) -> Result<EventKind, TelemetryError> {
     match s {
         "llm_call" => Ok(EventKind::LlmCall),
@@ -313,113 +248,4 @@ fn split_sql(sql: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use sqlx::sqlite::SqliteConnectOptions;
-    use std::str::FromStr;
-
-    async fn sink() -> Sink {
-        let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
-        let pool = SqlitePool::connect_with(options).await.unwrap();
-        Sink::open(pool).await.unwrap()
-    }
-
-    #[tokio::test]
-    async fn round_trip_one_event() {
-        let sink = sink().await;
-        let user = UserId::new();
-        let turn = TurnId::new();
-        let parent = EventId::new();
-
-        let event = Event::new(
-            turn,
-            user,
-            Some(parent),
-            EventKind::ToolCall,
-            json!({ "tool_name": "search_jobs", "kind": "mcp", "args": "{}" }),
-        )
-        .with_duration_ms(42);
-        let event_id = event.id;
-        sink.emit(event).await.unwrap();
-
-        let events = sink.fetch_turn(user, turn).await.unwrap();
-        assert_eq!(events.len(), 1);
-        let got = &events[0];
-        assert_eq!(got.id, event_id);
-        assert_eq!(got.parent_id, Some(parent));
-        assert_eq!(got.duration_ms, Some(42));
-        assert_eq!(got.kind, EventKind::ToolCall);
-        assert_eq!(got.payload["tool_name"], "search_jobs");
-    }
-
-    #[tokio::test]
-    async fn nested_tree_preserves_parent_links() {
-        let sink = sink().await;
-        let user = UserId::new();
-        let turn = TurnId::new();
-
-        // turn_start → subagent tool_call → nested mcp tool_call
-        let turn_evt = Event::new(turn, user, None, EventKind::TurnStart, json!({}));
-        let turn_evt_id = turn_evt.id;
-        sink.emit(turn_evt).await.unwrap();
-
-        let sub = Event::new(
-            turn,
-            user,
-            Some(turn_evt_id),
-            EventKind::ToolCall,
-            json!({ "tool_name": "job-matcher", "kind": "subagent" }),
-        );
-        let sub_id = sub.id;
-        sink.emit(sub).await.unwrap();
-
-        let mcp = Event::new(
-            turn,
-            user,
-            Some(sub_id),
-            EventKind::ToolCall,
-            json!({ "tool_name": "search_jobs", "kind": "mcp" }),
-        );
-        let mcp_id = mcp.id;
-        sink.emit(mcp).await.unwrap();
-
-        let events = sink.fetch_turn(user, turn).await.unwrap();
-        assert_eq!(events.len(), 3);
-        let by_id: std::collections::HashMap<_, _> = events.iter().map(|e| (e.id, e)).collect();
-        assert_eq!(by_id[&turn_evt_id].kind, EventKind::TurnStart);
-        assert_eq!(by_id[&turn_evt_id].parent_id, None);
-        assert_eq!(by_id[&sub_id].parent_id, Some(turn_evt_id));
-        assert_eq!(by_id[&mcp_id].parent_id, Some(sub_id));
-    }
-
-    #[tokio::test]
-    async fn isolated_by_user_and_turn() {
-        let sink = sink().await;
-        let alice = UserId::new();
-        let bob = UserId::new();
-        let turn_a = TurnId::new();
-        let turn_b = TurnId::new();
-
-        for (user, turn) in [(alice, turn_a), (alice, turn_b), (bob, turn_a)] {
-            sink.emit(Event::new(
-                turn,
-                user,
-                None,
-                EventKind::TurnStart,
-                json!({}),
-            ))
-            .await
-            .unwrap();
-        }
-
-        assert_eq!(sink.fetch_turn(alice, turn_a).await.unwrap().len(), 1);
-        assert_eq!(sink.fetch_turn(alice, turn_b).await.unwrap().len(), 1);
-        assert_eq!(sink.fetch_turn(bob, turn_a).await.unwrap().len(), 1);
-        assert_eq!(sink.recent_turns(alice, 10).await.unwrap().len(), 2);
-        assert_eq!(sink.recent_turns(bob, 10).await.unwrap().len(), 1);
-    }
 }

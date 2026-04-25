@@ -45,7 +45,19 @@ fn make_agents() -> Vec<AgentConfig> {
     vec![agent_with_judges(vec![])]
 }
 
-async fn make_app(replies: Vec<ScriptedReply>) -> (Router, Arc<AppState<ScriptedAgents>>) {
+/// Per-test wiring. Holds the telemetry sink (for assertions) plus the
+/// SqliteLayer subscriber guard so tests can `flush().await` before
+/// reading rows. Drop order matters: drop the subscriber default last
+/// so any spans emitted during teardown are still recorded.
+pub struct TestHarness {
+    pub app: Router,
+    pub sink: Arc<telemetry::Sink>,
+    pub state: Arc<AppState<ScriptedAgents>>,
+    pub telemetry_guard: telemetry::SqliteLayerGuard,
+    _subscriber_guard: tracing::subscriber::DefaultGuard,
+}
+
+async fn make_app(replies: Vec<ScriptedReply>) -> TestHarness {
     make_app_with(make_agents(), HashMap::new(), replies).await
 }
 
@@ -53,7 +65,7 @@ async fn make_app_with(
     agents: Vec<AgentConfig>,
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
-) -> (Router, Arc<AppState<ScriptedAgents>>) {
+) -> TestHarness {
     make_app_with_experiments(agents, vec![], judges, replies).await
 }
 
@@ -62,7 +74,9 @@ async fn make_app_with_experiments(
     experiments: Vec<ExperimentConfig>,
     judges: HashMap<String, Arc<Judge>>,
     replies: Vec<ScriptedReply>,
-) -> (Router, Arc<AppState<ScriptedAgents>>) {
+) -> TestHarness {
+    use tracing_subscriber::layer::SubscriberExt;
+
     let agents_runner = Arc::new(ScriptedAgents::with_experiments(
         agents,
         experiments,
@@ -76,7 +90,10 @@ async fn make_app_with_experiments(
     let pool = memory::open_pool(&config.backend).await.unwrap();
     let memory = Arc::new(Store::open(pool.clone(), config, None).await.unwrap());
     let tracker = Tracker::open(pool.clone()).await.unwrap();
-    let telemetry = Arc::new(telemetry::Sink::open(pool.clone()).await.unwrap());
+    let sink = Arc::new(telemetry::Sink::open(pool.clone()).await.unwrap());
+    let (sqlite_layer, telemetry_guard) = telemetry::SqliteLayer::spawn(pool.clone());
+    let _subscriber_guard =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(sqlite_layer));
     let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
@@ -85,10 +102,16 @@ async fn make_app_with_experiments(
         judges: Arc::new(judges),
         judge_store,
         memory,
-        telemetry,
         tracker,
     });
-    (coulisse::server::router(Arc::clone(&state)), state)
+    let app = coulisse::server::router(Arc::clone(&state));
+    TestHarness {
+        app,
+        sink,
+        state,
+        telemetry_guard,
+        _subscriber_guard,
+    }
 }
 
 fn json_request(body: serde_json::Value) -> Request<Body> {
@@ -106,7 +129,12 @@ async fn collect(body: Body) -> Bytes {
 
 #[tokio::test(flavor = "current_thread")]
 async fn non_streaming_returns_openai_shape_and_persists_turn() {
-    let (app, state) = make_app(vec![ScriptedReply::text("Hello there").with_usage(Usage {
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("Hello there").with_usage(Usage {
         input_tokens: 7,
         output_tokens: 3,
         total_tokens: 10,
@@ -143,7 +171,11 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_without_user_id_is_rejected() {
-    let (app, _) = make_app(vec![ScriptedReply::text("unused")]).await;
+    let TestHarness {
+        app,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("unused")]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -154,7 +186,11 @@ async fn request_without_user_id_is_rejected() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_without_user_message_is_rejected() {
-    let (app, _) = make_app(vec![ScriptedReply::text("unused")]).await;
+    let TestHarness {
+        app,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("unused")]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -166,7 +202,11 @@ async fn request_without_user_message_is_rejected() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn unknown_agent_returns_not_found() {
-    let (app, _) = make_app(vec![ScriptedReply::text("unused")]).await;
+    let TestHarness {
+        app,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("unused")]).await;
     let req = json_request(serde_json::json!({
         "model": "does-not-exist",
         "safety_identifier": "alice",
@@ -264,7 +304,12 @@ fn shadow_experiment(name: &str, primary: &str, variants: &[&str]) -> Experiment
 async fn experiment_resolves_request_to_a_variant() {
     let agents = vec![variant_agent("alice-v1"), variant_agent("alice-v2")];
     let experiments = vec![split_experiment("alice", &["alice-v1", "alice-v2"])];
-    let (app, state) = make_app_with_experiments(
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with_experiments(
         agents,
         experiments,
         HashMap::new(),
@@ -302,7 +347,12 @@ async fn experiment_resolves_request_to_a_variant() {
 async fn sticky_routing_keeps_same_user_on_same_variant() {
     let agents = vec![variant_agent("alice-v1"), variant_agent("alice-v2")];
     let experiments = vec![split_experiment("alice", &["alice-v1", "alice-v2"])];
-    let (app, state) = make_app_with_experiments(
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with_experiments(
         agents,
         experiments,
         HashMap::new(),
@@ -355,7 +405,12 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
     let mut judges = HashMap::new();
     judges.insert("quality".into(), Arc::new(judge));
 
-    let (app, state) = make_app_with_experiments(
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with_experiments(
         vec![agent_v1, agent_v2],
         vec![bandit_experiment(
             "alice",
@@ -435,7 +490,12 @@ async fn bandit_forces_exploration_when_arms_are_under_sampled() {
 
     // min_samples=100 so neither arm is "ready". With no scores, both
     // are forced; the picker still has to choose one without panicking.
-    let (app, state) = make_app_with_experiments(
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with_experiments(
         vec![agent_v1, agent_v2],
         vec![bandit_experiment(
             "alice",
@@ -496,7 +556,12 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
     // landed under that agent_name and not the primary's.
     agent_v1.judges = vec![];
 
-    let (app, state) = make_app_with_experiments(
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with_experiments(
         vec![agent_v1, agent_v2],
         vec![shadow_experiment(
             "alice",
@@ -550,7 +615,12 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn history_is_loaded_on_the_second_request() {
-    let (app, state) = make_app(vec![
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![
         ScriptedReply::text("first reply"),
         ScriptedReply::text("second reply"),
     ])
@@ -592,7 +662,12 @@ async fn history_is_loaded_on_the_second_request() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn users_cannot_see_each_others_history() {
-    let (app, state) = make_app(vec![ScriptedReply::text("reply")]).await;
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("reply")]).await;
 
     let req = json_request(serde_json::json!({
         "model": "assistant",
@@ -622,7 +697,11 @@ async fn users_cannot_see_each_others_history() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn models_endpoint_lists_configured_agents() {
-    let (app, _) = make_app(vec![]).await;
+    let TestHarness {
+        app,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![]).await;
     let req = Request::builder()
         .method("GET")
         .uri("/v1/models")
@@ -651,7 +730,11 @@ fn parse_sse(bytes: &[u8]) -> Vec<String> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn streaming_emits_role_content_stop_and_done_in_order() {
-    let (app, _) = make_app(vec![ScriptedReply::deltas(["Hel", "lo", " world"])]).await;
+    let TestHarness {
+        app,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::deltas(["Hel", "lo", " world"])]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -695,7 +778,11 @@ async fn streaming_emits_role_content_stop_and_done_in_order() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn streaming_include_usage_puts_usage_on_terminal_chunk() {
-    let (app, _) = make_app(vec![ScriptedReply::deltas(["hi"]).with_usage(Usage {
+    let TestHarness {
+        app,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::deltas(["hi"]).with_usage(Usage {
         input_tokens: 4,
         output_tokens: 1,
         total_tokens: 5,
@@ -722,7 +809,12 @@ async fn streaming_include_usage_puts_usage_on_terminal_chunk() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn streaming_persists_full_assistant_message_on_normal_completion() {
-    let (app, state) = make_app(vec![ScriptedReply::deltas(["one ", "two ", "three"])]).await;
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::deltas(["one ", "two ", "three"])]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -771,7 +863,12 @@ async fn judge_scores_are_persisted_after_a_turn() {
     judges.insert("quality".into(), Arc::new(judge));
 
     let agents = vec![agent_with_judges(vec!["quality".into()])];
-    let (app, state) = make_app_with(agents, judges, replies).await;
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with(agents, judges, replies).await;
 
     let req = json_request(serde_json::json!({
         "model": "assistant",
@@ -821,7 +918,12 @@ async fn judge_scores_are_persisted_after_a_streaming_turn() {
     judges.insert("quality".into(), Arc::new(judge));
 
     let agents = vec![agent_with_judges(vec!["quality".into()])];
-    let (app, state) = make_app_with(agents, judges, replies).await;
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with(agents, judges, replies).await;
 
     let req = json_request(serde_json::json!({
         "model": "assistant",
@@ -861,7 +963,12 @@ async fn judge_sampling_rate_zero_records_nothing() {
 
     let agents = vec![agent_with_judges(vec!["q".into()])];
     let replies = vec![ScriptedReply::text("answer")];
-    let (app, state) = make_app_with(agents, judges, replies).await;
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app_with(agents, judges, replies).await;
 
     let req = json_request(serde_json::json!({
         "model": "assistant",
@@ -893,7 +1000,13 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
             ToolCallKind::Subagent,
             Some("Verified: Paris.".into()),
         );
-    let (app, state) = make_app(vec![reply]).await;
+    let TestHarness {
+        app,
+        sink,
+        state,
+        telemetry_guard,
+        _subscriber_guard,
+    } = make_app(vec![reply]).await;
     let req = json_request(serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
@@ -906,6 +1019,8 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
 
     // Drop guard spawns the persistence task; give it time to complete.
     tokio::time::sleep(Duration::from_millis(30)).await;
+    // Drain the SqliteLayer writer so spans land before we read.
+    telemetry_guard.flush().await;
 
     let user_id = UserId::from_string("alice");
     let um = state.memory.for_user(user_id);
@@ -914,7 +1029,7 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
     let assistant = &messages[1];
     assert_eq!(assistant.role, MemRole::Assistant);
 
-    let mut tool_calls = state.telemetry.tool_calls_for_user(user_id).await.unwrap();
+    let mut tool_calls = sink.tool_calls_for_user(user_id).await.unwrap();
     tool_calls.sort_by_key(|t| t.ordinal);
     assert_eq!(tool_calls.len(), 2);
     assert_eq!(tool_calls[0].tool_name, "web_search");
@@ -937,7 +1052,12 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
 async fn streaming_persists_partial_message_when_client_disconnects() {
     use futures::StreamExt;
 
-    let (app, state) = make_app(vec![ScriptedReply::deltas([
+    let TestHarness {
+        app,
+        state,
+        _subscriber_guard,
+        ..
+    } = make_app(vec![ScriptedReply::deltas([
         "piece-one",
         "piece-two",
         "piece-three",

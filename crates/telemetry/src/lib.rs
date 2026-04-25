@@ -3,7 +3,6 @@
 //! that the studio UI renders as a causal tree. Deliberately separate from
 //! `memory` so observability growth never risks leaking into the prompt.
 
-mod ctx;
 mod error;
 mod event;
 mod id;
@@ -12,10 +11,9 @@ mod sqlite_layer;
 mod tool_call;
 
 pub use coulisse_core::TurnId;
-pub use ctx::Ctx;
 pub use error::TelemetryError;
 pub use event::{Event, EventKind};
 pub use id::EventId;
 pub use sink::Sink;
 pub use sqlite_layer::{SqliteLayer, SqliteLayerGuard};
-pub use tool_call::{ToolCall, ToolCallId, ToolCallInvocation};
+pub use tool_call::{ToolCall, ToolCallId};

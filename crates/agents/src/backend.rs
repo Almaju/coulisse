@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
 
 use backends::{
     Backends, Completion, CompletionStream, Conversation, Message, ProviderKind, Role, ToolCallKind,
 };
-use coulisse_core::{OneShotError, OneShotPrompt, ScoreLookup};
+use coulisse_core::{OneShotError, OneShotPrompt, ScoreLookup, UserId};
 use experiments::ExperimentRouter;
 use rig::completion::ToolDefinition;
 use rig::tool::rmcp::McpTool;
@@ -16,8 +15,8 @@ use rmcp::ServiceExt;
 use rmcp::service::{RoleClient, RunningService, ServerSink};
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::json;
-use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
+use tracing::{Instrument, info_span};
 
 use crate::AgentsError;
 use crate::config::{AgentConfig, McpServerConfig};
@@ -46,11 +45,6 @@ struct AgentsInner {
     /// time). When `None`, bandit subagents fall back to forced
     /// exploration — fine for tests and small deployments.
     scores: Option<Arc<dyn ScoreLookup>>,
-    /// Optional observability sink. When `Some`, every tool invocation
-    /// (MCP or subagent, at any depth) is recorded as a `ToolCall` event.
-    /// Kept off the hot path by short-circuiting when `None`, so tests and
-    /// internal prompter callers that don't care about telemetry pay no cost.
-    telemetry: Option<Arc<TelemetrySink>>,
 }
 
 struct McpServer {
@@ -72,6 +66,11 @@ type BuiltTools = (
 /// requests — either as a single response or as a stream of incremental
 /// events. The server talks to this trait so tests can drive the HTTP
 /// handler with a scripted implementation instead of a real provider.
+///
+/// Tool invocations and subagent calls are observed via the `tracing`
+/// crate: callers run the future inside a `turn` span carrying `user_id`
+/// and `turn_id`, and child `tool_call` spans nest automatically. The
+/// telemetry crate's SqliteLayer mirrors those spans to the studio.
 pub trait Agents: Send + Sync {
     fn agents(&self) -> &[AgentConfig];
 
@@ -80,29 +79,29 @@ pub trait Agents: Send + Sync {
     /// `model` resolve to a concrete variant per request.
     fn router(&self) -> &ExperimentRouter;
 
-    /// Run the named agent and return its final reply. `ctx` carries the
-    /// per-request correlation id plus the parent `EventId` under which
-    /// this completion's tool invocations should nest. The `parent` field
-    /// typically points at the caller's `TurnStart` event for top-level
-    /// requests, or at a `ToolCall` event when a subagent recurses.
+    /// Run the named agent and return its final reply. The caller is
+    /// expected to drive this future inside a `turn` tracing span so any
+    /// nested `tool_call` spans inherit the correlation ids.
+    /// `user_id` drives sticky-by-user variant routing on subagent calls
+    /// — observability is the tracing subscriber's job, but variant
+    /// resolution is a real domain dependency that must be plumbed.
     fn complete(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
 
     fn complete_streaming(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> impl std::future::Future<Output = Result<CompletionStream, AgentsError>> + Send;
 
     /// One-off prompt bypassing agent-config lookup. No MCP tools, no
     /// preamble merging — just `provider`, `model`, the supplied preamble
     /// and messages. Used for internal tasks like memory fact extraction.
-    /// Not tied to user-facing telemetry, hence no `ctx`.
     fn prompt_with(
         &self,
         provider: ProviderKind,
@@ -124,14 +123,12 @@ pub struct BootConfig {
 
 impl RigAgents {
     /// Build agents from the YAML slices declared under `agents:`,
-    /// `experiments:`, `mcp:`, and `providers:`. When `telemetry` is
-    /// `Some`, every tool invocation at any depth (MCP or subagent) is
-    /// recorded as a `ToolCall` event so the studio UI can reconstruct
-    /// nested subagent trees. Tests that don't care pass `None` and pay
-    /// no observability cost.
+    /// `experiments:`, `mcp:`, and `providers:`. Tool invocations are
+    /// recorded as `tool_call` tracing spans on every MCP and subagent
+    /// call regardless of depth — observability is the subscriber's job,
+    /// not this crate's.
     pub async fn new(
         config: BootConfig,
-        telemetry: Option<Arc<TelemetrySink>>,
         scores: Option<Arc<dyn ScoreLookup>>,
     ) -> Result<Self, AgentsError> {
         let backends = Backends::new(config.providers).map_err(AgentsError::from)?;
@@ -150,7 +147,6 @@ impl RigAgents {
                 mcp_servers,
                 router,
                 scores,
-                telemetry,
             }),
         })
     }
@@ -169,18 +165,19 @@ impl Agents for RigAgents {
         &self,
         agent_name: &str,
         messages: Vec<Message>,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> Result<Completion, AgentsError> {
-        AgentsInner::complete_with_depth(&self.inner, agent_name, messages, 0, ctx).await
+        AgentsInner::complete_with_depth(&self.inner, agent_name, messages, 0, user_id).await
     }
 
     async fn complete_streaming(
         &self,
         agent_name: &str,
         messages: Vec<Message>,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> Result<CompletionStream, AgentsError> {
-        AgentsInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, ctx).await
+        AgentsInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, user_id)
+            .await
     }
 
     async fn prompt_with(
@@ -234,7 +231,7 @@ impl AgentsInner {
         self: &Arc<Self>,
         agent: &AgentConfig,
         depth: usize,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> Result<BuiltTools, AgentsError> {
         use std::collections::HashSet;
 
@@ -265,10 +262,8 @@ impl AgentsInner {
                 let raw: Box<dyn ToolDyn> =
                     Box::new(McpTool::from_mcp_server(tool, server.sink.clone()));
                 tools.push(Box::new(TelemetryTool {
-                    ctx,
                     inner: raw,
                     kind: ToolCallKind::Mcp,
-                    sink: self.telemetry.clone(),
                 }));
             }
         }
@@ -278,12 +273,11 @@ impl AgentsInner {
         for sub_name in &agent.subagents {
             let purpose = self.subagent_purpose(sub_name);
             tools.push(Box::new(SubagentTool {
-                ctx,
                 depth,
                 inner: Arc::clone(self),
                 purpose,
-                sink: self.telemetry.clone(),
                 target_name: sub_name.clone(),
+                user_id,
             }));
         }
         Ok((tools, subagent_names))
@@ -314,7 +308,7 @@ impl AgentsInner {
         agent_name: &str,
         messages: Vec<Message>,
         depth: usize,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> Result<Completion, AgentsError> {
         if depth > MAX_SUBAGENT_DEPTH {
             return Err(AgentsError::SubagentDepthExceeded {
@@ -331,7 +325,7 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, _) = self.build_tools(agent, depth, ctx)?;
+        let (tools, _) = self.build_tools(agent, depth, user_id)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         backend
             .send(conversation, &agent.model, tools)
@@ -344,7 +338,7 @@ impl AgentsInner {
         agent_name: &str,
         messages: Vec<Message>,
         depth: usize,
-        ctx: Ctx,
+        user_id: UserId,
     ) -> Result<CompletionStream, AgentsError> {
         if depth > MAX_SUBAGENT_DEPTH {
             return Err(AgentsError::SubagentDepthExceeded {
@@ -361,7 +355,7 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, subagent_names) = self.build_tools(agent, depth, ctx)?;
+        let (tools, subagent_names) = self.build_tools(agent, depth, user_id)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         backend
             .stream(conversation, &agent.model, tools, subagent_names)
@@ -402,16 +396,16 @@ impl AgentsInner {
 /// subagent invocation goes through the router, picking a variant for
 /// the calling user.
 ///
-/// When a telemetry `sink` is configured, this tool emits its own
-/// `ToolCall` event and passes a child context down so the subagent's
-/// inner tool calls nest under this one in the studio tree.
+/// Each invocation opens a `tool_call` tracing span so the subagent's
+/// inner tool calls nest underneath it in the studio tree.
 struct SubagentTool {
-    ctx: Ctx,
     depth: usize,
     inner: Arc<AgentsInner>,
     purpose: String,
-    sink: Option<Arc<TelemetrySink>>,
     target_name: String,
+    /// Calling user — only used for sticky-by-user variant resolution
+    /// when the subagent target is an experiment. Not observability.
+    user_id: UserId,
 }
 
 impl ToolDyn for SubagentTool {
@@ -441,103 +435,88 @@ impl ToolDyn for SubagentTool {
     }
 
     fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
-        let ctx = self.ctx;
         let depth = self.depth;
         let inner = Arc::clone(&self.inner);
-        let sink = self.sink.clone();
         let target = self.target_name.clone();
-        Box::pin(async move {
-            let event_id = EventId::new();
-            let child_ctx = ctx.child(event_id);
-            let started = Instant::now();
-
-            let parsed: serde_json::Value =
-                serde_json::from_str(&args).map_err(ToolError::JsonError)?;
-            let message = parsed
-                .get("message")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    ToolError::ToolCallError(Box::<dyn std::error::Error + Send + Sync>::from(
-                        "subagent tool call is missing required 'message' field",
-                    ))
-                })?
-                .to_string();
-            let messages = vec![Message {
-                role: Role::User,
-                content: message,
-            }];
-            let next_depth = depth.saturating_add(1);
-            // Subagent name may be an experiment — resolve per-user so
-            // the variant is picked at call time, consistent with the
-            // sticky-by-user hashing the proxy applies at the top level.
-            // Bandit experiments additionally consult recent mean
-            // scores; without a score store wired in, that lookup
-            // returns no data and the bandit falls back to forced
-            // exploration.
-            let scores = if let (Some(scores), Some((judge, criterion, since))) =
-                (inner.scores.as_ref(), inner.router.bandit_query(&target))
-            {
-                scores
-                    .mean_scores_by_agent(&judge, &criterion, since)
-                    .await
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let resolved = inner
-                .router
-                .resolve_with_scores(&target, ctx.user_id, &scores);
-            let agent_name = resolved.agent.into_owned();
-            let outcome = AgentsInner::complete_with_depth(
-                &inner,
-                &agent_name,
-                messages,
-                next_depth,
-                child_ctx,
-            )
-            .await;
-            let duration_ms = started.elapsed().as_millis() as u64;
-
-            if let Some(sink) = sink {
-                let payload = tool_call_payload(
-                    &target,
-                    ToolCallKind::Subagent,
-                    &args,
-                    outcome.as_ref().map(|c| c.text.as_str()).ok(),
-                    outcome.as_ref().err().map(|e| e.to_string()),
-                );
-                let event = Event::new(
-                    ctx.correlation_id,
-                    ctx.user_id,
-                    ctx.parent,
-                    EventKind::ToolCall,
-                    payload,
+        let user_id = self.user_id;
+        let span = info_span!(
+            "tool_call",
+            args = %args,
+            error = tracing::field::Empty,
+            kind = "subagent",
+            result = tracing::field::Empty,
+            tool_name = %target,
+        );
+        Box::pin(
+            async move {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&args).map_err(ToolError::JsonError)?;
+                let message = parsed
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::ToolCallError(Box::<dyn std::error::Error + Send + Sync>::from(
+                            "subagent tool call is missing required 'message' field",
+                        ))
+                    })?
+                    .to_string();
+                let messages = vec![Message {
+                    role: Role::User,
+                    content: message,
+                }];
+                let next_depth = depth.saturating_add(1);
+                // Subagent name may be an experiment — resolve per-user so
+                // the variant is picked at call time, consistent with the
+                // sticky-by-user hashing the proxy applies at the top level.
+                // Bandit experiments additionally consult recent mean
+                // scores; without a score store wired in, that lookup
+                // returns no data and the bandit falls back to forced
+                // exploration.
+                let scores = if let (Some(scores), Some((judge, criterion, since))) =
+                    (inner.scores.as_ref(), inner.router.bandit_query(&target))
+                {
+                    scores
+                        .mean_scores_by_agent(&judge, &criterion, since)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let resolved = inner.router.resolve_with_scores(&target, user_id, &scores);
+                let agent_name = resolved.agent.into_owned();
+                let outcome = AgentsInner::complete_with_depth(
+                    &inner,
+                    &agent_name,
+                    messages,
+                    next_depth,
+                    user_id,
                 )
-                .with_id(event_id)
-                .with_duration_ms(duration_ms);
-                if let Err(err) = sink.emit(event).await {
-                    eprintln!("telemetry emit failed for subagent tool call: {err}");
+                .await;
+
+                let span = tracing::Span::current();
+                match &outcome {
+                    Ok(completion) => span.record("result", completion.text.as_str()),
+                    Err(err) => span.record("error", err.to_string().as_str()),
+                };
+
+                match outcome {
+                    Ok(completion) => Ok(completion.text),
+                    Err(err) => Err(ToolError::ToolCallError(Box::new(err))),
                 }
             }
-
-            match outcome {
-                Ok(completion) => Ok(completion.text),
-                Err(err) => Err(ToolError::ToolCallError(Box::new(err))),
-            }
-        })
+            .instrument(span),
+        )
     }
 }
 
-/// Tool decorator that records a `ToolCall` event around any inner
-/// `ToolDyn`. Used to instrument MCP tools so the studio UI can see what
-/// arguments were sent and what came back, including errors — the exact
-/// blind spot that let hallucinated "database error" replies hide real
-/// upstream failures.
+/// Tool decorator that opens a `tool_call` tracing span around any inner
+/// `ToolDyn`. The telemetry crate's SqliteLayer mirrors the span (with
+/// `args`, `result`, `error`, `tool_name`, `kind` fields) into the
+/// `events` and `tool_calls` tables — closing the blind spot that let
+/// hallucinated tool-failure replies hide real upstream errors.
 struct TelemetryTool {
-    ctx: Ctx,
     inner: Box<dyn ToolDyn>,
     kind: ToolCallKind,
-    sink: Option<Arc<TelemetrySink>>,
 }
 
 impl ToolDyn for TelemetryTool {
@@ -550,58 +529,33 @@ impl ToolDyn for TelemetryTool {
     }
 
     fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
-        let ctx = self.ctx;
-        let kind = self.kind;
-        let name = self.inner.name();
-        let sink = self.sink.clone();
-        let inner_call = self.inner.call(args.clone());
-        Box::pin(async move {
-            let started = Instant::now();
-            let result = inner_call.await;
-            let duration_ms = started.elapsed().as_millis() as u64;
-
-            if let Some(sink) = sink {
-                let payload = tool_call_payload(
-                    &name,
-                    kind,
-                    &args,
-                    result.as_ref().ok().map(|s| s.as_str()),
-                    result.as_ref().err().map(|e| e.to_string()),
-                );
-                let event = Event::new(
-                    ctx.correlation_id,
-                    ctx.user_id,
-                    ctx.parent,
-                    EventKind::ToolCall,
-                    payload,
-                )
-                .with_duration_ms(duration_ms);
-                if let Err(err) = sink.emit(event).await {
-                    eprintln!("telemetry emit failed for {name}: {err}");
-                }
-            }
-            result
-        })
-    }
-}
-
-fn tool_call_payload(
-    tool_name: &str,
-    kind: ToolCallKind,
-    args: &str,
-    result: Option<&str>,
-    error: Option<String>,
-) -> serde_json::Value {
-    json!({
-        "args": args,
-        "error": error,
-        "kind": match kind {
+        let kind_str = match self.kind {
             ToolCallKind::Mcp => "mcp",
             ToolCallKind::Subagent => "subagent",
-        },
-        "result": result,
-        "tool_name": tool_name,
-    })
+        };
+        let name = self.inner.name();
+        let inner_call = self.inner.call(args.clone());
+        let span = info_span!(
+            "tool_call",
+            args = %args,
+            error = tracing::field::Empty,
+            kind = kind_str,
+            result = tracing::field::Empty,
+            tool_name = %name,
+        );
+        Box::pin(
+            async move {
+                let result = inner_call.await;
+                let span = tracing::Span::current();
+                match &result {
+                    Ok(text) => span.record("result", text.as_str()),
+                    Err(err) => span.record("error", err.to_string().as_str()),
+                };
+                result
+            }
+            .instrument(span),
+        )
+    }
 }
 
 impl McpServer {
@@ -664,7 +618,10 @@ mod telemetry_tool_tests {
     use sqlx::SqlitePool;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::str::FromStr;
-    use telemetry::{Ctx, EventKind, Sink, TurnId};
+    use telemetry::{Sink, SqliteLayer, TurnId};
+    use tracing::Instrument;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
 
     /// Minimal `ToolDyn` that returns whatever result/error the test wires
     /// in. Replaces `McpTool` in tests so the wrapper logic can be exercised
@@ -700,68 +657,101 @@ mod telemetry_tool_tests {
         }
     }
 
-    async fn fresh_sink() -> Arc<Sink> {
+    async fn fresh_pool() -> SqlitePool {
         let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
         let pool = SqlitePool::connect_with(options).await.unwrap();
-        Arc::new(Sink::open(pool).await.unwrap())
+        Sink::open(pool.clone()).await.unwrap();
+        pool
     }
 
     #[tokio::test]
     async fn wrapper_emits_event_on_success() {
-        let sink = fresh_sink().await;
+        let pool = fresh_pool().await;
         let user = UserId::new();
         let turn = TurnId::new();
-        let ctx = Ctx::new(user, turn);
+        let (layer, guard) = SqliteLayer::spawn(pool.clone());
+        let _default = tracing_subscriber::registry().with(layer).set_default();
 
-        let wrapper = TelemetryTool {
-            ctx,
-            inner: Box::new(FakeTool {
-                name: "search_jobs".into(),
-                outcome: Ok("hello".into()),
-            }),
-            kind: ToolCallKind::Mcp,
-            sink: Some(Arc::clone(&sink)),
-        };
-        let out = wrapper.call("{\"q\":\"x\"}".into()).await.unwrap();
-        assert_eq!(out, "hello");
+        async {
+            let wrapper = TelemetryTool {
+                inner: Box::new(FakeTool {
+                    name: "search_jobs".into(),
+                    outcome: Ok("hello".into()),
+                }),
+                kind: ToolCallKind::Mcp,
+            };
+            let out = wrapper.call("{\"q\":\"x\"}".into()).await.unwrap();
+            assert_eq!(out, "hello");
+        }
+        .instrument(tracing::info_span!(
+            "turn",
+            agent = "test",
+            turn_id = %turn.0,
+            user_id = %user.0,
+            user_message = "",
+        ))
+        .await;
 
+        guard.flush().await;
+        let sink = Sink::open(pool).await.unwrap();
         let events = sink.fetch_turn(user, turn).await.unwrap();
-        assert_eq!(events.len(), 1);
-        let e = &events[0];
-        assert_eq!(e.kind, EventKind::ToolCall);
-        assert_eq!(e.payload["tool_name"], "search_jobs");
-        assert_eq!(e.payload["kind"], "mcp");
-        assert_eq!(e.payload["result"], "hello");
-        assert!(e.payload["error"].is_null());
-        assert!(e.duration_ms.is_some());
+        let tool_evt = events
+            .iter()
+            .find(|e| e.kind == telemetry::EventKind::ToolCall)
+            .expect("tool_call event recorded");
+        assert_eq!(tool_evt.payload["tool_name"], "search_jobs");
+        assert_eq!(tool_evt.payload["kind"], "mcp");
+        assert_eq!(tool_evt.payload["result"], "hello");
+        assert!(
+            tool_evt
+                .payload
+                .get("error")
+                .map(|v| v.is_null())
+                .unwrap_or(true)
+        );
+        assert!(tool_evt.duration_ms.is_some());
     }
 
     #[tokio::test]
     async fn wrapper_captures_tool_error() {
-        let sink = fresh_sink().await;
+        let pool = fresh_pool().await;
         let user = UserId::new();
         let turn = TurnId::new();
-        let ctx = Ctx::new(user, turn);
+        let (layer, guard) = SqliteLayer::spawn(pool.clone());
+        let _default = tracing_subscriber::registry().with(layer).set_default();
 
-        let wrapper = TelemetryTool {
-            ctx,
-            inner: Box::new(FakeTool {
-                name: "search_jobs".into(),
-                outcome: Err("column j.search_vector does not exist".into()),
-            }),
-            kind: ToolCallKind::Mcp,
-            sink: Some(Arc::clone(&sink)),
-        };
-        let err = wrapper.call("{}".into()).await.unwrap_err();
+        let err = async {
+            let wrapper = TelemetryTool {
+                inner: Box::new(FakeTool {
+                    name: "search_jobs".into(),
+                    outcome: Err("column j.search_vector does not exist".into()),
+                }),
+                kind: ToolCallKind::Mcp,
+            };
+            wrapper.call("{}".into()).await.unwrap_err()
+        }
+        .instrument(tracing::info_span!(
+            "turn",
+            agent = "test",
+            turn_id = %turn.0,
+            user_id = %user.0,
+            user_message = "",
+        ))
+        .await;
         // rig's ToolError renders to the underlying Display; assert that the
         // error text flows through unchanged.
         assert!(err.to_string().contains("search_vector"));
 
+        guard.flush().await;
+        let sink = Sink::open(pool).await.unwrap();
         let events = sink.fetch_turn(user, turn).await.unwrap();
-        assert_eq!(events.len(), 1);
-        let payload = &events[0].payload;
+        let tool_evt = events
+            .iter()
+            .find(|e| e.kind == telemetry::EventKind::ToolCall)
+            .expect("tool_call event recorded");
+        let payload = &tool_evt.payload;
         assert_eq!(payload["kind"], "mcp");
-        assert!(payload["result"].is_null());
+        assert!(payload.get("result").map(|v| v.is_null()).unwrap_or(true));
         assert!(
             payload["error"]
                 .as_str()
@@ -773,15 +763,15 @@ mod telemetry_tool_tests {
     }
 
     #[tokio::test]
-    async fn wrapper_without_sink_is_transparent() {
+    async fn wrapper_is_transparent_without_subscriber() {
+        // No subscriber installed — span emissions are no-ops; the tool
+        // still runs and returns its underlying result.
         let wrapper = TelemetryTool {
-            ctx: Ctx::synthetic(),
             inner: Box::new(FakeTool {
                 name: "search_jobs".into(),
                 outcome: Ok("ok".into()),
             }),
             kind: ToolCallKind::Mcp,
-            sink: None,
         };
         let out = wrapper.call("{}".into()).await.unwrap();
         assert_eq!(out, "ok");

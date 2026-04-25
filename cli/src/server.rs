@@ -12,7 +12,8 @@ use experiments::Strategy;
 use judge::{Judge, Judges, spawn_score};
 use limits::Tracker;
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
-use telemetry::{Ctx as TelemetryCtx, Event, EventKind, Sink as TelemetrySink, TurnId};
+use telemetry::TurnId;
+use tracing::{Instrument, info_span};
 
 use proxy::ChatCompletionRequest;
 use proxy::Message as ChatMessage;
@@ -40,7 +41,6 @@ pub struct AppState<P: Agents + OneShotPrompt> {
     pub judge_store: Arc<Judges>,
     pub memory: Arc<Store>,
     pub agents: Arc<P>,
-    pub telemetry: Arc<TelemetrySink>,
     pub tracker: Tracker,
 }
 
@@ -108,33 +108,27 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     // the full event tree produced while generating it.
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
-    let turn_start_payload = match experiment_name.as_deref() {
-        Some(experiment) => serde_json::json!({
-            "agent": agent_name,
-            "experiment": experiment,
-            "user_message": prepared.user_message,
-            "variant": agent_name,
-        }),
-        None => serde_json::json!({
-            "agent": agent_name,
-            "user_message": prepared.user_message,
-        }),
-    };
-    let turn_start = Event::new(
-        turn_id,
-        prepared.user_id,
-        None,
-        EventKind::TurnStart,
-        turn_start_payload,
-    );
-    let turn_start_id = turn_start.id;
-    if let Err(err) = state.telemetry.emit(turn_start).await {
-        eprintln!("telemetry emit failed for turn_start: {err}");
-    }
-    let ctx = TelemetryCtx {
-        correlation_id: turn_id,
-        parent: Some(turn_start_id),
-        user_id: prepared.user_id,
+
+    // Open the root `turn` span. Child `tool_call` / `subagent` spans
+    // emitted inside the agents crate inherit `turn_id` and `user_id`
+    // through the tracing tree; the telemetry SqliteLayer reads those
+    // fields to write rows into `events` / `tool_calls` for the studio.
+    let turn_span = match experiment_name.as_deref() {
+        Some(experiment) => info_span!(
+            "turn",
+            agent = %agent_name,
+            experiment = %experiment,
+            turn_id = %turn_id.0,
+            user_id = %prepared.user_id.0,
+            user_message = %prepared.user_message,
+        ),
+        None => info_span!(
+            "turn",
+            agent = %agent_name,
+            turn_id = %turn_id.0,
+            user_id = %prepared.user_id.0,
+            user_message = %prepared.user_message,
+        ),
     };
 
     // Shadow setup: clone the inputs the primary will consume so the
@@ -161,7 +155,8 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         }
         let inner = state
             .agents
-            .complete_streaming(&agent_name, prepared.messages, ctx)
+            .complete_streaming(&agent_name, prepared.messages, prepared.user_id)
+            .instrument(turn_span.clone())
             .await?;
         let response = sse_response(StreamContext {
             agent_name,
@@ -171,6 +166,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
             model: request.model.clone(),
             state: Arc::clone(&state),
             tracker_key: prepared.tracker_key,
+            turn_span,
             user_id: prepared.user_id,
             user_message: prepared.user_message,
         });
@@ -179,7 +175,8 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
 
     let completion = state
         .agents
-        .complete(&agent_name, prepared.messages, ctx)
+        .complete(&agent_name, prepared.messages, prepared.user_id)
+        .instrument(turn_span)
         .await?;
     if let Some((experiment, messages)) = shadow_inputs {
         spawn_shadow_runs(

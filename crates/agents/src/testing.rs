@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use async_stream::stream;
 
 use backends::ProviderKind;
-use coulisse_core::{OneShotError, OneShotPrompt};
+use coulisse_core::{OneShotError, OneShotPrompt, UserId};
 use experiments::{ExperimentConfig, ExperimentRouter};
 
 use crate::{
@@ -173,7 +173,7 @@ impl Agents for ScriptedAgents {
         &self,
         agent_name: &str,
         messages: Vec<Message>,
-        _ctx: telemetry::Ctx,
+        _user_id: UserId,
     ) -> Result<Completion, AgentsError> {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
@@ -187,12 +187,35 @@ impl Agents for ScriptedAgents {
         &self,
         agent_name: &str,
         messages: Vec<Message>,
-        _ctx: telemetry::Ctx,
+        _user_id: UserId,
     ) -> Result<CompletionStream, AgentsError> {
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
             for tc in reply.tool_calls {
+                // Synthesize the same `tool_call` span the real
+                // wrappers emit so a SqliteLayer-backed test
+                // subscriber sees it. Created and dropped
+                // synchronously (yields are await points; we can't
+                // hold a span guard across them).
+                {
+                    let kind_str = match tc.kind {
+                        ToolCallKind::Mcp => "mcp",
+                        ToolCallKind::Subagent => "subagent",
+                    };
+                    let span = tracing::info_span!(
+                        "tool_call",
+                        args = %tc.args,
+                        error = tracing::field::Empty,
+                        kind = kind_str,
+                        result = tracing::field::Empty,
+                        tool_name = %tc.tool_name,
+                    );
+                    if let Some(result) = tc.result.as_deref() {
+                        span.record("result", result);
+                    }
+                    drop(span);
+                }
                 yield Ok(StreamEvent::ToolCall {
                     args: tc.args,
                     call_id: tc.call_id.clone(),

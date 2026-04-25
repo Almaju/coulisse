@@ -5,11 +5,11 @@ use agents::{Agents, CompletionStream, StreamEvent, Usage as ProviderUsage};
 use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
-use coulisse_core::{OneShotPrompt, ToolCallKind};
+use coulisse_core::OneShotPrompt;
 use futures::StreamExt;
 use judge::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
-use telemetry::ToolCallInvocation;
+use tracing::{Instrument, Span};
 
 use proxy::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
@@ -38,6 +38,10 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     pub model: String,
     pub state: Arc<AppState<P>>,
     pub tracker_key: String,
+    /// Root `turn` span the SSE body runs inside. Drives `Span::current()`
+    /// for any post-stream side effects so memory writes / score jobs
+    /// share the same correlation id as the LLM work.
+    pub turn_span: Span,
     pub user_id: UserId,
     pub user_message: String,
 }
@@ -53,6 +57,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         model,
         state,
         tracker_key,
+        turn_span,
         user_id,
         user_message,
     } = cx;
@@ -60,7 +65,6 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
     let id = response_id(created);
     let accumulated: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let final_usage: Arc<Mutex<ProviderUsage>> = Arc::new(Mutex::new(ProviderUsage::default()));
-    let tool_calls: Arc<Mutex<Vec<PendingToolCall>>> = Arc::new(Mutex::new(Vec::new()));
 
     let flush = MemoryFlush {
         accumulated: Arc::clone(&accumulated),
@@ -68,12 +72,13 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         assistant_message_id,
         final_usage: Arc::clone(&final_usage),
         state,
-        tool_calls: Arc::clone(&tool_calls),
         tracker_key,
+        turn_span: turn_span.clone(),
         user_id,
         user_message,
     };
 
+    let stream_span = turn_span.clone();
     let body = stream! {
         // Hold the flush guard inside the stream so Drop fires on either
         // normal completion or client disconnect.
@@ -83,7 +88,15 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
 
         let mut inner = inner;
         let mut errored = false;
-        while let Some(event) = inner.next().await {
+        // Tool-call observability is owned by the agents-side wrappers
+        // (which emit `tool_call` spans the SqliteLayer mirrors into
+        // events / tool_calls). The streaming path only needs to forward
+        // SSE deltas and the terminal stop chunk to the client.
+        // Each `inner.next()` poll runs inside `stream_span` so any
+        // `tool_call` spans rig drives during that poll nest under it.
+        loop {
+            let event = inner.next().instrument(stream_span.clone()).await;
+            let Some(event) = event else { break };
             match event {
                 Ok(StreamEvent::Delta(text)) => {
                     if !text.is_empty() {
@@ -94,30 +107,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                 Ok(StreamEvent::Done { usage }) => {
                     *final_usage.lock().unwrap() = usage;
                 }
-                Ok(StreamEvent::ToolCall { args, call_id, kind, tool_name }) => {
-                    let mut buf = tool_calls.lock().unwrap();
-                    let ordinal = buf.len() as u32;
-                    buf.push(PendingToolCall {
-                        args,
-                        call_id,
-                        kind,
-                        ordinal,
-                        result: None,
-                        tool_name,
-                    });
-                }
-                Ok(StreamEvent::ToolResult { call_id, error, result }) => {
-                    let mut buf = tool_calls.lock().unwrap();
-                    if let Some(pc) = buf.iter_mut().find(|p| p.call_id == call_id) {
-                        pc.result = result;
-                        if error.is_some() {
-                            pc.result = error;
-                        }
-                    }
-                    // An orphan ToolResult (no matching call) is dropped; it
-                    // can only happen if rig emits a result without the
-                    // paired call, which would be an upstream bug.
-                }
+                Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
                 Err(err) => {
                     yield Ok(error_chunk(&id, &model, created, &err.to_string()));
                     errored = true;
@@ -140,19 +130,6 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
     Sse::new(body).keep_alive(KeepAlive::default())
 }
 
-/// Tool invocation captured from the stream. `result` is filled when the
-/// paired ToolResult event arrives; left `None` if the stream ended first
-/// (e.g. client disconnect), so the studio view can still see that a call
-/// was attempted.
-struct PendingToolCall {
-    args: String,
-    call_id: String,
-    kind: ToolCallKind,
-    ordinal: u32,
-    result: Option<String>,
-    tool_name: String,
-}
-
 /// Drop guard: persists the conversation to memory and records token usage
 /// when the SSE stream ends, regardless of whether it ended normally or the
 /// client disconnected. Spawned onto the runtime because `Drop` is sync.
@@ -164,8 +141,10 @@ struct MemoryFlush<P: Agents + OneShotPrompt + 'static> {
     assistant_message_id: MessageId,
     final_usage: Arc<Mutex<ProviderUsage>>,
     state: Arc<AppState<P>>,
-    tool_calls: Arc<Mutex<Vec<PendingToolCall>>>,
     tracker_key: String,
+    /// Root `turn` span; spawned cleanup work runs inside it so its
+    /// own warnings carry the same correlation id.
+    turn_span: Span,
     user_id: UserId,
     user_message: String,
 }
@@ -177,77 +156,60 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
         let assistant_message_id = self.assistant_message_id;
         let usage = *self.final_usage.lock().unwrap();
         let state = Arc::clone(&self.state);
-        let tool_calls = std::mem::take(&mut *self.tool_calls.lock().unwrap());
         let tracker_key = std::mem::take(&mut self.tracker_key);
+        let turn_span = self.turn_span.clone();
         let user_id = self.user_id;
         let user_message = std::mem::take(&mut self.user_message);
-        tokio::spawn(async move {
-            if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
-                eprintln!("rate limit record failed after streaming response: {err}");
-            }
-            let um = state.memory.for_user(user_id);
-            if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
-                warn_memory_append_failed("user", err);
-            }
-            if accumulated.is_empty() {
-                return;
-            }
-            let assistant_append = um
-                .append_message_with_id(
-                    MemRole::Assistant,
-                    accumulated.clone(),
-                    assistant_message_id,
-                )
-                .await;
-            if let Err(err) = assistant_append {
-                warn_memory_append_failed("assistant", err);
-                return;
-            }
-            // Tool calls are anchored on the turn correlation id, which
-            // for top-level requests is the assistant message id (the
-            // chat handler reuses the UUID). Subagent tool calls also
-            // record their own turn ids inside the `agents` crate.
-            let turn_id = telemetry::TurnId(assistant_message_id.0);
-            for pc in tool_calls {
-                let invocation = ToolCallInvocation {
-                    args: pc.args,
-                    error: None,
-                    kind: pc.kind,
-                    ordinal: pc.ordinal,
-                    result: pc.result,
-                    tool_name: pc.tool_name,
-                    turn_id,
-                    user_id,
-                };
-                if let Err(err) = state.telemetry.append_tool_call(invocation).await {
-                    eprintln!("telemetry append failed for tool call: {err}");
+        tokio::spawn(
+            async move {
+                if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
+                    tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
-            }
-            if let Some(extractor) = state.extractor.as_ref() {
-                extractor.spawn(
-                    Arc::clone(&state.memory),
+                let um = state.memory.for_user(user_id);
+                if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
+                    warn_memory_append_failed("user", err);
+                }
+                if accumulated.is_empty() {
+                    return;
+                }
+                let assistant_append = um
+                    .append_message_with_id(
+                        MemRole::Assistant,
+                        accumulated.clone(),
+                        assistant_message_id,
+                    )
+                    .await;
+                if let Err(err) = assistant_append {
+                    warn_memory_append_failed("assistant", err);
+                    return;
+                }
+                if let Some(extractor) = state.extractor.as_ref() {
+                    extractor.spawn(
+                        Arc::clone(&state.memory),
+                        user_id,
+                        user_message.clone(),
+                        accumulated.clone(),
+                    );
+                }
+                let judges = judges_for_agent(&state, &agent_name);
+                spawn_score(
+                    judges,
+                    Arc::clone(&state.judge_store),
+                    Arc::clone(&state.agents),
                     user_id,
-                    user_message.clone(),
-                    accumulated.clone(),
+                    assistant_message_id,
+                    agent_name.clone(),
+                    user_message,
+                    accumulated,
                 );
             }
-            let judges = judges_for_agent(&state, &agent_name);
-            spawn_score(
-                judges,
-                Arc::clone(&state.judge_store),
-                Arc::clone(&state.agents),
-                user_id,
-                assistant_message_id,
-                agent_name.clone(),
-                user_message,
-                accumulated,
-            );
-        });
+            .instrument(turn_span),
+        );
     }
 }
 
 fn warn_memory_append_failed(role: &str, err: memory::MemoryError) {
-    eprintln!("memory append failed for {role} message after streaming response: {err}");
+    tracing::warn!(role, error = %err, "memory append failed after streaming response");
 }
 
 fn chunk_event(chunk: &ChatCompletionChunk) -> Event {

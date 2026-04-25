@@ -15,7 +15,8 @@ use coulisse_core::OneShotPrompt;
 use experiments::ExperimentConfig;
 use judge::{Judge, spawn_score};
 use memory::{MessageId, UserId};
-use telemetry::{Ctx as TelemetryCtx, TurnId};
+use telemetry::TurnId;
+use tracing::{Instrument, info_span};
 
 use crate::server::AppState;
 use crate::server::judges_for_agent;
@@ -74,14 +75,21 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
 ) {
     let shadow_message_id = MessageId::new();
     // Reuse the parent turn's correlation id so shadow events nest
-    // under the same turn tree in the studio. No `parent` event id —
-    // shadow runs are sibling roots within the turn.
-    let ctx = TelemetryCtx {
-        correlation_id: parent_turn,
-        parent: None,
-        user_id,
-    };
-    let outcome = state.agents.complete(&agent_name, messages, ctx).await;
+    // under the same turn tree in the studio: a fresh `turn` span with
+    // the same `turn_id` keeps every nested `tool_call` span linked to
+    // the original request in the events table.
+    let span = info_span!(
+        "turn",
+        agent = %agent_name,
+        turn_id = %parent_turn.0,
+        user_id = %user_id.0,
+        user_message = %user_message,
+    );
+    let outcome = state
+        .agents
+        .complete(&agent_name, messages, user_id)
+        .instrument(span)
+        .await;
     match outcome {
         Ok(completion) => {
             let judges: Vec<Arc<Judge>> = judges_for_agent(&state, &agent_name);
