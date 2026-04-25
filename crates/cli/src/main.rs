@@ -31,13 +31,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let extractor_config = config.memory.extractor.clone();
     let judge_configs = config.judges.clone();
     let memory_summary = memory_summary(&config.memory);
-    let store = Store::open(config.memory.clone(), embedder_fallback_key.as_deref()).await?;
+    // Open one SQLite pool and hand clones to every persistent crate.
+    // Each crate runs its own schema migrations against the shared
+    // pool — table ownership is per-crate, but the connection is
+    // shared so operators back up one file.
+    let pool = memory::open_pool(&config.memory.backend).await?;
+    let store = Store::open(
+        pool.clone(),
+        config.memory.clone(),
+        embedder_fallback_key.as_deref(),
+    )
+    .await?;
     let memory = Arc::new(store);
 
     let judges = build_judges(&judge_configs)?;
 
-    let telemetry = Arc::new(TelemetrySink::open(memory.pool().clone()).await?);
-    let judge_store = Arc::new(Judges::open(memory.pool().clone()).await?);
+    let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
+    let judge_store = Arc::new(Judges::open(pool.clone()).await?);
     let prompter = Arc::new(
         RigAgents::new(
             BootConfig {
@@ -56,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .map(|cfg| Arc::new(Extractor::new(cfg.clone(), Arc::clone(&prompter) as _)));
 
-    let tracker = Tracker::open(memory.pool().clone()).await?;
+    let tracker = Tracker::open(pool.clone()).await?;
     let proxy_state = Arc::new(AppState {
         agents: Arc::clone(&prompter),
         default_user_id,

@@ -17,7 +17,15 @@ async fn data_survives_process_restart() {
     let db = dir.path().join("coulisse.db");
     let user = UserId::new();
 
-    let store = Store::open(config_at(db.clone()), None).await.unwrap();
+    let store = Store::open(
+        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+            .await
+            .unwrap(),
+        config_at(db.clone()),
+        None,
+    )
+    .await
+    .unwrap();
     store
         .for_user(user)
         .remember(MemoryKind::Fact, "user lives in Paris".into())
@@ -30,7 +38,15 @@ async fn data_survives_process_restart() {
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(config_at(db), None).await.unwrap();
+    let reopened = Store::open(
+        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+            .await
+            .unwrap(),
+        config_at(db),
+        None,
+    )
+    .await
+    .unwrap();
     let memories = reopened.for_user(user).memories().await.unwrap();
     let messages = reopened.for_user(user).messages().await.unwrap();
     assert_eq!(memories.len(), 1);
@@ -45,7 +61,15 @@ async fn remember_if_novel_skips_duplicates() {
     let db = dir.path().join("coulisse.db");
     let user = UserId::new();
 
-    let store = Store::open(config_at(db), None).await.unwrap();
+    let store = Store::open(
+        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+            .await
+            .unwrap(),
+        config_at(db),
+        None,
+    )
+    .await
+    .unwrap();
     let um = store.for_user(user);
 
     let first = um
@@ -78,16 +102,13 @@ async fn recall_ignores_memories_from_different_embedder_model() {
     let db = dir.path().join("coulisse.db");
     let user = UserId::new();
 
-    let store_a = Store::open(
-        MemoryConfig {
-            backend: BackendConfig::Sqlite { path: db.clone() },
-            embedder: EmbedderConfig::Hash { dims: 32 },
-            ..MemoryConfig::default()
-        },
-        None,
-    )
-    .await
-    .unwrap();
+    let cfg_a = MemoryConfig {
+        backend: BackendConfig::Sqlite { path: db.clone() },
+        embedder: EmbedderConfig::Hash { dims: 32 },
+        ..MemoryConfig::default()
+    };
+    let pool_a = memory::open_pool(&cfg_a.backend).await.unwrap();
+    let store_a = Store::open(pool_a, cfg_a, None).await.unwrap();
     store_a
         .for_user(user)
         .remember(MemoryKind::Fact, "written by embedder A".into())
@@ -97,16 +118,13 @@ async fn recall_ignores_memories_from_different_embedder_model() {
 
     // Reopen with a different embedder (same dims doesn't matter — the
     // model_id differs because the dims do).
-    let store_b = Store::open(
-        MemoryConfig {
-            backend: BackendConfig::Sqlite { path: db.clone() },
-            embedder: EmbedderConfig::Hash { dims: 64 },
-            ..MemoryConfig::default()
-        },
-        None,
-    )
-    .await
-    .unwrap();
+    let cfg_b = MemoryConfig {
+        backend: BackendConfig::Sqlite { path: db.clone() },
+        embedder: EmbedderConfig::Hash { dims: 64 },
+        ..MemoryConfig::default()
+    };
+    let pool_b = memory::open_pool(&cfg_b.backend).await.unwrap();
+    let store_b = Store::open(pool_b, cfg_b, None).await.unwrap();
 
     let recalled = store_b.for_user(user).recall("anything", 10).await.unwrap();
     assert!(

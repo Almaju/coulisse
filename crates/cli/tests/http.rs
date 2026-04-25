@@ -73,10 +73,11 @@ async fn make_app_with_experiments(
         embedder: EmbedderConfig::Hash { dims: 32 },
         ..MemoryConfig::default()
     };
-    let memory = Arc::new(Store::open(config, None).await.unwrap());
-    let tracker = Tracker::open(memory.pool().clone()).await.unwrap();
-    let telemetry = Arc::new(telemetry::Sink::open(memory.pool().clone()).await.unwrap());
-    let judge_store = Arc::new(Judges::open(memory.pool().clone()).await.unwrap());
+    let pool = memory::open_pool(&config.backend).await.unwrap();
+    let memory = Arc::new(Store::open(pool.clone(), config, None).await.unwrap());
+    let tracker = Tracker::open(pool.clone()).await.unwrap();
+    let telemetry = Arc::new(telemetry::Sink::open(pool.clone()).await.unwrap());
+    let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
         default_user_id: None,

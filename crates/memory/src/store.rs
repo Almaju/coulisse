@@ -29,19 +29,20 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open a Store using the given config. For `Sqlite` backends, creates
-    /// the database file (and parent directory) if missing, applies the
-    /// schema, and runs the forward-migration step. For `InMemory`, opens
-    /// an ephemeral in-process database that evaporates when the pool drops.
+    /// Open a Store against an externally-provided SQLite pool. Cli
+    /// owns the pool (via `memory::open_pool`) and hands clones to
+    /// every persistent crate. Memory runs its own schema migrations
+    /// against the pool — it owns only the `messages` and `memories`
+    /// tables.
     ///
     /// `fallback_api_key` is tried when the embedder config does not carry
     /// its own key — caller passes the matching entry from `providers:`.
     pub async fn open(
+        pool: SqlitePool,
         config: MemoryConfig,
         fallback_api_key: Option<&str>,
     ) -> Result<Self, ConfigError> {
         let embedder = BundledEmbedder::from_config(&config.embedder, fallback_api_key)?;
-        let pool = open_pool(&config.backend).await?;
         apply_schema(&pool).await?;
         Ok(Self {
             config,
@@ -56,13 +57,6 @@ impl Store {
 
     pub fn embedder(&self) -> &BundledEmbedder {
         &self.embedder
-    }
-
-    /// Shared SQLite pool. Exposed so sibling crates (e.g. `limits`) can
-    /// apply their own schema and write into the same database without each
-    /// opening its own connection to the same file.
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
     }
 
     /// Obtain a scoped handle for `user_id`. Does not create any rows until
@@ -332,7 +326,12 @@ pub struct UserSummary {
     pub user_id: UserId,
 }
 
-async fn open_pool(backend: &BackendConfig) -> Result<SqlitePool, ConfigError> {
+/// Open a SQLite pool from a `BackendConfig`. Public so cli can open
+/// one pool and hand clones to every persistent crate (memory, judge,
+/// telemetry, limits) instead of borrowing memory's. Each crate runs
+/// its own `CREATE TABLE IF NOT EXISTS` against the shared pool, so
+/// table ownership stays clear even though the connection is shared.
+pub async fn open_pool(backend: &BackendConfig) -> Result<SqlitePool, ConfigError> {
     let options = match backend {
         BackendConfig::InMemory => SqliteConnectOptions::from_str("sqlite::memory:")
             .map_err(ConfigError::from)?

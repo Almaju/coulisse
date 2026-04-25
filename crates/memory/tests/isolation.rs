@@ -11,7 +11,13 @@ async fn new_store() -> Store {
         embedder: EmbedderConfig::Hash { dims: 64 },
         ..MemoryConfig::default()
     };
-    Store::open(config, None).await.unwrap()
+    Store::open(
+        memory::open_pool(&config.backend).await.unwrap(),
+        config,
+        None,
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
