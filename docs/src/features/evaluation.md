@@ -129,14 +129,6 @@ The studio UI at `/studio` now shows a **Scores** panel per user. It surfaces tw
 - **Averages** — mean score per `(judge, criterion)` across every turn the user has had, with sample count.
 - **Recent** — the most recent individual scores with reasoning.
 
-You can also query the JSON directly:
-
-```
-GET /studio/api/users/{user_id}/scores
-```
-
-returns `{"averages": [...], "scores": [...]}` — the same payload the UI renders.
-
 ## Validation at startup
 
 Coulisse fails fast on:

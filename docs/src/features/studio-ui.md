@@ -17,7 +17,7 @@ That's it — this is a **read-only** tool. There's no way to send messages, edi
 
 ## Authentication
 
-The studio UI and its JSON API can be gated in two mutually exclusive ways: HTTP Basic auth (good for local dev) or OIDC single sign-on (appropriate for shared deployments). Exactly one belongs under `studio` in `coulisse.yaml`.
+The studio UI can be gated in two mutually exclusive ways: HTTP Basic auth (good for local dev) or OIDC single sign-on (appropriate for shared deployments). Exactly one belongs under `studio` in `coulisse.yaml`.
 
 The `/v1/chat/completions` and `/v1/models` endpoints are never behind this guard — it only covers `/studio/*`, so OpenAI-compatible SDK clients stay cookie-free.
 
@@ -30,7 +30,7 @@ studio:
     username: admin   # optional, defaults to "admin"
 ```
 
-Every `/studio/*` request must carry `Authorization: Basic <base64(user:pass)>`. Browsers prompt via the native login dialog and cache credentials per origin, so the Leptos SPA needs no extra wiring.
+Every `/studio/*` request must carry `Authorization: Basic <base64(user:pass)>`. Browsers prompt via the native login dialog and cache credentials per origin.
 
 ### OIDC (single sign-on)
 
@@ -46,7 +46,7 @@ studio:
     scopes:        [email, profile]               # optional; openid is always added
 ```
 
-On first request, the user is redirected to the IdP to log in; afterwards an encrypted session cookie keeps them authenticated on `/studio/*` until it expires (8 hours of inactivity). The Leptos SPA again needs no awareness — its `fetch` calls automatically ride on the session cookie.
+On first request, the user is redirected to the IdP to log in; afterwards an encrypted session cookie keeps them authenticated on `/studio/*` until it expires (8 hours of inactivity).
 
 Access control (**who** may log in) is delegated to the IdP. Coulisse treats "successfully authenticated by your IdP" as "authorized studio" — configure the allow-list in the IdP's application policy, not here.
 
@@ -60,49 +60,4 @@ Omit the `studio` block entirely to leave the studio surface unauthenticated. Th
 
 ## How it's built
 
-The UI is a Leptos WASM app in `crates/studio/`, styled with Tailwind (loaded via CDN) and hand-rolled shadcn-style components. The compiled bundle is embedded into the server binary at build time via `rust-embed`, so there's still only one binary to ship.
-
-## Building the bundle
-
-The studio crate is excluded from the main workspace so `cargo build` / `cargo test` don't try to cross-compile it. Build it explicitly when you want to update the embedded bundle:
-
-```bash
-rustup target add wasm32-unknown-unknown   # once
-cargo install trunk --locked               # once
-cd crates/studio
-trunk build --release
-```
-
-This produces `crates/studio/dist/`, which the server picks up the next time you rebuild it:
-
-```bash
-cargo run
-```
-
-If you hit `/studio` without having run `trunk build`, the server serves a placeholder page with these instructions instead of a blank 404. The JSON API under `/studio/api/*` still works either way.
-
-## Dev loop
-
-For iterative UI work, run `trunk serve` alongside the server. Trunk hot-reloads on every change and proxies `/studio/api/*` to the Coulisse server.
-
-```bash
-cargo run                # terminal 1 — server on :8421
-cd crates/studio
-trunk serve              # terminal 2 — UI on :4422 with hot reload
-```
-
-Open `http://127.0.0.1:4422/studio/`. Changes to `crates/studio/src/` rebuild and reload in about a second.
-
-## JSON API
-
-The UI is backed by three read-only endpoints. They're not part of the OpenAI-compatible surface — they're specifically for the studio UI, but you're free to hit them from scripts.
-
-| Method | Path                                                              | Returns                                                      |
-|--------|-------------------------------------------------------------------|--------------------------------------------------------------|
-| `GET`  | `/studio/api/users`                                                | List of users with message / memory / score / tool-call counts. |
-| `GET`  | `/studio/api/users/{user_id}/messages`                             | Full conversation history for one user; each assistant message carries the tool invocations that produced it in fire order. |
-| `GET`  | `/studio/api/users/{user_id}/memories`                             | Long-term memories for one user (no embeddings).             |
-| `GET`  | `/studio/api/users/{user_id}/scores`                               | Judge scores for one user, plus mean per (judge, criterion). |
-| `GET`  | `/studio/api/users/{user_id}/turns/{turn_id}/events`               | Telemetry event list for one turn (tool calls at every depth, subagent calls, future LLM snapshots). The turn id is the assistant `message_id` returned by the messages endpoint. |
-
-`{user_id}` must be a real UUID — the studio endpoints don't derive one from arbitrary strings the way `/v1/chat/completions` does, because they're looking up existing records. `{turn_id}` is also a UUID (equal to the assistant message id).
+The studio is a server-side Axum app in `crates/studio/`, rendered with [askama](https://djc.github.io/askama/) templates and styled with Tailwind (loaded via CDN). [htmx](https://htmx.org/) handles the only interactive bit — lazy-loading the per-turn telemetry tree when the operator expands it. Everything ships in the single Coulisse binary; there is no separate frontend build step.

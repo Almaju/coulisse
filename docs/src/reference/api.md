@@ -107,16 +107,7 @@ Useful for UI dropdowns that want to populate a model picker from the server.
 
 ## Studio endpoints
 
-Coulisse also serves a read-only studio surface under `/studio`:
-
-| Method | Path                                    | Returns                                         |
-|--------|-----------------------------------------|-------------------------------------------------|
-| `GET`  | `/studio`                               | The studio UI (Leptos WASM app). |
-| `GET`  | `/studio/api/users`                     | List of users with message/memory counts. |
-| `GET`  | `/studio/api/users/{user_id}/messages`  | Full conversation history for one user. |
-| `GET`  | `/studio/api/users/{user_id}/memories`  | Long-term memories for one user (no embeddings). |
-
-`{user_id}` must be a real UUID. See [Studio UI](../features/studio-ui.md) for what the interface does and how to build it.
+Coulisse also serves a read-only studio UI under `/studio`. It's a server-rendered Axum + htmx surface, not a JSON API — see [Studio UI](../features/studio-ui.md) for details and authentication options.
 
 ## Auth
 
