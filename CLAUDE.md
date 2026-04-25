@@ -4,6 +4,32 @@ Coulisse is a single Rust binary that reads a `coulisse.yaml` file and spins up 
 
 The goal is to collapse the plumbing that every multi-agent project ends up re-implementing: memory, workflows, multi-agent orchestration, multi-backend routing, rate limiting, tools. You describe the setup in YAML and pilot the whole thing from there, instead of writing glue code for each prototype.
 
+# Architecture
+
+One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `backends` (`providers:`), `experiments`, `judges`, `limits`, `memory`, `mcp`, `studio`, `telemetry`. Each is its own crate.
+
+**Dependency rule.** Feature crates depend only on `coulisse-core` (a tiny crate of shared domain types and traits). Feature crates never depend on each other. The `cli` crate is the only place that depends on every feature crate; it is the orchestrator.
+
+The single defensible exception: `agents → backends`, because backends is an interface to the outside world (LLM APIs), not a feature in the same sense. If that line ever feels wrong, replace it with a `Completer` trait in `coulisse-core`.
+
+**Each feature crate owns:**
+
+- its `Config` struct (parses its own YAML slice)
+- its state and storage (its own SQLite tables, files, etc.)
+- its public methods, named for what they do (`Limits::check`, `Memory::assemble_context`, `Agents::complete`, `Judges::spawn_score`)
+- its admin HTTP router via `admin_router(&self) -> Option<Router>`, mounted by cli at `/admin/<name>`
+- its background tasks (the feature spawns its own `tokio::spawn`; cli does not manage task lifecycles)
+
+**`cli` is the request-flow spec.** The chat handler in `cli` reads top-to-bottom as the documentation of what happens to a request. No middleware framework, no event bus, no `Feature` trait, no `TurnContext` god struct. If you want to know the order of operations, read the handler.
+
+**No central `config` crate.** Each crate parses its own slice of YAML. Cross-feature validation, if needed, is a small post-load pass in `cli`.
+
+**Adding a feature** = new crate, new YAML section, lines added to cli (load config, add to `AppState`, call from handler, optional `nest()` for admin). **Disabling a feature** = remove those lines.
+
+**Resist `coulisse-core` growth.** It holds domain primitives (`UserId`, `TurnId`, `Message`, `Role`, `Score`) and the smallest possible cross-cutting traits (`Completer`, `Embedder`). If it grows past ~200 lines, we've put too much in. Most types belong inside one feature crate.
+
+**No shared `proxy` crate as orchestrator.** `proxy` is a leaf crate: OpenAI wire schema, SSE helpers, error mapping. The handler lives in `cli`.
+
 # Documentation
 
 The user-facing mdbook lives in `docs/` (config in `docs/book.toml`, chapters in `docs/src/`). Every change that alters user-visible behavior must update the book in the same change — do not leave the docs lagging behind the code.
@@ -33,6 +59,10 @@ Do not add `Co-Authored-By` trailers — no Claude co-author line, no agent attr
 # Code Principles
 
 Apply these principles when writing code.
+
+## Crate boundaries
+
+Before adding code to an existing crate, ask: does this belong in a different feature crate, or a new one? `utils` modules and "shared logic" crates are the path back to coupling. If two crates need the same logic, look at crates.io first. The only legitimate shared crate is `coulisse-core` for primitives and cross-cutting traits — and it stays small.
 
 ## Sorting
 
