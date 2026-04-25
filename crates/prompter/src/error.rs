@@ -1,4 +1,4 @@
-use config::ProviderKind;
+use backends::{ClientInitError, ProviderKind};
 use thiserror::Error;
 
 /// Runtime errors raised after config has loaded successfully. Anything
@@ -6,12 +6,8 @@ use thiserror::Error;
 /// instead.
 #[derive(Debug, Error)]
 pub enum PrompterError {
-    #[error("failed to initialize {provider} client: {source}")]
-    ClientInit {
-        provider: ProviderKind,
-        #[source]
-        source: rig::http_client::Error,
-    },
+    #[error(transparent)]
+    ClientInit(#[from] ClientInitError),
     #[error("conversation has no user or assistant messages")]
     EmptyConversation,
     #[error("failed to connect to MCP server '{server}': {source}")]

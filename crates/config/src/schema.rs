@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::{fs, path::Path};
 
+pub use backends::{ProviderConfig, ProviderKind};
 pub use experiments::{ExperimentConfig, Strategy, Variant};
 use memory::MemoryConfig;
 use serde::Deserialize;
@@ -189,51 +190,4 @@ pub enum McpServerConfig {
         #[serde(default)]
         env: HashMap<String, String>,
     },
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ProviderConfig {
-    pub api_key: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ProviderKind {
-    Anthropic,
-    Cohere,
-    Deepseek,
-    Gemini,
-    Groq,
-    Openai,
-}
-
-impl ProviderKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::Cohere => "cohere",
-            Self::Deepseek => "deepseek",
-            Self::Gemini => "gemini",
-            Self::Groq => "groq",
-            Self::Openai => "openai",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "anthropic" => Some(Self::Anthropic),
-            "cohere" => Some(Self::Cohere),
-            "deepseek" => Some(Self::Deepseek),
-            "gemini" => Some(Self::Gemini),
-            "groq" => Some(Self::Groq),
-            "openai" => Some(Self::Openai),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for ProviderKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
 }

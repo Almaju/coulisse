@@ -3,13 +3,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
+use backends::{Backend, Backends, ProviderKind};
 use futures::stream::{Stream, StreamExt};
 use rig::agent::{MultiTurnStreamItem, PromptRequest};
 use rig::client::CompletionClient;
 use rig::completion::{
     CompletionModel, GetTokenUsage, Message as RigMessage, PromptError, ToolDefinition,
 };
-use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingPrompt};
 use rig::tool::rmcp::McpTool;
 use rig::tool::{ToolDyn, ToolError};
@@ -21,7 +21,7 @@ use serde_json::json;
 use telemetry::{Ctx, Event, EventId, EventKind, Sink as TelemetrySink};
 use tokio::process::Command;
 
-use config::{AgentConfig, Config, McpServerConfig, ProviderKind};
+use config::{AgentConfig, Config, McpServerConfig};
 use coulisse_core::{OneShotError, OneShotPrompt};
 use experiments::ExperimentRouter;
 use memory::Store;
@@ -41,7 +41,7 @@ pub struct RigPrompter {
 
 struct RigPrompterInner {
     agents: Vec<AgentConfig>,
-    backends: HashMap<ProviderKind, Backend>,
+    backends: Backends,
     mcp_servers: HashMap<String, McpServer>,
     /// A/B routing table. Populated from `config.experiments` at startup;
     /// resolves an addressable name (agent or experiment) to a concrete
@@ -58,15 +58,6 @@ struct RigPrompterInner {
     /// Kept off the hot path by short-circuiting when `None`, so tests and
     /// internal prompter callers that don't care about telemetry pay no cost.
     telemetry: Option<Arc<TelemetrySink>>,
-}
-
-enum Backend {
-    Anthropic(anthropic::Client),
-    Cohere(cohere::Client),
-    Deepseek(deepseek::Client),
-    Gemini(gemini::Client),
-    Groq(groq::Client),
-    Openai(openai::Client),
 }
 
 struct McpServer {
@@ -186,60 +177,7 @@ impl RigPrompter {
         telemetry: Option<Arc<TelemetrySink>>,
         score_store: Option<Arc<Store>>,
     ) -> Result<Self, PrompterError> {
-        let mut backends = HashMap::with_capacity(config.providers.len());
-        for (kind, provider) in config.providers {
-            let backend = match kind {
-                ProviderKind::Anthropic => {
-                    Backend::Anthropic(anthropic::Client::new(&provider.api_key).map_err(
-                        |source| PrompterError::ClientInit {
-                            provider: kind,
-                            source,
-                        },
-                    )?)
-                }
-                ProviderKind::Cohere => {
-                    Backend::Cohere(cohere::Client::new(&provider.api_key).map_err(|source| {
-                        PrompterError::ClientInit {
-                            provider: kind,
-                            source,
-                        }
-                    })?)
-                }
-                ProviderKind::Deepseek => {
-                    Backend::Deepseek(deepseek::Client::new(&provider.api_key).map_err(
-                        |source| PrompterError::ClientInit {
-                            provider: kind,
-                            source,
-                        },
-                    )?)
-                }
-                ProviderKind::Gemini => {
-                    Backend::Gemini(gemini::Client::new(&provider.api_key).map_err(|source| {
-                        PrompterError::ClientInit {
-                            provider: kind,
-                            source,
-                        }
-                    })?)
-                }
-                ProviderKind::Groq => {
-                    Backend::Groq(groq::Client::new(&provider.api_key).map_err(|source| {
-                        PrompterError::ClientInit {
-                            provider: kind,
-                            source,
-                        }
-                    })?)
-                }
-                ProviderKind::Openai => {
-                    Backend::Openai(openai::Client::new(&provider.api_key).map_err(|source| {
-                        PrompterError::ClientInit {
-                            provider: kind,
-                            source,
-                        }
-                    })?)
-                }
-            };
-            backends.insert(kind, backend);
-        }
+        let backends = Backends::new(config.providers).map_err(PrompterError::from)?;
 
         let mut mcp_servers = HashMap::with_capacity(config.mcp.len());
         for (name, cfg) in config.mcp {
@@ -431,7 +369,7 @@ impl RigPrompterInner {
         let agent = self
             .find_agent(agent_name)
             .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
-        let backend = self.backends.get(&agent.provider).ok_or_else(|| {
+        let backend = self.backends.get(agent.provider).ok_or_else(|| {
             PrompterError::ProviderNotConfigured {
                 agent: agent.name.clone(),
                 provider: agent.provider,
@@ -466,7 +404,7 @@ impl RigPrompterInner {
         let agent = self
             .find_agent(agent_name)
             .ok_or_else(|| PrompterError::UnknownAgent(agent_name.to_string()))?;
-        let backend = self.backends.get(&agent.provider).ok_or_else(|| {
+        let backend = self.backends.get(agent.provider).ok_or_else(|| {
             PrompterError::ProviderNotConfigured {
                 agent: agent.name.clone(),
                 provider: agent.provider,
@@ -517,7 +455,7 @@ impl RigPrompterInner {
     ) -> Result<Completion, PrompterError> {
         let backend = self
             .backends
-            .get(&provider)
+            .get(provider)
             .ok_or(PrompterError::ProviderNotConfigured {
                 agent: "<internal>".into(),
                 provider,

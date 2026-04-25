@@ -1,13 +1,10 @@
 [package]
-name = "config"
+name = "backends"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
-backends.workspace = true
-experiments.workspace = true
-memory.workspace = true
+rig-core.workspace = true
 serde.workspace = true
-serde_yaml.workspace = true
 thiserror.workspace = true
