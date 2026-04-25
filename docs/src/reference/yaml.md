@@ -13,6 +13,7 @@ judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
 memory: { ... }               # optional; defaults to sqlite + hash embedder
 providers: { ... }            # required
+telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
 ```
 
 ## `studio`
@@ -303,6 +304,27 @@ judges:
       accuracy:     Factual accuracy. Flag hallucinations.
       helpfulness:  Whether the assistant answered the user's question.
       tone:         Politeness and tone.
+```
+
+## `telemetry`
+
+- **Type:** object
+- **Optional.** Omit and Coulisse runs with stderr fmt logs at `info` plus the SQLite mirror that drives the studio UI; no external traces.
+
+The block has three sub-sections — `fmt`, `sqlite`, and `otlp` — each independently toggleable. See [Telemetry configuration](../configuration/telemetry.md) for the full schema and [Telemetry & OpenTelemetry](../features/telemetry.md) for span semantics and OTLP backend integration.
+
+```yaml
+telemetry:
+  fmt:
+    enabled: true        # default
+  sqlite:
+    enabled: true        # default; powers the studio UI
+  otlp:                  # absent = no external traces
+    endpoint: "http://localhost:4317"
+    protocol: grpc       # or http_binary
+    service_name: coulisse
+    headers:
+      authorization: "Bearer ${OTEL_API_KEY}"
 ```
 
 ## Validation

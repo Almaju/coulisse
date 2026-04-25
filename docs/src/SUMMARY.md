@@ -14,6 +14,7 @@
 - [Agents](./configuration/agents.md)
 - [MCP tools](./configuration/mcp.md)
 - [Memory](./configuration/memory.md)
+- [Telemetry](./configuration/telemetry.md)
 - [User identification](./configuration/user-id.md)
 
 # Features
@@ -28,6 +29,7 @@
 - [Response language](./features/language.md)
 - [LLM-as-judge evaluation](./features/evaluation.md)
 - [Experiments (A/B testing)](./features/experiments.md)
+- [Telemetry & OpenTelemetry](./features/telemetry.md)
 
 # Reference
 
