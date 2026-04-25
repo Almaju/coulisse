@@ -6,12 +6,17 @@ version.workspace = true
 
 [dependencies]
 coulisse-core.workspace = true
+opentelemetry = "0.27"
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
+tonic = "0.12"
 tracing.workspace = true
+tracing-opentelemetry = "0.28"
 tracing-subscriber.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"] }
 

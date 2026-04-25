@@ -16,6 +16,7 @@ use judge::JudgeConfig;
 use memory::MemoryConfig;
 use serde::Deserialize;
 use studio::StudioConfig;
+use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -53,6 +54,12 @@ pub struct Config {
     /// never for anything exposed beyond loopback.
     #[serde(default)]
     pub studio: Option<StudioConfig>,
+    /// Observability wiring: stderr fmt logs (always on by default),
+    /// SQLite mirror that drives the studio UI (on by default), and an
+    /// optional OpenTelemetry OTLP exporter for shipping traces to
+    /// Grafana / SigNoz / Jaeger / etc.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 impl Config {

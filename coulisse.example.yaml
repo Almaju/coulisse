@@ -115,3 +115,25 @@ agents:
       Point out subtle bugs and suggest concrete improvements.
     # Stack judges: broad quality check on every turn + deep audit on 10%.
     judges: [quality, review_depth]
+
+# --- Telemetry --------------------------------------------------------
+#
+# Observability wiring for the running server. The fmt and SQLite layers
+# are on by default; OTLP is opt-in for plugging coulisse into your own
+# observability backend (Grafana, SigNoz, Jaeger, Honeycomb, ...).
+#
+# All three are composable: turn the SQLite layer off if you don't need
+# the studio UI, or run SQLite + OTLP together to get both an offline
+# audit trail and live traces.
+
+# telemetry:
+#   fmt:
+#     enabled: true        # stderr logs; defaults to on
+#   sqlite:
+#     enabled: true        # mirrors `turn` / `tool_call` spans into the studio's tables
+#   otlp:
+#     endpoint: "http://localhost:4317"
+#     protocol: grpc       # or http_binary (port 4318)
+#     service_name: coulisse
+#     headers:
+#       authorization: "Bearer ${OTEL_API_KEY}"

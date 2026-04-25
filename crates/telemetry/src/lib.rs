@@ -3,17 +3,21 @@
 //! that the studio UI renders as a causal tree. Deliberately separate from
 //! `memory` so observability growth never risks leaking into the prompt.
 
+mod config;
 mod error;
 mod event;
 mod id;
+mod init;
 mod sink;
 mod sqlite_layer;
 mod tool_call;
 
+pub use config::{Config, FmtConfig, OtlpConfig, OtlpProtocol, SqliteConfig};
 pub use coulisse_core::TurnId;
 pub use error::TelemetryError;
 pub use event::{Event, EventKind};
 pub use id::EventId;
+pub use init::{InitError, TelemetryGuard, init_subscriber};
 pub use sink::Sink;
 pub use sqlite_layer::{SqliteLayer, SqliteLayerGuard};
 pub use tool_call::{ToolCall, ToolCallId};

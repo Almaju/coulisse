@@ -15,11 +15,8 @@ use judge::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
 use studio::{OidcRuntime, StudioAuth, StudioConfig, StudioCredentials, StudioState};
-use telemetry::{Sink as TelemetrySink, SqliteLayer, SqliteLayerGuard};
+use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,12 +47,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let judges = build_judges(&judge_configs)?;
 
     // Apply telemetry schema (creates `events`/`tool_calls` tables) and
-    // wire the tracing subscriber: a fmt layer for stderr logs plus the
-    // SqliteLayer that mirrors `turn`/`tool_call` spans into those tables
-    // for the studio UI. The guard keeps the background writer alive for
-    // the process lifetime; dropping it is fine on shutdown.
+    // wire the tracing subscriber: fmt + SqliteLayer (always on by
+    // default) plus an optional OTLP exporter when `telemetry.otlp` is
+    // set in YAML. The guard keeps the background writer + OTLP
+    // provider alive for the process lifetime.
     let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
-    let _telemetry_guard = init_tracing(pool.clone());
+    let _telemetry_guard = telemetry::init_subscriber(pool.clone(), &config.telemetry)?;
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
     let prompter = Arc::new(
         RigAgents::new(
@@ -213,21 +210,6 @@ fn embedder_fallback_key(config: &Config) -> Option<String> {
         EmbedderConfig::Voyage { .. } => return None,
     };
     config.providers.get(&kind).map(|p| p.api_key.clone())
-}
-
-/// Wire the tracing subscriber: fmt layer for stderr logs, SqliteLayer for
-/// the studio's events/tool_calls tables. `RUST_LOG` overrides the default
-/// `info` filter. Returns the SqliteLayer guard — drop on shutdown.
-fn init_tracing(pool: sqlx::SqlitePool) -> SqliteLayerGuard {
-    let (sqlite_layer, guard) = SqliteLayer::spawn(pool);
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn"));
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt::layer().with_target(false).with_writer(std::io::stderr))
-        .with(sqlite_layer)
-        .init();
-    guard
 }
 
 fn memory_summary(config: &memory::MemoryConfig) -> String {
