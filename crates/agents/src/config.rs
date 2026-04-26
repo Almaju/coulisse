@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use mcp::McpToolAccess;
 use providers::ProviderKind;
 use serde::Deserialize;
 
@@ -29,26 +28,4 @@ pub struct AgentConfig {
     /// message is returned as the tool result.
     #[serde(default)]
     pub subagents: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct McpToolAccess {
-    #[serde(default)]
-    pub only: Option<Vec<String>>,
-    pub server: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "transport", rename_all = "lowercase")]
-pub enum McpServerConfig {
-    Http {
-        url: String,
-    },
-    Stdio {
-        #[serde(default)]
-        args: Vec<String>,
-        command: String,
-        #[serde(default)]
-        env: HashMap<String, String>,
-    },
 }

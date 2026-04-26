@@ -8,6 +8,7 @@ members = [
     "crates/experiments",
     "crates/judges",
     "crates/limits",
+    "crates/mcp",
     "crates/memory",
     "crates/proxy",
     "crates/studio",
@@ -31,6 +32,7 @@ experiments = { path = "crates/experiments" }
 futures = "0.3"
 judges = { path = "crates/judges" }
 limits = { path = "crates/limits" }
+mcp = { path = "crates/mcp" }
 memory = { path = "crates/memory" }
 oxilangtag = "0.1"
 proxy = { path = "crates/proxy" }

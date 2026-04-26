@@ -6,18 +6,18 @@ The goal is to collapse the plumbing that every multi-agent project ends up re-i
 
 # Architecture
 
-One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `backends` (`providers:`), `experiments`, `judges`, `limits`, `memory`, `mcp`, `studio`, `telemetry`. Each is its own crate.
+One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `experiments`, `judges`, `limits`, `mcp`, `memory`, `providers`, `studio`, `telemetry`. Each is its own crate.
 
 **Layout.** Feature crates live under `crates/`. The orchestrator binary lives at `cli/` (top level), separate from the features it composes — its role is structurally distinct, so its location is too. The workspace root holds nothing but the workspace manifest and project-level files (`coulisse.yaml`, `docs/`, `Justfile`, `.githooks/`).
 
 **Dependency rule.** Feature crates depend only on `coulisse-core` (a tiny crate of shared domain types and traits). Feature crates never depend on each other. The `cli` crate is the only place that depends on every feature crate; it is the orchestrator.
 
-The single defensible exception: `agents → backends`, because backends is an interface to the outside world (LLM APIs), not a feature in the same sense. If that line ever feels wrong, replace it with a `Completer` trait in `coulisse-core`.
+Two defensible exceptions: `agents → providers` and `agents → mcp`. Both wrap interfaces to the outside world (LLM APIs and MCP tool servers respectively), not features in the same sense as `memory` or `judges`. If either line ever feels wrong, replace it with a trait in `coulisse-core` (`Completer` for providers, `McpToolProvider` for mcp).
 
 **Each feature crate owns:**
 
 - its `Config` struct (parses its own YAML slice)
-- its tables and queries — `memory` owns `messages`/`memories`, `judge` owns `scores`, `telemetry` owns `events`/`tool_calls`, `limits` owns `rate_limit_windows`. Cli opens one shared SQLite pool (via `memory::open_pool`) and hands clones to each crate; each crate runs its own `CREATE TABLE IF NOT EXISTS`. No crate exposes its pool to siblings, and no crate is the de-facto database layer.
+- its tables and queries — `memory` owns `messages`/`memories`, `judges` owns `scores`, `telemetry` owns `events`/`tool_calls`, `limits` owns `rate_limit_windows`. Cli opens one shared SQLite pool (via `memory::open_pool`) and hands clones to each crate; each crate runs its own `CREATE TABLE IF NOT EXISTS`. No crate exposes its pool to siblings, and no crate is the de-facto database layer.
 - its public methods, named for what they do (`Limits::check`, `Memory::assemble_context`, `Agents::complete`, `Judges::append_score`)
 - its admin HTTP router via `admin_router(&self) -> Option<Router>`, mounted by cli at `/admin/<name>`
 - its background tasks (the feature spawns its own `tokio::spawn`; cli does not manage task lifecycles)

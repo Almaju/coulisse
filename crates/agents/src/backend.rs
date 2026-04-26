@@ -1,26 +1,21 @@
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use coulisse_core::{OneShotError, OneShotPrompt, ScoreLookup, UserId};
 use experiments::ExperimentRouter;
+use mcp::McpServers;
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
     ToolCallKind,
 };
 use rig::completion::ToolDefinition;
-use rig::tool::rmcp::McpTool;
 use rig::tool::{ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
-use rmcp::ServiceExt;
-use rmcp::service::{RoleClient, RunningService, ServerSink};
-use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::json;
-use tokio::process::Command;
 use tracing::{Instrument, info_span};
 
 use crate::AgentsError;
-use crate::config::{AgentConfig, McpServerConfig};
+use crate::config::AgentConfig;
 
 /// How many nested subagent calls are allowed before the hop limit kicks in.
 /// A→B→A→… is cut off once the depth reaches this number. Four levels is
@@ -34,8 +29,8 @@ pub struct RigAgents {
 
 struct AgentsInner {
     agents: Vec<AgentConfig>,
+    mcp: Arc<McpServers>,
     providers: Providers,
-    mcp_servers: HashMap<String, McpServer>,
     /// A/B routing table. Populated from `config.experiments` at startup;
     /// resolves an addressable name (agent or experiment) to a concrete
     /// agent at request time. Empty when no experiments are configured —
@@ -46,12 +41,6 @@ struct AgentsInner {
     /// time). When `None`, bandit subagents fall back to forced
     /// exploration — fine for tests and small deployments.
     scores: Option<Arc<dyn ScoreLookup>>,
-}
-
-struct McpServer {
-    _service: RunningService<RoleClient, ()>,
-    sink: ServerSink,
-    tools: HashMap<String, rmcp::model::Tool>,
 }
 
 /// Result of `AgentsInner::build_tools`: the full `ToolDyn` list to
@@ -118,34 +107,27 @@ pub trait Agents: Send + Sync {
 pub struct BootConfig {
     pub agents: Vec<AgentConfig>,
     pub experiments: Vec<experiments::ExperimentConfig>,
-    pub mcp: HashMap<String, McpServerConfig>,
-    pub providers: HashMap<ProviderKind, providers::ProviderConfig>,
+    pub mcp: Arc<McpServers>,
+    pub providers: std::collections::HashMap<ProviderKind, providers::ProviderConfig>,
 }
 
 impl RigAgents {
     /// Build agents from the YAML slices declared under `agents:`,
-    /// `experiments:`, `mcp:`, and `providers:`. Tool invocations are
-    /// recorded as `tool_call` tracing spans on every MCP and subagent
-    /// call regardless of depth — observability is the subscriber's job,
-    /// not this crate's.
-    pub async fn new(
+    /// `experiments:`, and `providers:`, plus a pre-connected
+    /// `McpServers` pool. Tool invocations are recorded as `tool_call`
+    /// tracing spans on every MCP and subagent call regardless of depth —
+    /// observability is the subscriber's job, not this crate's.
+    pub fn new(
         config: BootConfig,
         scores: Option<Arc<dyn ScoreLookup>>,
     ) -> Result<Self, AgentsError> {
         let providers = Providers::new(config.providers).map_err(AgentsError::from)?;
-
-        let mut mcp_servers = HashMap::with_capacity(config.mcp.len());
-        for (name, cfg) in config.mcp {
-            let server = McpServer::connect(&name, cfg).await?;
-            mcp_servers.insert(name, server);
-        }
-
         let router = ExperimentRouter::new(config.experiments);
         Ok(Self {
             inner: Arc::new(AgentsInner {
                 agents: config.agents,
+                mcp: config.mcp,
                 providers,
-                mcp_servers,
                 router,
                 scores,
             }),
@@ -236,38 +218,16 @@ impl AgentsInner {
     ) -> Result<BuiltTools, AgentsError> {
         use std::collections::HashSet;
 
-        let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
-        for access in &agent.mcp_tools {
-            let server = self.mcp_servers.get(&access.server).ok_or_else(|| {
-                AgentsError::McpServerNotConfigured {
-                    agent: agent.name.clone(),
-                    server: access.server.clone(),
-                }
-            })?;
-            let picked: Vec<_> = match &access.only {
-                Some(names) => names
-                    .iter()
-                    .map(|name| {
-                        server.tools.get(name).cloned().ok_or_else(|| {
-                            AgentsError::McpToolNotFound {
-                                agent: agent.name.clone(),
-                                server: access.server.clone(),
-                                tool: name.clone(),
-                            }
-                        })
-                    })
-                    .collect::<Result<_, _>>()?,
-                None => server.tools.values().cloned().collect(),
-            };
-            for tool in picked {
-                let raw: Box<dyn ToolDyn> =
-                    Box::new(McpTool::from_mcp_server(tool, server.sink.clone()));
-                tools.push(Box::new(TelemetryTool {
-                    inner: raw,
+        let raw_mcp_tools = self.mcp.tools_for(&agent.name, &agent.mcp_tools)?;
+        let mut tools: Vec<Box<dyn ToolDyn>> = raw_mcp_tools
+            .into_iter()
+            .map(|inner| -> Box<dyn ToolDyn> {
+                Box::new(TelemetryTool {
+                    inner,
                     kind: ToolCallKind::Mcp,
-                }));
-            }
-        }
+                })
+            })
+            .collect();
 
         let subagent_names: Arc<HashSet<String>> =
             Arc::new(agent.subagents.iter().cloned().collect());
@@ -556,58 +516,6 @@ impl ToolDyn for TelemetryTool {
             }
             .instrument(span),
         )
-    }
-}
-
-impl McpServer {
-    async fn connect(name: &str, config: McpServerConfig) -> Result<Self, AgentsError> {
-        let service = match config {
-            McpServerConfig::Http { url } => {
-                let transport = StreamableHttpClientTransport::from_uri(url);
-                ().serve(transport)
-                    .await
-                    .map_err(|source| AgentsError::McpConnect {
-                        server: name.to_string(),
-                        source: Box::new(source),
-                    })?
-            }
-            McpServerConfig::Stdio { args, command, env } => {
-                let mut cmd = Command::new(&command);
-                cmd.args(&args);
-                if !env.is_empty() {
-                    cmd.envs(&env);
-                }
-                let transport =
-                    TokioChildProcess::new(cmd).map_err(|source| AgentsError::SpawnMcp {
-                        server: name.to_string(),
-                        source,
-                    })?;
-                ().serve(transport)
-                    .await
-                    .map_err(|source| AgentsError::McpConnect {
-                        server: name.to_string(),
-                        source: Box::new(source),
-                    })?
-            }
-        };
-        let listed = service
-            .list_tools(Default::default())
-            .await
-            .map_err(|source| AgentsError::McpListTools {
-                server: name.to_string(),
-                source,
-            })?;
-        let tools = listed
-            .tools
-            .into_iter()
-            .map(|tool| (tool.name.to_string(), tool))
-            .collect();
-        let sink = service.peer().clone();
-        Ok(Self {
-            _service: service,
-            sink,
-            tools,
-        })
     }
 }
 

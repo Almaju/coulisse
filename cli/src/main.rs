@@ -12,6 +12,7 @@ use coulisse_core::ScoreLookup;
 use experiments::Strategy;
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
+use mcp::McpServers;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
 use providers::ProviderKind;
 use studio::{OidcRuntime, StudioAuth, StudioConfig, StudioCredentials, StudioState};
@@ -54,18 +55,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
     let _telemetry_guard = telemetry::init_subscriber(pool.clone(), &config.telemetry)?;
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
-    let prompter = Arc::new(
-        RigAgents::new(
-            BootConfig {
-                agents: config.agents,
-                experiments: config.experiments,
-                mcp: config.mcp,
-                providers: config.providers,
-            },
-            Some(Arc::clone(&judge_store) as Arc<dyn ScoreLookup>),
-        )
-        .await?,
-    );
+    let mcp = Arc::new(McpServers::connect(config.mcp).await?);
+    let prompter = Arc::new(RigAgents::new(
+        BootConfig {
+            agents: config.agents,
+            experiments: config.experiments,
+            mcp,
+            providers: config.providers,
+        },
+        Some(Arc::clone(&judge_store) as Arc<dyn ScoreLookup>),
+    )?);
 
     let extractor = extractor_config
         .as_ref()

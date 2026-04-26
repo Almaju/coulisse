@@ -9,9 +9,10 @@
 use std::collections::{HashMap, HashSet};
 use std::{fs, path::Path};
 
-use agents::{AgentConfig, McpServerConfig};
+use agents::AgentConfig;
 use experiments::{ExperimentConfig, Strategy};
 use judges::JudgeConfig;
+use mcp::McpServerConfig;
 use memory::MemoryConfig;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
