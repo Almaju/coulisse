@@ -1907,7 +1907,7 @@ dependencies = [
  "askama",
  "axum 0.8.9",
  "coulisse-core",
- "rand 0.8.6",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "serde_yaml",
