@@ -39,7 +39,7 @@ judges = { path = "crates/judges" }
 limits = { path = "crates/limits" }
 mcp = { path = "crates/mcp" }
 memory = { path = "crates/memory" }
-nix = { version = "0.30", features = ["process", "signal"] }
+nix = { version = "0.31", features = ["process", "signal"] }
 notify = "8"
 oxilangtag = "0.1"
 proxy = { path = "crates/proxy" }
