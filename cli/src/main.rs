@@ -8,8 +8,8 @@ use axum::response::Redirect;
 use axum::routing::get;
 use coulisse::config::Config;
 use coulisse::server::{self, AppState};
-use coulisse_core::ScoreLookup;
-use experiments::Strategy;
+use coulisse_core::{AgentResolver, ScoreLookup};
+use experiments::{ExperimentResolver, ExperimentRouter, Strategy};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::McpServers;
@@ -56,15 +56,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _telemetry_guard = telemetry::init_subscriber(pool.clone(), &config.telemetry)?;
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
     let mcp = Arc::new(McpServers::connect(config.mcp).await?);
-    let prompter = Arc::new(RigAgents::new(
-        BootConfig {
-            agents: config.agents,
-            experiments: config.experiments,
-            mcp,
-            providers: config.providers,
-        },
+    let experiments = Arc::new(ExperimentRouter::new(config.experiments));
+    let resolver: Arc<dyn AgentResolver> = Arc::new(ExperimentResolver::new(
+        Arc::clone(&experiments),
         Some(Arc::clone(&judge_store) as Arc<dyn ScoreLookup>),
-    )?);
+    ));
+    let prompter = Arc::new(RigAgents::new(BootConfig {
+        agents: config.agents,
+        mcp,
+        providers: config.providers,
+        resolver,
+    })?);
 
     let extractor = extractor_config
         .as_ref()
@@ -74,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy_state = Arc::new(AppState {
         agents: Arc::clone(&prompter),
         default_user_id,
+        experiments,
         extractor,
         judges: Arc::new(judges),
         judge_store: Arc::clone(&judge_store),

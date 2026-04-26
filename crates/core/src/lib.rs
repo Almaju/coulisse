@@ -190,3 +190,21 @@ impl OneShotError {
         Self(msg.into())
     }
 }
+
+/// Map an addressable name (agent or experiment) to a concrete agent name
+/// for a given user. Implemented by the `experiments` crate;
+/// consumed by `agents` so the runtime can dispatch subagent calls
+/// without taking a hard dep on `experiments`. For non-experiment names,
+/// `resolve` returns the input unchanged.
+pub trait AgentResolver: Send + Sync {
+    fn resolve<'a>(
+        &'a self,
+        name: &'a str,
+        user_id: UserId,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+
+    /// Tool description for an addressable name when used as a subagent.
+    /// `None` means the name isn't a known experiment — agents falls
+    /// back to its own per-agent purpose lookup.
+    fn purpose(&self, name: &str) -> Option<String>;
+}

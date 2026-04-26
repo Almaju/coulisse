@@ -5,9 +5,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 use async_stream::stream;
-
 use coulisse_core::{OneShotError, OneShotPrompt, UserId};
-use experiments::{ExperimentConfig, ExperimentRouter};
 use providers::ProviderKind;
 
 use crate::{
@@ -24,7 +22,6 @@ pub struct ScriptedAgents {
     calls: Mutex<Vec<Vec<Message>>>,
     dispatched_to: Mutex<Vec<String>>,
     replies: Mutex<Vec<ScriptedReply>>,
-    router: ExperimentRouter,
 }
 
 #[derive(Clone)]
@@ -109,20 +106,11 @@ impl ScriptedReply {
 
 impl ScriptedAgents {
     pub fn new(agents: Vec<AgentConfig>, replies: Vec<ScriptedReply>) -> Self {
-        Self::with_experiments(agents, Vec::new(), replies)
-    }
-
-    pub fn with_experiments(
-        agents: Vec<AgentConfig>,
-        experiments: Vec<ExperimentConfig>,
-        replies: Vec<ScriptedReply>,
-    ) -> Self {
         Self {
             agents,
             calls: Mutex::new(Vec::new()),
             dispatched_to: Mutex::new(Vec::new()),
             replies: Mutex::new(replies),
-            router: ExperimentRouter::new(experiments),
         }
     }
 
@@ -163,10 +151,6 @@ impl ScriptedAgents {
 impl Agents for ScriptedAgents {
     fn agents(&self) -> &[AgentConfig] {
         &self.agents
-    }
-
-    fn router(&self) -> &ExperimentRouter {
-        &self.router
     }
 
     async fn complete(

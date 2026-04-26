@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use coulisse_core::OneShotPrompt;
-use experiments::Strategy;
+use experiments::{ExperimentRouter, Strategy};
 use judges::{Judge, Judges, spawn_score};
 use limits::{RequestLimits, Tracker};
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
@@ -29,6 +29,10 @@ pub struct AppState<P: Agents + OneShotPrompt> {
     /// Fallback user id applied to requests that don't supply their own.
     /// `None` means such requests are rejected (multi-tenant posture).
     pub default_user_id: Option<UserId>,
+    /// A/B routing table. Cli does top-level experiment resolution here
+    /// (before calling `agents.complete`); agents itself never sees this
+    /// — it asks an `AgentResolver` for subagent dispatch instead.
+    pub experiments: Arc<ExperimentRouter>,
     /// Optional auto-extraction configured via YAML. When `None`, the
     /// memories table is only written via explicit API calls.
     pub extractor: Option<Arc<Extractor>>,
@@ -73,7 +77,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
 ) -> Result<Response, ApiError> {
     let prepared = prepare_request(&state, &request).await?;
 
-    let bandit_scores = match state.agents.router().bandit_query(&request.model) {
+    let bandit_scores = match state.experiments.bandit_query(&request.model) {
         Some((judge, criterion, since)) => state
             .judge_store
             .mean_scores_by_agent(&judge, &criterion, since)
@@ -83,8 +87,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     };
     let resolved =
         state
-            .agents
-            .router()
+            .experiments
             .resolve_with_scores(&request.model, prepared.user_id, &bandit_scores);
     let agent_name = resolved.agent.clone().into_owned();
     let experiment_name = resolved.experiment.map(str::to_owned);
@@ -115,8 +118,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     // Clone inputs for shadow variants so they run against the same context
     // the primary consumed. No-op for non-shadow strategies.
     let shadow_inputs = state
-        .agents
-        .router()
+        .experiments
         .get(&request.model)
         .filter(|exp| matches!(exp.strategy, Strategy::Shadow))
         .map(|exp| (exp.clone(), prepared.messages.clone()));

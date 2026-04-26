@@ -34,16 +34,11 @@ pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
     user_message: String,
     messages: Vec<AgentMessage>,
 ) {
-    if !state
-        .agents
-        .router()
-        .shadow_should_sample(experiment, user_id)
-    {
+    if !state.experiments.shadow_should_sample(experiment, user_id) {
         return;
     }
     let variants: Vec<String> = state
-        .agents
-        .router()
+        .experiments
         .shadow_variants(experiment)
         .map(|v| v.agent.clone())
         .collect();

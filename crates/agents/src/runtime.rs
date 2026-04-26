@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{OneShotError, OneShotPrompt, ScoreLookup, UserId};
-use experiments::ExperimentRouter;
+use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, UserId};
 use mcp::McpServers;
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
@@ -27,22 +26,16 @@ pub struct RigAgents {
 
 /// Shared inner state held behind an `Arc` so subagent tools (which call
 /// back into the runtime) can clone the handle cheaply. `pub(crate)` so
-/// the tools module can read `scores`/`router` and call
-/// `complete_with_depth` on the subagent re-entry path.
+/// the tools module can read `resolver` and call `complete_with_depth`
+/// on the subagent re-entry path.
 pub(crate) struct AgentsInner {
     agents: Vec<AgentConfig>,
     mcp: Arc<McpServers>,
     providers: Providers,
-    /// A/B routing table. Populated from `config.experiments` at startup;
-    /// resolves an addressable name (agent or experiment) to a concrete
-    /// agent at request time. Empty when no experiments are configured —
-    /// `resolve` then short-circuits to passthrough.
-    pub(crate) router: ExperimentRouter,
-    /// Optional handle to a score reader. Required for bandit-strategy
-    /// subagent calls (which need to read recent mean scores at call
-    /// time). When `None`, bandit subagents fall back to forced
-    /// exploration — fine for tests and small deployments.
-    pub(crate) scores: Option<Arc<dyn ScoreLookup>>,
+    /// Maps subagent names to concrete agent names at call time. The
+    /// runtime never sees `experiments` directly — it just asks the
+    /// resolver. Cli wires the impl (currently `ExperimentResolver`).
+    pub(crate) resolver: Arc<dyn AgentResolver>,
 }
 
 /// Result of `AgentsInner::build_tools`: the full `ToolDyn` list to hand
@@ -63,12 +56,9 @@ type BuiltTools = (Vec<Box<dyn ToolDyn>>, Arc<HashSet<String>>);
 pub trait Agents: Send + Sync {
     fn agents(&self) -> &[AgentConfig];
 
-    /// A/B routing table for this prompter. The proxy consults this
-    /// before dispatching so that experiment names addressable as
-    /// `model` resolve to a concrete variant per request.
-    fn router(&self) -> &ExperimentRouter;
-
-    /// Run the named agent and return its final reply. The caller is
+    /// Run the named agent and return its final reply. The agent name is
+    /// the already-resolved variant; callers (cli's chat handler) do
+    /// experiment resolution before reaching this method. The caller is
     /// expected to drive this future inside a `turn` tracing span so any
     /// nested `tool_call` spans inherit the correlation ids. `user_id`
     /// drives sticky-by-user variant routing on subagent calls —
@@ -105,30 +95,28 @@ pub trait Agents: Send + Sync {
 /// list, and so adding a new optional input doesn't break every call site.
 pub struct BootConfig {
     pub agents: Vec<AgentConfig>,
-    pub experiments: Vec<experiments::ExperimentConfig>,
     pub mcp: Arc<McpServers>,
     pub providers: HashMap<ProviderKind, providers::ProviderConfig>,
+    /// Resolves subagent names (which may be experiment names) to concrete
+    /// agent names at call time. Cli builds this from
+    /// `experiments::ExperimentResolver`.
+    pub resolver: Arc<dyn AgentResolver>,
 }
 
 impl RigAgents {
-    /// Build agents from the YAML slices declared under `agents:`,
-    /// `experiments:`, and `providers:`, plus a pre-connected
-    /// `McpServers` pool. Tool invocations are recorded as `tool_call`
-    /// tracing spans on every MCP and subagent call regardless of depth —
-    /// observability is the subscriber's job, not this crate's.
-    pub fn new(
-        config: BootConfig,
-        scores: Option<Arc<dyn ScoreLookup>>,
-    ) -> Result<Self, AgentsError> {
+    /// Build agents from the YAML slices declared under `agents:` and
+    /// `providers:`, plus a pre-connected `McpServers` pool and a
+    /// subagent name resolver. Tool invocations are recorded as
+    /// `tool_call` tracing spans on every MCP and subagent call regardless
+    /// of depth — observability is the subscriber's job, not this crate's.
+    pub fn new(config: BootConfig) -> Result<Self, AgentsError> {
         let providers = Providers::new(config.providers).map_err(AgentsError::from)?;
-        let router = ExperimentRouter::new(config.experiments);
         Ok(Self {
             inner: Arc::new(AgentsInner {
                 agents: config.agents,
                 mcp: config.mcp,
                 providers,
-                router,
-                scores,
+                resolver: config.resolver,
             }),
         })
     }
@@ -137,10 +125,6 @@ impl RigAgents {
 impl Agents for RigAgents {
     fn agents(&self) -> &[AgentConfig] {
         &self.inner.agents
-    }
-
-    fn router(&self) -> &ExperimentRouter {
-        &self.inner.router
     }
 
     async fn complete(
@@ -242,9 +226,9 @@ impl AgentsInner {
     }
 
     /// Tool description for a subagent reference. Subagent names share
-    /// the agent + experiment namespace, so look in both — the agent
-    /// table first since the names cannot collide. Validation already
-    /// guarantees the name exists somewhere.
+    /// the agent + experiment namespace: agents looks at its own table
+    /// first, then defers to the resolver for experiment purposes.
+    /// Validation already guarantees the name exists somewhere.
     fn subagent_purpose(&self, name: &str) -> String {
         if let Some(agent) = self.find_agent(name) {
             return agent
@@ -252,13 +236,9 @@ impl AgentsInner {
                 .clone()
                 .unwrap_or_else(|| format!("Invoke the '{}' subagent.", agent.name));
         }
-        if let Some(experiment) = self.router.get(name) {
-            return experiment
-                .purpose
-                .clone()
-                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", experiment.name));
-        }
-        unreachable!("subagent name validated at config load: {name}")
+        self.resolver
+            .purpose(name)
+            .unwrap_or_else(|| format!("Invoke the '{name}' subagent."))
     }
 
     pub(crate) async fn complete_with_depth(

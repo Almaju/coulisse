@@ -8,9 +8,11 @@
 //! statelessness, and it's documented behaviour.
 
 mod config;
+mod resolver;
 mod router;
 
 pub use config::{ExperimentConfig, Strategy, Variant};
+pub use resolver::ExperimentResolver;
 pub use router::{
     BANDIT_DEFAULT_EPSILON, BANDIT_DEFAULT_MIN_SAMPLES, BANDIT_DEFAULT_WINDOW_SECONDS,
     ExperimentRouter, Resolved,

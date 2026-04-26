@@ -77,11 +77,8 @@ async fn make_app_with_experiments(
 ) -> TestHarness {
     use tracing_subscriber::layer::SubscriberExt;
 
-    let agents_runner = Arc::new(ScriptedAgents::with_experiments(
-        agents,
-        experiments,
-        replies,
-    ));
+    let agents_runner = Arc::new(ScriptedAgents::new(agents, replies));
+    let experiments = Arc::new(experiments::ExperimentRouter::new(experiments));
     let config = MemoryConfig {
         backend: BackendConfig::InMemory,
         embedder: EmbedderConfig::Hash { dims: 32 },
@@ -98,6 +95,7 @@ async fn make_app_with_experiments(
     let state = Arc::new(AppState {
         agents: agents_runner,
         default_user_id: None,
+        experiments,
         extractor: None,
         judges: Arc::new(judges),
         judge_store,

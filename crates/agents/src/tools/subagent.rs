@@ -90,24 +90,11 @@ impl ToolDyn for SubagentTool {
                     content: message,
                 }];
                 let next_depth = depth.saturating_add(1);
-                // Subagent name may be an experiment — resolve per-user so the
-                // variant is picked at call time, consistent with the
-                // sticky-by-user hashing the proxy applies at the top level.
-                // Bandit experiments additionally consult recent mean scores;
-                // without a score store wired in, the lookup returns no data
-                // and the bandit falls back to forced exploration.
-                let scores = if let (Some(scores), Some((judge, criterion, since))) =
-                    (inner.scores.as_ref(), inner.router.bandit_query(&target))
-                {
-                    scores
-                        .mean_scores_by_agent(&judge, &criterion, since)
-                        .await
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                let resolved = inner.router.resolve_with_scores(&target, user_id, &scores);
-                let agent_name = resolved.agent.into_owned();
+                // Subagent name may be an experiment — defer resolution to
+                // the runtime's resolver so the variant is picked at call
+                // time, consistent with the sticky-by-user hashing the
+                // proxy applies at the top level.
+                let agent_name = inner.resolver.resolve(&target, user_id).await;
                 let outcome = AgentsInner::complete_with_depth(
                     &inner,
                     &agent_name,

@@ -7,7 +7,6 @@ version.workspace = true
 [dependencies]
 async-stream.workspace = true
 coulisse-core.workspace = true
-experiments.workspace = true
 futures.workspace = true
 mcp.workspace = true
 providers.workspace = true
