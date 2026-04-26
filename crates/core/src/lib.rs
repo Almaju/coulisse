@@ -131,10 +131,10 @@ impl Message {
 
 /// Per-agent score summary aggregated over a time window. One row per
 /// agent that has any score in the window; absence means "not enough
-/// data". Produced by `judge` (the score authority) and consumed by
+/// data". Produced by `judges` (the score authority) and consumed by
 /// routing logic in `agents`/`experiments`. Lives in core only because
 /// it sits at the trait boundary (`ScoreLookup`); the score storage
-/// itself lives in the `judge` crate.
+/// itself lives in the `judges` crate.
 #[derive(Clone, Debug)]
 pub struct AgentScoreSummary {
     pub agent_name: String,
@@ -143,7 +143,7 @@ pub struct AgentScoreSummary {
 }
 
 /// Read-only view onto judge score aggregates. Implemented by whichever
-/// crate owns the score storage (currently `judge`); consumed by feature
+/// crate owns the score storage (currently `judges`); consumed by feature
 /// crates that need to read scores at runtime — e.g. `agents` for
 /// bandit-strategy variant selection during subagent dispatch — without
 /// taking a hard dep on the score-storage crate.

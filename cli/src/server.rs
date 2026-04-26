@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use coulisse_core::OneShotPrompt;
 use experiments::Strategy;
-use judge::{Judge, Judges, spawn_score};
+use judges::{Judge, Judges, spawn_score};
 use limits::{RequestLimits, Tracker};
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use telemetry::TurnId;

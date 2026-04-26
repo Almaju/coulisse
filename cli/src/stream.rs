@@ -7,7 +7,7 @@ use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use coulisse_core::OneShotPrompt;
 use futures::StreamExt;
-use judge::spawn_score;
+use judges::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 

@@ -21,7 +21,7 @@ use backends::ProviderKind;
 use coulisse::server::AppState;
 use experiments::{ExperimentConfig, Strategy, Variant};
 use http_body_util::BodyExt;
-use judge::{Judge, JudgeConfig, Judges, Score};
+use judges::{Judge, JudgeConfig, Judges, Score};
 use limits::Tracker;
 use memory::{
     BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Store, UserId,

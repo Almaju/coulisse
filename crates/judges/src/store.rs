@@ -18,7 +18,7 @@ const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
 /// `mean_scores_by_agent`) and via the `ScoreLookup` trait so feature
 /// crates that need to consume scores (e.g. `agents` for bandit
 /// experiments) can depend on the trait in `coulisse-core` rather than
-/// on `judge` itself.
+/// on `judges` itself.
 pub struct Judges {
     pool: SqlitePool,
 }

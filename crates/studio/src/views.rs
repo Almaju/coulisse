@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::ToolCallKind;
 use experiments::{ExperimentConfig, Strategy};
-use judge::Score;
+use judges::Score;
 use memory::{Memory, MemoryKind, Role, StoredMessage, UserSummary};
 use telemetry::{Event, EventKind, ToolCall};
 

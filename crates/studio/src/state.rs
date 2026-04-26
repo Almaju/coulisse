@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use experiments::ExperimentConfig;
-use judge::Judges;
+use judges::Judges;
 use memory::Store;
 use telemetry::Sink as TelemetrySink;
 
@@ -9,7 +9,7 @@ use crate::auth::StudioAuth;
 
 /// Shared state for the studio UI. Held in an `Arc` so axum handlers can
 /// cheaply clone the reference. The studio reads directly from each
-/// feature's storage layer — `memory` for messages and facts, `judge`
+/// feature's storage layer — `memory` for messages and facts, `judges`
 /// for scores, `telemetry` for the per-turn event tree — exactly as the
 /// chat handler writes them. There is no second store to keep in sync.
 pub struct StudioState {

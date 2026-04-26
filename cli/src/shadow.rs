@@ -13,7 +13,7 @@ use std::sync::Arc;
 use agents::{Agents, Message as AgentMessage};
 use coulisse_core::OneShotPrompt;
 use experiments::ExperimentConfig;
-use judge::{Judge, spawn_score};
+use judges::{Judge, spawn_score};
 use memory::{MessageId, UserId};
 use telemetry::TurnId;
 use tracing::{Instrument, info_span};

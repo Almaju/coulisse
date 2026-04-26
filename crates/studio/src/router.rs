@@ -10,7 +10,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum_oidc::error::MiddlewareError;
 use axum_oidc::{EmptyAdditionalClaims, OidcAuthLayer, OidcLoginLayer};
-use judge::JudgeStoreError;
+use judges::JudgeStoreError;
 use memory::{MemoryError, UserId};
 use telemetry::{TelemetryError, TurnId};
 use time::Duration;

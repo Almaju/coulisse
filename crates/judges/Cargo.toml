@@ -1,5 +1,5 @@
 [package]
-name = "judge"
+name = "judges"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

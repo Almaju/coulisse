@@ -3,10 +3,10 @@
 //! asks its backing model to score the reply against a rubric, and persists
 //! one `Score` row per criterion.
 //!
-//! Judge owns its own SQLite table (`scores`); reads are exposed via the
+//! Judges owns its own SQLite table (`scores`); reads are exposed via the
 //! `coulisse_core::ScoreLookup` trait so feature crates that need to
 //! consume scores (`agents`, the chat handler in `cli`) don't take a
-//! hard dep on `judge`.
+//! hard dep on `judges`.
 //!
 //! The user config describes *what* to evaluate; this crate builds the judge
 //! preamble and forces a JSON response shape internally so rubrics stay free

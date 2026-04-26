@@ -12,7 +12,7 @@ use std::{fs, path::Path};
 use agents::{AgentConfig, McpServerConfig};
 use backends::{ProviderConfig, ProviderKind};
 use experiments::{ExperimentConfig, Strategy};
-use judge::JudgeConfig;
+use judges::JudgeConfig;
 use memory::MemoryConfig;
 use serde::Deserialize;
 use studio::StudioConfig;

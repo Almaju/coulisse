@@ -11,7 +11,7 @@ use coulisse::config::Config;
 use coulisse::server::{self, AppState};
 use coulisse_core::ScoreLookup;
 use experiments::Strategy;
-use judge::{Judge, JudgeConfig, Judges};
+use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
 use studio::{OidcRuntime, StudioAuth, StudioConfig, StudioCredentials, StudioState};
@@ -189,7 +189,7 @@ async fn build_studio_auth(
 
 fn build_judges(
     configs: &[JudgeConfig],
-) -> Result<HashMap<String, Arc<Judge>>, judge::JudgeBuildError> {
+) -> Result<HashMap<String, Arc<Judge>>, judges::JudgeBuildError> {
     let mut out = HashMap::with_capacity(configs.len());
     for cfg in configs {
         let judge = Judge::from_config(cfg)?;
