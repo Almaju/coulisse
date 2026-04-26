@@ -14,7 +14,12 @@ jobs:
       - id: metadata
         uses: dependabot/fetch-metadata@v2
 
-      - if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
+      # Only patch updates auto-merge. Cargo treats `0.x.y → 0.x.z` as a patch
+      # but `0.x → 0.y` (which dependabot calls "minor") as breaking, so a
+      # blanket "minor" allowance auto-merges incompatible changes for the
+      # large pre-1.0 corner of the ecosystem. Minor bumps stay open for
+      # manual review.
+      - if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
