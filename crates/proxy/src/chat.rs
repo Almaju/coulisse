@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::UserId;
-use language::{LanguageTag, LanguageTagError};
 use limits::{LimitError, RequestLimits};
 use serde::{Deserialize, Serialize};
 
+use crate::language::{LanguageTag, LanguageTagError};
 use crate::{Tool, ToolCall, ToolChoice};
 
 pub const METADATA_LANGUAGE: &str = "language";

@@ -3,9 +3,9 @@ use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use backends::CallError;
-use language::LanguageTagError;
 use limits::LimitError;
 use memory::MemoryError;
+use proxy::LanguageTagError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -25,27 +25,25 @@ use crate::stream::{StreamContext, sse_response};
 /// Shared state for the OpenAI-compatible proxy. Held in an `Arc` so axum
 /// handlers can cheaply clone the reference.
 pub struct AppState<P: Agents + OneShotPrompt> {
+    pub agents: Arc<P>,
     /// Fallback user id applied to requests that don't supply their own.
     /// `None` means such requests are rejected (multi-tenant posture).
     pub default_user_id: Option<UserId>,
     /// Optional auto-extraction configured via YAML. When `None`, the
     /// memories table is only written via explicit API calls.
     pub extractor: Option<Arc<Extractor>>,
-    /// All judges configured in YAML, keyed by name. Agents opt in by listing
-    /// judge names on themselves — the per-request handler looks up which of
-    /// these apply to the agent being called.
-    pub judges: Arc<HashMap<String, Arc<Judge>>>,
     /// Persistent score store owned by the judge crate. Reads (for
     /// bandit aggregates) and writes (from background scoring tasks)
     /// both go here.
     pub judge_store: Arc<Judges>,
+    /// All judges configured in YAML, keyed by name. Agents opt in by listing
+    /// judge names on themselves — the per-request handler looks up which of
+    /// these apply to the agent being called.
+    pub judges: Arc<HashMap<String, Arc<Judge>>>,
     pub memory: Arc<Store>,
-    pub agents: Arc<P>,
     pub tracker: Tracker,
 }
 
-/// Build the OpenAI-compatible router. The cli composes this with other
-/// routers (e.g. the studio UI) before binding a listener.
 pub fn router<P: Agents + OneShotPrompt + 'static>(state: Arc<AppState<P>>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions::<P>))
@@ -53,10 +51,8 @@ pub fn router<P: Agents + OneShotPrompt + 'static>(state: Arc<AppState<P>>) -> R
         .with_state(state)
 }
 
-/// Collect the judges configured for `agent_name`, preserving the order
-/// declared on the agent so log output is stable. Unknown judge names are
-/// skipped silently — validation at config load already rejects dangling
-/// references, so any miss here is a programmer error, not user input.
+/// Validation at config load rejects dangling references, so any miss here
+/// is a programmer error, not user input.
 pub(crate) fn judges_for_agent<P: Agents + OneShotPrompt>(
     state: &AppState<P>,
     agent_name: &str,
@@ -77,16 +73,6 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
 ) -> Result<Response, ApiError> {
     let prepared = prepare_request(&state, &request).await?;
 
-    // Resolve the addressable name (an agent or an experiment) to a
-    // concrete variant agent for this user. Sticky-by-user routing means
-    // the same user lands on the same variant across requests when
-    // configured that way. The resolved name is what the prompter actually
-    // runs, what judges score, and what telemetry records — but the
-    // client-facing `model` echoed back in the response stays as the
-    // user wrote it (so OpenAI clients see the model id they sent).
-    //
-    // For a bandit experiment the resolution requires recent mean
-    // scores; for split/shadow/passthrough the lookup is a no-op.
     let bandit_scores = match state.agents.router().bandit_query(&request.model) {
         Some((judge, criterion, since)) => state
             .judge_store
@@ -103,16 +89,11 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     let agent_name = resolved.agent.clone().into_owned();
     let experiment_name = resolved.experiment.map(str::to_owned);
 
-    // Pre-generate the assistant message id so we can reuse its UUID as the
-    // telemetry turn correlation id. One value joins the stored message to
-    // the full event tree produced while generating it.
+    // Reuse the assistant message UUID as the telemetry turn correlation id
+    // so the stored message and its event tree share one identifier.
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
 
-    // Open the root `turn` span. Child `tool_call` / `subagent` spans
-    // emitted inside the agents crate inherit `turn_id` and `user_id`
-    // through the tracing tree; the telemetry SqliteLayer reads those
-    // fields to write rows into `events` / `tool_calls` for the studio.
     let turn_span = match experiment_name.as_deref() {
         Some(experiment) => info_span!(
             "turn",
@@ -131,10 +112,8 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         ),
     };
 
-    // Shadow setup: clone the inputs the primary will consume so the
-    // background variants can run against the same context. No-op for
-    // non-shadow strategies — the helper itself early-exits when the
-    // experiment isn't shadow or sampling drops the turn.
+    // Clone inputs for shadow variants so they run against the same context
+    // the primary consumed. No-op for non-shadow strategies.
     let shadow_inputs = state
         .agents
         .router()

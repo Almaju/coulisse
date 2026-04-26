@@ -10,7 +10,6 @@ use serde::{Deserialize, Deserializer};
 pub struct LanguageTag(RawLanguageTag<String>);
 
 impl LanguageTag {
-    /// Parse a language tag, validating it against RFC 5646.
     pub fn parse(input: &str) -> Result<Self, LanguageTagError> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -20,18 +19,13 @@ impl LanguageTag {
         Ok(Self(raw))
     }
 
-    /// The tag as originally written, e.g. `"fr-FR"`.
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
-    /// A sentence suitable for appending to a system preamble, e.g.
-    /// `"Always reply in French, even when the user writes in a different language. Do not include translations in any other language."`
-    /// for `fr-FR`. Falls back to the raw tag when the primary subtag isn't
-    /// in the built-in name table; frontier models handle BCP 47 tags
-    /// directly. The instruction is phrased as a hard constraint so the
-    /// model doesn't helpfully mirror the user's language or append
-    /// parenthetical translations.
+    /// A sentence suitable for appending to a system preamble. Phrased as a
+    /// hard constraint so the model doesn't helpfully mirror the user's
+    /// language or append parenthetical translations.
     pub fn instruction(&self) -> String {
         let name = display_name(self.0.primary_language()).unwrap_or_else(|| self.as_str());
         format!(
@@ -77,9 +71,8 @@ impl std::error::Error for LanguageTagError {
     }
 }
 
-/// English display name for common primary language subtags. Kept short on
-/// purpose: unknown tags pass through verbatim, which models handle fine.
-/// Alphabetically by tag.
+/// English display name for common primary language subtags. Unknown tags
+/// pass through verbatim — frontier models handle BCP 47 directly.
 fn display_name(primary: &str) -> Option<&'static str> {
     Some(match primary.to_ascii_lowercase().as_str() {
         "ar" => "Arabic",

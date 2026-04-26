@@ -1,9 +1,0 @@
-[package]
-name = "language"
-edition.workspace = true
-license.workspace = true
-version.workspace = true
-
-[dependencies]
-oxilangtag.workspace = true
-serde.workspace = true
