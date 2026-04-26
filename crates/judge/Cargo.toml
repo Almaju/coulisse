@@ -5,7 +5,6 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-backends.workspace = true
 coulisse-core.workspace = true
 rand = "0.8"
 serde = { workspace = true, features = ["derive"] }

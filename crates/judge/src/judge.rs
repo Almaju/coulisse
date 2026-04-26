@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use backends::ProviderKind;
 use coulisse_core::{MessageId, OneShotPrompt, UserId};
 use serde::Deserialize;
 
@@ -18,14 +17,17 @@ pub struct Judge {
     pub model: String,
     pub name: String,
     pub preamble: String,
-    pub provider: ProviderKind,
+    /// Provider name as written in YAML (e.g. "openai"). Cli validates the
+    /// string against the providers map at config load; runtime errors
+    /// surface from `OneShotPrompt::one_shot` if it ever drifts.
+    pub provider: String,
     pub sampling_rate: f32,
 }
 
 impl Judge {
-    /// Validate a `JudgeConfig` and produce a ready-to-run `Judge`. All
-    /// shape/coverage checks that can fail belong at startup — the request
-    /// path should only see known-good judges.
+    /// Validate a `JudgeConfig` and produce a ready-to-run `Judge`. Provider
+    /// name is checked by cli's cross-feature config validation, so this
+    /// only handles judge-local invariants.
     pub fn from_config(config: &JudgeConfig) -> Result<Self, JudgeBuildError> {
         if config.rubrics.is_empty() {
             return Err(JudgeBuildError::NoRubrics {
@@ -38,19 +40,13 @@ impl Judge {
                 value: config.sampling_rate,
             });
         }
-        let provider = ProviderKind::parse(&config.provider).ok_or_else(|| {
-            JudgeBuildError::UnknownProvider {
-                judge: config.name.clone(),
-                provider: config.provider.clone(),
-            }
-        })?;
         let criteria: Vec<String> = config.rubrics.keys().cloned().collect();
         Ok(Self {
             preamble: build_preamble(&config.rubrics),
             criteria,
             model: config.model.clone(),
             name: config.name.clone(),
-            provider,
+            provider: config.provider.clone(),
             sampling_rate: config.sampling_rate,
         })
     }
@@ -130,12 +126,7 @@ async fn run_score(
         "User message:\n{user_message}\n\nAssistant reply:\n{assistant_message}\n\nReturn the JSON object now."
     );
     let raw_text = completer
-        .one_shot(
-            judge.provider.as_str(),
-            &judge.model,
-            &judge.preamble,
-            &user_text,
-        )
+        .one_shot(&judge.provider, &judge.model, &judge.preamble, &user_text)
         .await
         .map_err(|e| JudgeRunError::Prompt(e.to_string()))?;
     let raw = parse_scores(&raw_text).map_err(JudgeRunError::Parse)?;
@@ -225,10 +216,6 @@ pub enum JudgeBuildError {
     InvalidSamplingRate { judge: String, value: f32 },
     #[error("judge '{judge}' must declare at least one rubric")]
     NoRubrics { judge: String },
-    #[error(
-        "judge '{judge}' provider '{provider}' is not supported (anthropic, cohere, deepseek, gemini, groq, openai)"
-    )]
-    UnknownProvider { judge: String, provider: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -271,15 +258,6 @@ mod tests {
         assert!(matches!(
             Judge::from_config(&cfg),
             Err(JudgeBuildError::InvalidSamplingRate { value, .. }) if value == 1.5,
-        ));
-    }
-
-    #[test]
-    fn from_config_rejects_unknown_provider() {
-        let cfg = config(&[("a", "b")], 1.0, "imaginary");
-        assert!(matches!(
-            Judge::from_config(&cfg),
-            Err(JudgeBuildError::UnknownProvider { provider, .. }) if provider == "imaginary",
         ));
     }
 
