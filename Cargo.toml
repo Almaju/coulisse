@@ -29,7 +29,7 @@ arc-swap = "1"
 async-stream = "0.3"
 auth = { path = "crates/auth" }
 axum = "0.8"
-askama = "0.14"
+askama = "0.15"
 clap = { version = "4", features = ["derive", "env"] }
 providers = { path = "crates/providers" }
 coulisse-core = { path = "crates/core" }
