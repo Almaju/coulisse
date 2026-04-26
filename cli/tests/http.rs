@@ -17,7 +17,6 @@ use agents::{ToolCallKind, Usage};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
-use backends::ProviderKind;
 use coulisse::server::AppState;
 use experiments::{ExperimentConfig, Strategy, Variant};
 use http_body_util::BodyExt;
@@ -26,6 +25,7 @@ use limits::Tracker;
 use memory::{
     BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Store, UserId,
 };
+use providers::ProviderKind;
 use tower::ServiceExt;
 
 fn agent_with_judges(judges: Vec<String>) -> AgentConfig {

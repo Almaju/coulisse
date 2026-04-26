@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use backends::{
-    Backends, Completion, CompletionStream, Conversation, Message, ProviderKind, Role, ToolCallKind,
-};
 use coulisse_core::{OneShotError, OneShotPrompt, ScoreLookup, UserId};
 use experiments::ExperimentRouter;
+use providers::{
+    Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
+    ToolCallKind,
+};
 use rig::completion::ToolDefinition;
 use rig::tool::rmcp::McpTool;
 use rig::tool::{ToolDyn, ToolError};
@@ -33,7 +34,7 @@ pub struct RigAgents {
 
 struct AgentsInner {
     agents: Vec<AgentConfig>,
-    backends: Backends,
+    providers: Providers,
     mcp_servers: HashMap<String, McpServer>,
     /// A/B routing table. Populated from `config.experiments` at startup;
     /// resolves an addressable name (agent or experiment) to a concrete
@@ -118,7 +119,7 @@ pub struct BootConfig {
     pub agents: Vec<AgentConfig>,
     pub experiments: Vec<experiments::ExperimentConfig>,
     pub mcp: HashMap<String, McpServerConfig>,
-    pub providers: HashMap<ProviderKind, backends::ProviderConfig>,
+    pub providers: HashMap<ProviderKind, providers::ProviderConfig>,
 }
 
 impl RigAgents {
@@ -131,7 +132,7 @@ impl RigAgents {
         config: BootConfig,
         scores: Option<Arc<dyn ScoreLookup>>,
     ) -> Result<Self, AgentsError> {
-        let backends = Backends::new(config.providers).map_err(AgentsError::from)?;
+        let providers = Providers::new(config.providers).map_err(AgentsError::from)?;
 
         let mut mcp_servers = HashMap::with_capacity(config.mcp.len());
         for (name, cfg) in config.mcp {
@@ -143,7 +144,7 @@ impl RigAgents {
         Ok(Self {
             inner: Arc::new(AgentsInner {
                 agents: config.agents,
-                backends,
+                providers,
                 mcp_servers,
                 router,
                 scores,
@@ -319,7 +320,7 @@ impl AgentsInner {
         let agent = self
             .find_agent(agent_name)
             .ok_or_else(|| AgentsError::UnknownAgent(agent_name.to_string()))?;
-        let backend = self.backends.get(agent.provider).ok_or_else(|| {
+        let backend = self.providers.get(agent.provider).ok_or_else(|| {
             AgentsError::ProviderNotConfigured {
                 agent: agent.name.clone(),
                 provider: agent.provider,
@@ -349,7 +350,7 @@ impl AgentsInner {
         let agent = self
             .find_agent(agent_name)
             .ok_or_else(|| AgentsError::UnknownAgent(agent_name.to_string()))?;
-        let backend = self.backends.get(agent.provider).ok_or_else(|| {
+        let backend = self.providers.get(agent.provider).ok_or_else(|| {
             AgentsError::ProviderNotConfigured {
                 agent: agent.name.clone(),
                 provider: agent.provider,
@@ -371,7 +372,7 @@ impl AgentsInner {
         messages: Vec<Message>,
     ) -> Result<Completion, AgentsError> {
         let backend = self
-            .backends
+            .providers
             .get(provider)
             .ok_or(AgentsError::ProviderNotConfigured {
                 agent: "<internal>".into(),

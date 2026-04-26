@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use backends::ProviderKind;
+use providers::ProviderKind;
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]

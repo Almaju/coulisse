@@ -1,4 +1,4 @@
-use backends::{CallError, ClientInitError, ProviderKind};
+use providers::{CallError, ClientInitError, ProviderKind};
 use thiserror::Error;
 
 /// Runtime errors raised after config has loaded successfully. Anything
@@ -7,9 +7,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum AgentsError {
     #[error(transparent)]
-    Backend(#[from] CallError),
-    #[error(transparent)]
     ClientInit(#[from] ClientInitError),
+    #[error(transparent)]
+    Provider(#[from] CallError),
     #[error("failed to connect to MCP server '{server}': {source}")]
     McpConnect {
         server: String,
@@ -51,6 +51,6 @@ impl AgentsError {
     /// Helper for tests and corner-case sites that need to construct
     /// the empty-conversation case directly without going through Rig.
     pub fn empty_conversation() -> Self {
-        Self::Backend(CallError::EmptyConversation)
+        Self::Provider(CallError::EmptyConversation)
     }
 }

@@ -1,10 +1,10 @@
 //! Provider-agnostic conversation dispatch.
 //!
 //! `Conversation` packs a turn's messages into the shape rig wants
-//! (history + final prompt + preamble). `Backend::send` and
-//! `Backend::stream` then dispatch to the configured provider's Rig
+//! (history + final prompt + preamble). `Provider::send` and
+//! `Provider::stream` then dispatch to the configured provider's Rig
 //! client without exposing the variant set to callers — this is the
-//! whole reason the `Backend` enum exists.
+//! whole reason the `Provider` enum exists.
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -18,7 +18,7 @@ use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingPro
 use rig::tool::ToolDyn;
 use thiserror::Error;
 
-use crate::Backend;
+use crate::Provider;
 
 /// Hard cap on how many tool-calling rounds rig will run within a single
 /// completion. Eight rounds is enough for realistic multi-step tool use
@@ -107,8 +107,8 @@ pub enum CallError {
 }
 
 /// History + preamble + final prompt, ready to hand to a Rig agent.
-/// Build with `from_messages`, then dispatch via `Backend::send` or
-/// `Backend::stream`.
+/// Build with `from_messages`, then dispatch via `Provider::send` or
+/// `Provider::stream`.
 pub struct Conversation {
     history: Vec<RigMessage>,
     preamble: String,
@@ -147,10 +147,10 @@ impl Conversation {
     }
 }
 
-impl Backend {
+impl Provider {
     /// Run the conversation synchronously and return the final reply.
     /// Dispatches to the matching Rig client internally — callers never
-    /// need to match on `Backend` variants.
+    /// need to match on `Provider` variants.
     pub async fn send(
         &self,
         conversation: Conversation,
@@ -158,12 +158,12 @@ impl Backend {
         tools: Vec<Box<dyn ToolDyn>>,
     ) -> Result<Completion, CallError> {
         match self {
-            Backend::Anthropic(c) => send_with(c, conversation, model, tools).await,
-            Backend::Cohere(c) => send_with(c, conversation, model, tools).await,
-            Backend::Deepseek(c) => send_with(c, conversation, model, tools).await,
-            Backend::Gemini(c) => send_with(c, conversation, model, tools).await,
-            Backend::Groq(c) => send_with(c, conversation, model, tools).await,
-            Backend::Openai(c) => send_with(c, conversation, model, tools).await,
+            Provider::Anthropic(c) => send_with(c, conversation, model, tools).await,
+            Provider::Cohere(c) => send_with(c, conversation, model, tools).await,
+            Provider::Deepseek(c) => send_with(c, conversation, model, tools).await,
+            Provider::Gemini(c) => send_with(c, conversation, model, tools).await,
+            Provider::Groq(c) => send_with(c, conversation, model, tools).await,
+            Provider::Openai(c) => send_with(c, conversation, model, tools).await,
         }
     }
 
@@ -179,16 +179,16 @@ impl Backend {
         subagent_names: Arc<HashSet<String>>,
     ) -> Result<CompletionStream, CallError> {
         match self {
-            Backend::Anthropic(c) => {
+            Provider::Anthropic(c) => {
                 stream_with(c, conversation, model, tools, subagent_names).await
             }
-            Backend::Cohere(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Backend::Deepseek(c) => {
+            Provider::Cohere(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Deepseek(c) => {
                 stream_with(c, conversation, model, tools, subagent_names).await
             }
-            Backend::Gemini(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Backend::Groq(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Backend::Openai(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Gemini(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Groq(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Openai(c) => stream_with(c, conversation, model, tools, subagent_names).await,
         }
     }
 }

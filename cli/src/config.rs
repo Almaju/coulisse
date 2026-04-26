@@ -10,10 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::{fs, path::Path};
 
 use agents::{AgentConfig, McpServerConfig};
-use backends::{ProviderConfig, ProviderKind};
 use experiments::{ExperimentConfig, Strategy};
 use judges::JudgeConfig;
 use memory::MemoryConfig;
+use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
 use studio::StudioConfig;
 use telemetry::Config as TelemetryConfig;

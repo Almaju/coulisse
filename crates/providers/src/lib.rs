@@ -1,8 +1,8 @@
 //! Per-provider LLM client wrappers and the dispatch that hides them.
 //!
-//! `backends` is the only crate that depends on Rig. It owns the
+//! `providers` is the only crate that depends on Rig. It owns the
 //! `ProviderKind` enum (the YAML name of a provider), `ProviderConfig`
-//! (its API key), the `Backend` enum that wraps one Rig client per
+//! (its API key), the `Provider` enum that wraps one Rig client per
 //! provider, and the `send`/`stream` methods that match on the variant
 //! internally so callers never have to. Conversation packaging
 //! (`Conversation::from_messages`) and the streaming event/usage types
@@ -71,7 +71,7 @@ pub struct ProviderConfig {
 /// (currently `agents`) can match and dispatch to provider-specific
 /// completion paths — the multi-turn loop is generic over
 /// `CompletionClient` and the variants give it a concrete client.
-pub enum Backend {
+pub enum Provider {
     Anthropic(anthropic::Client),
     Cohere(cohere::Client),
     Deepseek(deepseek::Client),
@@ -80,15 +80,15 @@ pub enum Backend {
     Openai(openai::Client),
 }
 
-impl Backend {
+impl Provider {
     pub fn new(kind: ProviderKind, api_key: &str) -> Result<Self, ClientInitError> {
         let result = match kind {
-            ProviderKind::Anthropic => anthropic::Client::new(api_key).map(Backend::Anthropic),
-            ProviderKind::Cohere => cohere::Client::new(api_key).map(Backend::Cohere),
-            ProviderKind::Deepseek => deepseek::Client::new(api_key).map(Backend::Deepseek),
-            ProviderKind::Gemini => gemini::Client::new(api_key).map(Backend::Gemini),
-            ProviderKind::Groq => groq::Client::new(api_key).map(Backend::Groq),
-            ProviderKind::Openai => openai::Client::new(api_key).map(Backend::Openai),
+            ProviderKind::Anthropic => anthropic::Client::new(api_key).map(Provider::Anthropic),
+            ProviderKind::Cohere => cohere::Client::new(api_key).map(Provider::Cohere),
+            ProviderKind::Deepseek => deepseek::Client::new(api_key).map(Provider::Deepseek),
+            ProviderKind::Gemini => gemini::Client::new(api_key).map(Provider::Gemini),
+            ProviderKind::Groq => groq::Client::new(api_key).map(Provider::Groq),
+            ProviderKind::Openai => openai::Client::new(api_key).map(Provider::Openai),
         };
         result.map_err(|source| ClientInitError {
             provider: kind,
@@ -97,23 +97,23 @@ impl Backend {
     }
 }
 
-/// Lookup table over the configured providers. Holds one `Backend` per
+/// Lookup table over the configured providers. Holds one `Provider` per
 /// `ProviderKind` declared in YAML. `agents` consults this when running
 /// an agent's turn.
-pub struct Backends {
-    by_kind: HashMap<ProviderKind, Backend>,
+pub struct Providers {
+    by_kind: HashMap<ProviderKind, Provider>,
 }
 
-impl Backends {
+impl Providers {
     pub fn new(providers: HashMap<ProviderKind, ProviderConfig>) -> Result<Self, ClientInitError> {
         let mut by_kind = HashMap::with_capacity(providers.len());
         for (kind, provider) in providers {
-            by_kind.insert(kind, Backend::new(kind, &provider.api_key)?);
+            by_kind.insert(kind, Provider::new(kind, &provider.api_key)?);
         }
         Ok(Self { by_kind })
     }
 
-    pub fn get(&self, kind: ProviderKind) -> Option<&Backend> {
+    pub fn get(&self, kind: ProviderKind) -> Option<&Provider> {
         self.by_kind.get(&kind)
     }
 

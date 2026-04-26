@@ -6,10 +6,10 @@ version.workspace = true
 
 [dependencies]
 async-stream.workspace = true
-backends.workspace = true
 coulisse-core.workspace = true
 experiments.workspace = true
 futures.workspace = true
+providers.workspace = true
 rig-core.workspace = true
 rmcp.workspace = true
 serde.workspace = true

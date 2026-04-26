@@ -6,9 +6,9 @@ use std::sync::Mutex;
 
 use async_stream::stream;
 
-use backends::ProviderKind;
 use coulisse_core::{OneShotError, OneShotPrompt, UserId};
 use experiments::{ExperimentConfig, ExperimentRouter};
+use providers::ProviderKind;
 
 use crate::{
     AgentConfig, Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent,
@@ -151,7 +151,7 @@ impl ScriptedAgents {
             .push(agent_name.to_string());
         let mut replies = self.replies.lock().unwrap();
         match replies.len() {
-            0 => Err(AgentsError::Backend(backends::CallError::Streaming(
+            0 => Err(AgentsError::Provider(providers::CallError::Streaming(
                 "scripted prompter has no replies left".into(),
             ))),
             1 => Ok(replies[0].clone()),
@@ -250,7 +250,7 @@ impl Agents for ScriptedAgents {
             let mut replies = self.replies.lock().unwrap();
             match replies.len() {
                 0 => {
-                    return Err(AgentsError::Backend(backends::CallError::Streaming(
+                    return Err(AgentsError::Provider(providers::CallError::Streaming(
                         "scripted prompter has no replies left".into(),
                     )));
                 }

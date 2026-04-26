@@ -91,7 +91,7 @@ pub enum Role {
 /// studio UI where subagent calls carry different semantics (nested
 /// conversation, own token usage) from MCP calls (pure function
 /// invocation). Lives in core because it's emitted on the streaming
-/// path (`backends`) and persisted on the observability path
+/// path (`providers`) and persisted on the observability path
 /// (`telemetry`).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
