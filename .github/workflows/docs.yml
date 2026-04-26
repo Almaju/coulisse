@@ -32,7 +32,7 @@ jobs:
             | tar -xz --directory="$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - name: Build book
         run: mdbook build docs
