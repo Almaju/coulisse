@@ -9,10 +9,11 @@ use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
 use coulisse::admin::shell as admin_shell;
+use coulisse::banner::Banner;
 use coulisse::config::Config;
 use coulisse::server::{self, AppState};
 use coulisse_core::{AgentResolver, ScoreLookup};
-use experiments::{ExperimentResolver, ExperimentRouter, Strategy};
+use experiments::{ExperimentResolver, ExperimentRouter};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::McpServers;
@@ -87,65 +88,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
-    println!("coulisse listening on http://{addr}");
-    println!("  memory: {memory_summary}");
-    println!("  proxy auth: {}", auth.proxy_summary());
-    println!("  admin auth: {}", auth.admin_summary());
-    if let Some(cfg) = &extractor_config {
-        println!(
-            "  extractor: {} / {} (dedup_threshold={}, max_facts_per_turn={})",
-            cfg.provider, cfg.model, cfg.dedup_threshold, cfg.max_facts_per_turn,
-        );
-    } else {
-        println!("  extractor: disabled (memory only grows via explicit API calls)");
+    Banner {
+        addr,
+        agents: proxy_state.agents.agents(),
+        auth: &auth,
+        experiments: &experiment_configs,
+        extractor: extractor_config.as_ref(),
+        judges: &judge_configs,
+        memory_summary: &memory_summary,
     }
-    if judge_configs.is_empty() {
-        println!("  judges: none configured");
-    } else {
-        for cfg in &judge_configs {
-            let criteria: Vec<&str> = cfg.rubrics.keys().map(String::as_str).collect();
-            println!(
-                "  judge: {} ({} / {}, sampling_rate={}, criteria=[{}])",
-                cfg.name,
-                cfg.provider,
-                cfg.model,
-                cfg.sampling_rate,
-                criteria.join(", "),
-            );
-        }
-    }
-    for exp in &experiment_configs {
-        let variants: Vec<String> = exp
-            .variants
-            .iter()
-            .map(|v| format!("{}@{}", v.agent, v.weight))
-            .collect();
-        println!(
-            "  experiment: {} (strategy={}, sticky_by_user={}, variants=[{}])",
-            exp.name,
-            match exp.strategy {
-                Strategy::Bandit => "bandit",
-                Strategy::Shadow => "shadow",
-                Strategy::Split => "split",
-            },
-            exp.sticky_by_user,
-            variants.join(", "),
-        );
-    }
-    for agent in proxy_state.agents.agents() {
-        let judges = if agent.judges.is_empty() {
-            String::new()
-        } else {
-            format!(", judges=[{}]", agent.judges.join(", "))
-        };
-        println!(
-            "  agent: {} (provider={}, model={}{})",
-            agent.name,
-            agent.provider.as_str(),
-            agent.model,
-            judges,
-        );
-    }
+    .print();
 
     // The admin surface is composed by merging each feature crate's
     // admin router. Cross-feature views (e.g. tool calls inside a

@@ -4,6 +4,7 @@
 //! → call → score, with off-path work spawned as background tasks.
 
 pub mod admin;
+pub mod banner;
 pub mod config;
 pub mod error;
 pub mod server;
