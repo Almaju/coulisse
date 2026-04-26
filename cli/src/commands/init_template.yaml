@@ -1,0 +1,31 @@
+# Coulisse — minimal starter config.
+#
+# This template gets the server running with a single OpenAI agent and
+# local sqlite memory. Drop in your API key and run `coulisse start`.
+# Run `coulisse init --from-example` instead for the full annotated tour
+# (every section, every option) — or read docs/configuration/.
+
+# Fallback user identifier for requests without `safety_identifier`.
+# Useful for local / single-user setups; omit for multi-tenant.
+default_user_id: main
+
+# Memory: sqlite for conversation history + offline `hash` embedder.
+# Swap the embedder to `openai` (text-embedding-3-small) for real
+# semantic recall — see docs/configuration/memory.md.
+memory:
+  backend:
+    kind: sqlite
+    path: ./.coulisse/memory.db
+  embedder:
+    provider: hash
+    dims: 256
+
+providers:
+  openai:
+    api_key: sk-replace-me
+
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4o-mini
+    preamble: You are a helpful assistant.

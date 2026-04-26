@@ -18,33 +18,46 @@ use askama::Template;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
-use coulisse_core::UserId;
+use coulisse_core::{
+    ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat, UserId,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{JudgeConfig, JudgeStoreError, Judges};
-use templates::{JudgeDetailPage, JudgesPage, ScoresFragment, ScoresMeansFragment};
+use crate::{JudgeConfig, JudgeList, JudgeStoreError, Judges};
+use templates::{JudgeDetailPage, JudgeEditPage, JudgesPage, ScoresFragment, ScoresMeansFragment};
 use views::{JudgeDetailRow, JudgeListRow, ScoreRow, ScoreRowMean, ScoresPanel, build_matrix};
 
 #[derive(Clone)]
 struct JudgesAdminState {
-    configs: Arc<Vec<JudgeConfig>>,
+    configs: JudgeList,
+    persister: Arc<dyn ConfigPersister>,
     store: Arc<Judges>,
 }
 
 /// Build the admin router for judges. Cli merges this into the combined
 /// `/admin` router.
-pub fn router(judges: Arc<Judges>, configs: Arc<Vec<JudgeConfig>>) -> Router {
+pub fn router(
+    judges: Arc<Judges>,
+    configs: JudgeList,
+    persister: Arc<dyn ConfigPersister>,
+) -> Router {
     Router::new()
         .route("/agents/{name}/scores", get(agent_scores))
-        .route("/judges", get(judges_page))
-        .route("/judges/{name}", get(judge_detail))
+        .route("/judges", get(judges_page).post(create_judge))
+        .route("/judges/new", get(new_form))
+        .route(
+            "/judges/{name}",
+            get(judge_detail).put(update_judge).delete(remove_judge),
+        )
+        .route("/judges/{name}/edit", get(edit_form))
         .route("/scores/means", get(scores_means))
         .route("/users/{user_id}/scores", get(user_scores))
         .with_state(JudgesAdminState {
             configs,
+            persister,
             store: judges,
         })
 }
@@ -61,28 +74,42 @@ async fn agent_scores(
 async fn judge_detail(
     State(state): State<JudgesAdminState>,
     Path(name): Path<String>,
-) -> Result<Html<String>, AdminError> {
-    let config = state
-        .configs
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let snapshot = state.configs.load();
+    let config = snapshot
         .iter()
         .find(|c| c.name == name)
         .ok_or(AdminError::NotFound)?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(config.clone()).into_response());
+    }
     let since = now_secs().saturating_sub(7 * 86_400);
     let matrix_cells = state.store.agent_criterion_matrix(&name, since).await?;
     let recent = state.store.scores_for_judge(&name, 20).await?;
     let recent_scores: Vec<ScoreRow> = recent.into_iter().map(ScoreRow::from_score).collect();
-    render(JudgeDetailPage {
-        judge: JudgeDetailRow::from_config(config),
-        matrix: build_matrix(matrix_cells),
-        recent_scores,
-    })
+    Ok(Html(
+        JudgeDetailPage {
+            judge: JudgeDetailRow::from_config(config),
+            matrix: build_matrix(matrix_cells),
+            recent_scores,
+        }
+        .render()?,
+    )
+    .into_response())
 }
 
-async fn judges_page(State(state): State<JudgesAdminState>) -> Result<Html<String>, AdminError> {
+async fn judges_page(
+    State(state): State<JudgesAdminState>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let snapshot = state.configs.load();
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(&*snapshot.clone()).into_response());
+    }
     let since = now_secs().saturating_sub(7 * 86_400);
     let volumes = state.store.score_volume(since).await?;
-    let judges: Vec<JudgeListRow> = state
-        .configs
+    let judges: Vec<JudgeListRow> = snapshot
         .iter()
         .map(|c| {
             let score_count_7d = volumes
@@ -100,7 +127,131 @@ async fn judges_page(State(state): State<JudgesAdminState>) -> Result<Html<Strin
             }
         })
         .collect();
-    render(JudgesPage { judges })
+    Ok(Html(JudgesPage { judges }.render()?).into_response())
+}
+
+async fn create_judge(
+    State(state): State<JudgesAdminState>,
+    fmt: ResponseFormat,
+    EitherFormOrJson(judge): EitherFormOrJson<JudgeConfig>,
+) -> Result<Response, AdminError> {
+    {
+        let snapshot = state.configs.load();
+        if snapshot.iter().any(|j| j.name == judge.name) {
+            return Err(AdminError::Conflict(format!(
+                "judge '{}' already exists",
+                judge.name
+            )));
+        }
+    }
+    let mut updated: Vec<JudgeConfig> = state.configs.load().as_ref().clone();
+    updated.push(judge.clone());
+    persist(&state, updated).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok((StatusCode::CREATED, Json(judge)).into_response());
+    }
+    redirect(&format!("/admin/judges/{}", judge.name))
+}
+
+async fn update_judge(
+    State(state): State<JudgesAdminState>,
+    Path(name): Path<String>,
+    fmt: ResponseFormat,
+    EitherFormOrJson(judge): EitherFormOrJson<JudgeConfig>,
+) -> Result<Response, AdminError> {
+    if judge.name != name {
+        return Err(AdminError::BadRequest(format!(
+            "URL judge name '{name}' does not match body name '{}'",
+            judge.name
+        )));
+    }
+    let mut updated: Vec<JudgeConfig> = state.configs.load().as_ref().clone();
+    let slot = updated
+        .iter_mut()
+        .find(|j| j.name == name)
+        .ok_or(AdminError::NotFound)?;
+    *slot = judge.clone();
+    persist(&state, updated).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(judge).into_response());
+    }
+    redirect(&format!("/admin/judges/{}", judge.name))
+}
+
+async fn remove_judge(
+    State(state): State<JudgesAdminState>,
+    Path(name): Path<String>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let mut updated: Vec<JudgeConfig> = state.configs.load().as_ref().clone();
+    let before = updated.len();
+    updated.retain(|j| j.name != name);
+    if updated.len() == before {
+        return Err(AdminError::NotFound);
+    }
+    persist(&state, updated).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    redirect("/admin/judges")
+}
+
+async fn edit_form(
+    State(state): State<JudgesAdminState>,
+    Path(name): Path<String>,
+) -> Result<Response, AdminError> {
+    let snapshot = state.configs.load();
+    let config = snapshot
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or(AdminError::NotFound)?;
+    let yaml =
+        serde_yaml::to_string(config).map_err(|err| AdminError::Internal(err.to_string()))?;
+    Ok(Html(
+        JudgeEditPage {
+            action: format!("/admin/judges/{name}"),
+            is_new: false,
+            method: "put",
+            name,
+            yaml,
+        }
+        .render()?,
+    )
+    .into_response())
+}
+
+async fn new_form() -> Result<Response, AdminError> {
+    let yaml = "name: \nprovider: openai\nmodel: \nsampling_rate: 1.0\nrubrics: {}\n".to_string();
+    Ok(Html(
+        JudgeEditPage {
+            action: "/admin/judges".to_string(),
+            is_new: true,
+            method: "post",
+            name: String::new(),
+            yaml,
+        }
+        .render()?,
+    )
+    .into_response())
+}
+
+async fn persist(state: &JudgesAdminState, judges: Vec<JudgeConfig>) -> Result<(), AdminError> {
+    let value =
+        serde_yaml::to_value(&judges).map_err(|err| AdminError::Internal(err.to_string()))?;
+    state
+        .persister
+        .write_section("judges", value)
+        .await
+        .map_err(AdminError::from)
+}
+
+fn redirect(to: &str) -> Result<Response, AdminError> {
+    let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
+    resp.headers_mut().insert(
+        "hx-redirect",
+        axum::http::HeaderValue::from_str(to).expect("valid header value"),
+    );
+    Ok(resp)
 }
 
 async fn user_scores(
@@ -162,6 +313,10 @@ fn now_secs() -> u64 {
 
 #[derive(Debug)]
 enum AdminError {
+    BadRequest(String),
+    Conflict(String),
+    Internal(String),
+    InvalidConfig(String),
     InvalidUserId,
     Judge(JudgeStoreError),
     NotFound,
@@ -180,9 +335,22 @@ impl From<askama::Error> for AdminError {
     }
 }
 
+impl From<ConfigPersistError> for AdminError {
+    fn from(err: ConfigPersistError) -> Self {
+        match err {
+            ConfigPersistError::Invalid(m) | ConfigPersistError::Parse(m) => Self::InvalidConfig(m),
+            ConfigPersistError::Io(m) => Self::Internal(m),
+        }
+    }
+}
+
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            Self::Conflict(m) => (StatusCode::CONFLICT, m),
+            Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            Self::InvalidConfig(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
             Self::InvalidUserId => (
                 StatusCode::BAD_REQUEST,
                 "user_id must be a valid UUID".to_string(),

@@ -7,3 +7,13 @@ use super::views::ExperimentRow;
 pub struct ExperimentsPage {
     pub experiments: Vec<ExperimentRow>,
 }
+
+#[derive(Template)]
+#[template(path = "experiment_edit.html")]
+pub struct ExperimentEditPage {
+    pub action: String,
+    pub is_new: bool,
+    pub method: &'static str,
+    pub name: String,
+    pub yaml: String,
+}

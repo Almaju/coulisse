@@ -12,10 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 agents.workspace = true
+arc-swap.workspace = true
 askama.workspace = true
 async-stream.workspace = true
 auth.workspace = true
 axum.workspace = true
+clap.workspace = true
 coulisse-core.workspace = true
 experiments.workspace = true
 futures.workspace = true
@@ -23,14 +25,18 @@ judges.workspace = true
 limits.workspace = true
 mcp.workspace = true
 memory.workspace = true
+nix.workspace = true
+notify.workspace = true
 providers.workspace = true
 proxy.workspace = true
+self_update.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
+smoke.workspace = true
 telemetry.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
 tracing.workspace = true
 uuid.workspace = true
 

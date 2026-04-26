@@ -1,6 +1,6 @@
 # Studio UI
 
-Coulisse ships a read-only studio UI that lets you browse the conversations and memories the server has seen. It's served by the same binary, under `/admin/`.
+Coulisse ships a studio UI for browsing the conversations and memories the server has seen, and for editing the live YAML config. It's served by the same binary, under `/admin/`.
 
 Point a browser at `http://localhost:8421/admin/` while the server is running.
 
@@ -13,8 +13,39 @@ Point a browser at `http://localhost:8421/admin/` while the server is running.
 - See the long-term memories recalled for that user, tagged as `fact` or `preference`.
 - See the LLM-as-judge scores for that user, including mean score per `(judge, criterion)` and the most recent individual scores with reasoning.
 - Browse configured experiments at `/admin/experiments` — strategy, sticky-by-user flag, per-variant weights, and bandit-strategy mean scores live-loaded from judges.
+- Run **smoke tests** at `/admin/smoke` — a synthetic-user persona drives a real conversation against any agent or experiment, scores fan out through the same judge pipeline, and the run viewer shows the full transcript with persona/assistant turns side by side. Useful for iterating on agent prompts without writing test scaffolding.
+- **Edit agents** at `/admin/agents/{name}/edit` — the form is a YAML textarea over the same `AgentConfig` shape used in `coulisse.yaml`. Save rewrites `coulisse.yaml` atomically, runs the validator, and hot-reloads the in-memory state. Add new agents at `/admin/agents/new`; delete from the edit page.
 
-That's it — this is a **read-only** tool. There's no way to send messages, edit memory, or mutate server state from the UI.
+## Editing config: admin UI = API
+
+Every admin route is content-negotiated. The same URL serves an HTML page in a browser, an HTML fragment to htmx, and JSON to a script — whichever the client's `Accept`/`HX-Request` headers ask for. The UI is a thin representation of the API; nothing the UI can do is unavailable to a `curl` call.
+
+```bash
+# List agents as JSON
+curl -H 'Accept: application/json' http://localhost:8421/admin/agents
+
+# Update an agent (any of: JSON body, YAML body, or form encoding work)
+curl -X PUT http://localhost:8421/admin/agents/bob \
+     -H 'Content-Type: application/yaml' \
+     --data-binary $'name: bob\nprovider: openai\nmodel: gpt-4o\n'
+
+# Replace the whole config file in one shot
+curl -X PUT http://localhost:8421/admin/config \
+     -H 'Content-Type: application/yaml' \
+     --data-binary @coulisse.yaml
+```
+
+Any successful write ends in the same place: a validated YAML file, atomically replaced on disk, with the new state hot-reloaded into the running process. **`coulisse.yaml` is the source of truth** — admin saves are not stored separately, they edit the file you committed to git.
+
+## File watcher: hand-edits hot-reload
+
+Coulisse watches `coulisse.yaml` while it runs. Edit it in your editor, save, and the live config updates without a restart. The validator runs before any reload — a broken edit is logged and the previous in-memory config keeps serving traffic until you fix the file.
+
+What hot-reloads today: the **agents** list (runtime + admin display), the **judges** and **experiments** lists (admin display only — the routing tables that consume them are still rebuilt on restart). What still requires restart: providers, MCP servers, memory backend, telemetry pipeline, auth.
+
+## YAML formatting
+
+Admin saves go through `serde_yaml` round-trip serialization, so comments, blank lines, and key ordering are not preserved. If you want commented config, hand-edit the file — the watcher picks the change up the same way an admin save would. Comment-preserving writes are tracked as a follow-up.
 
 ## Authentication
 

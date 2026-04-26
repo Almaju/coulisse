@@ -1,0 +1,48 @@
+<div class="space-y-6">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">MCP servers</h1>
+      <p class="mt-1 text-sm text-slate-400">Tool servers configured in <code class="font-mono text-xs">coulisse.yaml</code>. Connections are opened at boot — restart required to attach a new server.</p>
+    </div>
+    <a
+      href="/admin/mcp/new"
+      class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
+    >New MCP server</a>
+  </div>
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">{{ servers.len() }} server{% if servers.len() != 1 %}s{% endif %}</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if servers.is_empty() %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+          No MCP servers configured.
+        </div>
+      {% else %}
+      <table class="w-full text-left">
+        <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+          <tr>
+            <th class="px-4 py-2 font-medium">Name</th>
+            <th class="px-4 py-2 font-medium">Transport</th>
+            <th class="px-4 py-2 text-right font-medium"></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for s in servers %}
+          <tr class="border-t border-slate-800">
+            <td class="px-4 py-3 font-mono text-sm text-slate-200">{{ s.name }}</td>
+            <td class="px-4 py-3 font-mono text-xs text-slate-400">{{ s.summary }}</td>
+            <td class="px-4 py-3 text-right">
+              <a
+                href="/admin/mcp/{{ s.name }}/edit"
+                class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+              >Edit</a>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+</div>

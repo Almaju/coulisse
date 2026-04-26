@@ -5,7 +5,9 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 askama.workspace = true
 axum.workspace = true
 coulisse-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_yaml.workspace = true

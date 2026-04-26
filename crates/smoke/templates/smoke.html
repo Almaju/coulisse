@@ -1,0 +1,55 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Smoke tests</h1>
+    <p class="mt-1 text-sm text-slate-400">Synthetic-user personas declared in <code class="font-mono text-xs">coulisse.yaml</code>. Each run drives the target agent to completion and lets the configured judges score every assistant turn.</p>
+  </div>
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">{{ tests.len() }} test{% if tests.len() != 1 %}s{% endif %}</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if tests.is_empty() %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+          No smoke tests configured. Add a <code class="font-mono text-xs">smoke_tests:</code> entry to your config to start running synthetic conversations.
+        </div>
+      {% else %}
+      <div class="overflow-hidden rounded-md border border-slate-800">
+        <table class="w-full text-left">
+          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th class="px-4 py-2 font-medium">Name</th>
+              <th class="px-4 py-2 font-medium">Target</th>
+              <th class="px-4 py-2 font-medium">Persona</th>
+              <th class="px-4 py-2 text-right font-medium">Reps × Turns</th>
+              <th class="px-4 py-2 font-medium">Last run</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for t in tests %}
+            <tr
+              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
+              hx-get="/admin/smoke/{{ t.name }}"
+              hx-push-url="true"
+            >
+              <td class="px-4 py-3 font-mono text-sm text-slate-200">{{ t.name }}</td>
+              <td class="px-4 py-3 font-mono text-sm text-slate-300">{{ t.target }}</td>
+              <td class="px-4 py-3 text-sm text-slate-300">{{ t.persona_model }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ t.repetitions }} × {{ t.max_turns }}</td>
+              <td class="px-4 py-3 text-sm text-slate-300">
+                {% match t.last_run %}
+                  {% when Some with (run) %}
+                    <span class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs {{ run.status_class }}">{{ run.status }}</span>
+                    <span class="ml-2 text-xs text-slate-500">{{ run.started_at_label }}</span>
+                  {% when None %}
+                    <span class="text-xs italic text-slate-500">never</span>
+                {% endmatch %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>

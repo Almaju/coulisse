@@ -8,6 +8,8 @@ version.workspace = true
 name = "coulisse_core"
 
 [dependencies]
+axum.workspace = true
 serde.workspace = true
+serde_yaml.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

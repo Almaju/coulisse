@@ -13,7 +13,7 @@ use judges::{Judge, Judges, spawn_score};
 use limits::{RequestLimits, Tracker};
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use telemetry::TurnId;
-use tracing::{Instrument, info_span};
+use tracing::{Instrument, Span, info_span};
 
 use proxy::ChatCompletionRequest;
 use proxy::Message as ChatMessage;
@@ -61,7 +61,8 @@ pub(crate) fn judges_for_agent<P: Agents + OneShotPrompt>(
     state: &AppState<P>,
     agent_name: &str,
 ) -> Vec<Arc<Judge>> {
-    let Some(agent) = state.agents.agents().iter().find(|a| a.name == agent_name) else {
+    let snapshot = state.agents.agents();
+    let Some(agent) = snapshot.iter().find(|a| a.name == agent_name) else {
         return Vec::new();
     };
     agent
@@ -69,6 +70,37 @@ pub(crate) fn judges_for_agent<P: Agents + OneShotPrompt>(
         .iter()
         .filter_map(|name| state.judges.get(name).cloned())
         .collect()
+}
+
+/// Emit an `llm_call` tracing span carrying the provider, model, token
+/// usage, and computed USD cost for the turn. The span is opened and
+/// immediately closed — there's no body to instrument, just a record for
+/// the telemetry layer's `on_close` hook to mirror into the `events`
+/// table. Pricing misses (model not in the vendored LiteLLM table) leave
+/// `cost_usd` empty rather than failing the request.
+pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(
+    state: &AppState<P>,
+    agent_name: &str,
+    usage: providers::Usage,
+    turn_span: &Span,
+) {
+    let snapshot = state.agents.agents();
+    let Some(agent) = snapshot.iter().find(|a| a.name == agent_name) else {
+        return;
+    };
+    let cost = providers::cost_for(agent.provider, &agent.model, &usage);
+    let usage_json = serde_json::to_string(&usage).unwrap_or_default();
+    let cost_str = cost.map(|c| format!("{:.6}", c.usd)).unwrap_or_default();
+    turn_span.in_scope(|| {
+        let _span = info_span!(
+            "llm_call",
+            cost_usd = %cost_str,
+            model = %agent.model,
+            provider = %agent.provider,
+            usage = %usage_json,
+        )
+        .entered();
+    });
 }
 
 async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
@@ -157,7 +189,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     let completion = state
         .agents
         .complete(&agent_name, prepared.messages, prepared.user_id)
-        .instrument(turn_span)
+        .instrument(turn_span.clone())
         .await?;
     if let Some((experiment, messages)) = shadow_inputs {
         spawn_shadow_runs(
@@ -176,6 +208,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     {
         eprintln!("rate limit record failed: {err}");
     }
+    record_llm_call(&state, &agent_name, completion.usage, &turn_span);
 
     let um = state.memory.for_user(prepared.user_id);
     um.append_message(MemRole::User, prepared.user_message.clone())

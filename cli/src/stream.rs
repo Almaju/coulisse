@@ -15,7 +15,7 @@ use proxy::{
     ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
 };
 
-use crate::server::{AppState, judges_for_agent};
+use crate::server::{AppState, judges_for_agent, record_llm_call};
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
 /// the rest of the per-request state (user id, tracker key, user message)
@@ -159,6 +159,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
         let state = Arc::clone(&self.state);
         let tracker_key = std::mem::take(&mut self.tracker_key);
         let turn_span = self.turn_span.clone();
+        let llm_call_span = self.turn_span.clone();
         let user_id = self.user_id;
         let user_message = std::mem::take(&mut self.user_message);
         tokio::spawn(
@@ -166,6 +167,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                 if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
+                record_llm_call(&state, &agent_name, usage, &llm_call_span);
                 let um = state.memory.for_user(user_id);
                 if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
                     warn_memory_append_failed("user", err);

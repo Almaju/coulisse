@@ -11,7 +11,7 @@ use providers::{
 use rig::tool::ToolDyn;
 
 use crate::AgentsError;
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, AgentList};
 use crate::tools::{SubagentTool, TelemetryTool};
 
 /// How many nested subagent calls are allowed before the hop limit kicks in.
@@ -28,8 +28,14 @@ pub struct RigAgents {
 /// back into the runtime) can clone the handle cheaply. `pub(crate)` so
 /// the tools module can read `resolver` and call `complete_with_depth`
 /// on the subagent re-entry path.
+///
+/// The `agents` field is hot-reloadable via `ArcSwap`: the cli's
+/// `ConfigStore` rewrites it whenever the YAML changes (admin save or
+/// hand-edit). Reads load a snapshot per request; in-flight requests
+/// keep their original snapshot so a config change can't pull the rug
+/// out from under a running completion.
 pub(crate) struct AgentsInner {
-    agents: Vec<AgentConfig>,
+    agents: AgentList,
     mcp: Arc<McpServers>,
     providers: Providers,
     /// Maps subagent names to concrete agent names at call time. The
@@ -54,7 +60,10 @@ type BuiltTools = (Vec<Box<dyn ToolDyn>>, Arc<HashSet<String>>);
 /// and `turn_id`, and child `tool_call` spans nest automatically. The
 /// telemetry crate's SqliteLayer mirrors those spans to the studio.
 pub trait Agents: Send + Sync {
-    fn agents(&self) -> &[AgentConfig];
+    /// Snapshot of the currently configured agents. Cheap clone of an
+    /// `Arc`; safe to hold for the duration of a request even if a
+    /// config reload swaps the underlying list mid-flight.
+    fn agents(&self) -> Arc<Vec<AgentConfig>>;
 
     /// Run the named agent and return its final reply. The agent name is
     /// the already-resolved variant; callers (cli's chat handler) do
@@ -94,7 +103,10 @@ pub trait Agents: Send + Sync {
 /// can hand each YAML slice to the right field without a long argument
 /// list, and so adding a new optional input doesn't break every call site.
 pub struct BootConfig {
-    pub agents: Vec<AgentConfig>,
+    /// Hot-reloadable agent list. Cli passes the same `AgentList` to
+    /// the admin router and to the reload-on-file-change pipeline so
+    /// every reader sees the same atomic swap.
+    pub agents: AgentList,
     pub mcp: Arc<McpServers>,
     pub providers: HashMap<ProviderKind, providers::ProviderConfig>,
     /// Resolves subagent names (which may be experiment names) to concrete
@@ -123,8 +135,8 @@ impl RigAgents {
 }
 
 impl Agents for RigAgents {
-    fn agents(&self) -> &[AgentConfig] {
-        &self.inner.agents
+    fn agents(&self) -> Arc<Vec<AgentConfig>> {
+        self.inner.agents.load_full()
     }
 
     async fn complete(
@@ -184,8 +196,10 @@ impl OneShotPrompt for RigAgents {
 }
 
 impl AgentsInner {
-    fn find_agent(&self, name: &str) -> Option<&AgentConfig> {
-        self.agents.iter().find(|a| a.name == name)
+    /// Snapshot of agents at the moment of the call. Returned as an owned
+    /// `AgentConfig` so the caller can outlive any subsequent hot swap.
+    fn find_agent(&self, name: &str) -> Option<AgentConfig> {
+        self.agents.load().iter().find(|a| a.name == name).cloned()
     }
 
     /// Build the full tool list the agent will see: MCP tools (wrapped in
@@ -263,7 +277,7 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, _) = self.build_tools(agent, depth, user_id)?;
+        let (tools, _) = self.build_tools(&agent, depth, user_id)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         provider
             .send(conversation, &agent.model, tools)
@@ -293,7 +307,7 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, subagent_names) = self.build_tools(agent, depth, user_id)?;
+        let (tools, subagent_names) = self.build_tools(&agent, depth, user_id)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         provider
             .stream(conversation, &agent.model, tools, subagent_names)

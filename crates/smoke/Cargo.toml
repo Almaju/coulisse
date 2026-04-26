@@ -1,0 +1,18 @@
+[package]
+name = "smoke"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+arc-swap.workspace = true
+askama.workspace = true
+axum.workspace = true
+coulisse-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_yaml.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["serde", "v4"] }

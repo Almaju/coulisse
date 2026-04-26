@@ -105,9 +105,57 @@ Lists every agent defined in the config.
 
 Useful for UI dropdowns that want to populate a model picker from the server.
 
-## Studio endpoints
+## Admin / config endpoints
 
-Coulisse also serves a read-only studio UI under `/admin/`. It's a server-rendered Axum + htmx surface, not a JSON API — see [Studio UI](../features/studio-ui.md) for details and authentication options.
+Everything under `/admin/*` is a single content-negotiated surface. The same routes serve HTML pages to browsers, HTML fragments to htmx, and JSON to scripts — set `Accept: application/json` (or send an `HX-Request` header) to switch representation. Request bodies are equally tolerant: `application/json`, `application/yaml`, and `application/x-www-form-urlencoded` all deserialize into the same target type.
+
+All admin routes are gated by the `auth.admin` scope.
+
+### Agents
+
+| Method | Path | Body | Notes |
+|--------|------|------|-------|
+| `GET`    | `/admin/agents`         | —              | List configured agents (HTML or JSON). |
+| `POST`   | `/admin/agents`         | `AgentConfig`  | Create a new agent. 409 if the name is taken. |
+| `GET`    | `/admin/agents/{name}`  | —              | Detail (HTML or JSON). |
+| `PUT`    | `/admin/agents/{name}`  | `AgentConfig`  | Replace the named agent. Body name must match URL. |
+| `DELETE` | `/admin/agents/{name}`  | —              | Remove the named agent. |
+| `GET`    | `/admin/agents/new`     | —              | HTML form for a new agent. |
+| `GET`    | `/admin/agents/{name}/edit` | —          | HTML edit form. |
+
+`AgentConfig` is the same shape used in `coulisse.yaml`: `name`, `provider`, `model`, `preamble`, `purpose` (optional), `judges` (list, optional), `subagents` (list, optional), `mcp_tools` (list, optional).
+
+### Judges, experiments, providers, MCP servers
+
+Same CRUD shape as agents — list / create / one / update / delete. Adjust the path to suit:
+
+| Path                            | Body                        | Notes |
+|---------------------------------|-----------------------------|-------|
+| `/admin/judges` + `/admin/judges/{name}`         | `JudgeConfig`         | LLM-as-judge evaluators. |
+| `/admin/experiments` + `/admin/experiments/{name}` | `ExperimentConfig` | A/B routing groups. The runtime `ExperimentRouter` rebuilds on restart; admin display reflects the file in real time. |
+| `/admin/providers` + `/admin/providers/{kind}`   | `ProviderConfig` (just `api_key`); `POST` body adds `kind` | Where `{kind}` is one of `anthropic`, `cohere`, `deepseek`, `gemini`, `groq`, `openai`. The runtime client is built at boot — restart to swap. |
+| `/admin/mcp` + `/admin/mcp/{name}`               | `McpServerConfig` (`transport: stdio` + `command`/`args`/`env`, or `transport: http` + `url`); `POST` body adds `name` | Connections open at boot — restart to attach a new server. |
+
+### Whole-file config
+
+| Method | Path | Body | Notes |
+|--------|------|------|-------|
+| `GET` | `/admin/config` | — | Returns the file contents (`application/yaml` by default, JSON when `Accept: application/json`). |
+| `PUT` | `/admin/config` | full YAML/JSON | Replaces `coulisse.yaml` atomically. Validation runs before any disk write. |
+| `GET` | `/admin/openapi.json` | — | OpenAPI 3.1 description of every admin route, including request/response schemas. Feed it to `openapi-generator` or any client codegen for typed SDKs. |
+
+### Validation, hot reload, the file watcher
+
+Every write — admin form save, JSON `PUT`, hand-edit in `$EDITOR` — flows through the same pipeline:
+
+1. The body is merged into the on-disk YAML (preserving sections this binary doesn't recognize).
+2. The full result is deserialized into a `Config` and run through cross-feature validation (provider references, judge references, experiment variants, …).
+3. Only on success does anything touch disk: a temp file is written and renamed atomically.
+4. The file watcher fires, the new config is reloaded, and feature crates' hot-reloadable state (agent list, judges list, experiments list, settings view) atomically swaps in.
+
+Errors return the validator's message verbatim with a `422 Unprocessable Entity` (or `400` for malformed bodies). The on-disk file is unchanged when validation rejects a write.
+
+The studio UI is just one client of these endpoints — see [Studio UI](../features/studio-ui.md) for what the rendered surface offers and authentication options.
 
 ## Auth
 

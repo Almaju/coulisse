@@ -77,6 +77,13 @@ async fn make_app_with_experiments(
 ) -> TestHarness {
     use tracing_subscriber::layer::SubscriberExt;
 
+    // Boot path normally calls `providers::warm_pricing`; tests build
+    // the AppState directly, so warm explicitly here. Otherwise the
+    // first call into `record_llm_call` lazy-loads ~9k LiteLLM
+    // entries on the request path and trips Drop-guard timing
+    // assertions in streaming tests.
+    providers::warm_pricing();
+
     let agents_runner = Arc::new(ScriptedAgents::new(agents, replies));
     let experiments = Arc::new(experiments::ExperimentRouter::new(experiments));
     let config = MemoryConfig {

@@ -29,3 +29,13 @@ pub struct JudgeDetailPage {
 pub struct JudgesPage {
     pub judges: Vec<JudgeListRow>,
 }
+
+#[derive(Template)]
+#[template(path = "judge_edit.html")]
+pub struct JudgeEditPage {
+    pub action: String,
+    pub is_new: bool,
+    pub method: &'static str,
+    pub name: String,
+    pub yaml: String,
+}

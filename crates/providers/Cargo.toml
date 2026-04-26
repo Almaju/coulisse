@@ -9,4 +9,5 @@ coulisse-core.workspace = true
 futures.workspace = true
 rig-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true

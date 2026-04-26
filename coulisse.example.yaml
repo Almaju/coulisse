@@ -116,6 +116,32 @@ agents:
     # Stack judges: broad quality check on every turn + deep audit on 10%.
     judges: [quality, review_depth]
 
+# --- Smoke tests ------------------------------------------------------
+#
+# Synthetic-user evaluation runs. A persona LLM role-plays a user and
+# drives a real conversation against the target agent (or experiment).
+# Every assistant turn flows through the same judge pipeline as
+# production, so you get a transcript and scores back without writing
+# any harness code. Trigger from the studio at /admin/smoke/<name>.
+
+# smoke_tests:
+#   - name: helpfulness_check
+#     # Agent or experiment name. Resolved per run, so targeting an
+#     # experiment naturally samples its variants across repetitions.
+#     target: assistant
+#     persona:
+#       provider: openai
+#       model: gpt-4o-mini
+#       preamble: |
+#         You are role-playing a user with a vague but reasonable question
+#         about Rust async. Reply like a real human and finish with [FIN]
+#         once the assistant has answered to your satisfaction.
+#     # Optional opening line — omit to let the persona open the chat.
+#     initial_message: "Hi, I have a question about async Rust."
+#     stop_marker: "[FIN]"
+#     max_turns: 8
+#     repetitions: 3
+
 # --- Telemetry --------------------------------------------------------
 #
 # Observability wiring for the running server. The fmt and SQLite layers

@@ -15,35 +15,53 @@ cd coulisse
 cargo build --release
 ```
 
-The binary lands at `target/release/coulisse`.
+The binary lands at `target/release/coulisse`. Drop it on your `PATH`
+(or alias it) so the rest of this guide can call it as `coulisse`.
 
-## Run
-
-Coulisse reads `coulisse.yaml` from the current working directory. Copy the example to start:
-
-```bash
-cp coulisse.example.yaml coulisse.yaml
-```
-
-Edit `coulisse.yaml`, drop in an API key, then start the server:
+## Initialize a config
 
 ```bash
-./target/release/coulisse
+coulisse init
 ```
 
-You should see output like:
+This writes a minimal `coulisse.yaml` in the current directory: one
+OpenAI agent, sqlite memory, the offline `hash` embedder. Run
+`coulisse init --from-example` instead for the full annotated tour
+covering every section.
+
+Edit the file to set your provider API key.
+
+## Start the server
+
+```bash
+coulisse start
+```
+
+`start` runs the server **detached**: it returns immediately and the
+process keeps running in the background. Stop it later with
+`coulisse stop`.
+
+To run attached (logs streaming to your terminal), use
+`coulisse start --foreground` — or just `coulisse` with no subcommand.
+Either form binds **port 8421**.
+
+You should see a startup banner like:
 
 ```text
-coulisse listening on http://0.0.0.0:8421
-  memory: sqlite at ./coulisse-memory.db; embedder=openai / text-embedding-3-small
-  extractor: anthropic / claude-haiku-4-5-20251001 (dedup_threshold=0.9, max_facts_per_turn=5)
-  agent: claude-assistant (provider=anthropic, model=claude-sonnet-4-5-20250929)
-  agent: gpt-assistant    (provider=openai, model=gpt-4o)
-  agent: code-reviewer    (provider=anthropic, model=claude-sonnet-4-5-20250929)
+  coulisse 0.1.0
+
+  Proxy   →  http://localhost:8421/v1
+  Admin   →  http://localhost:8421/admin
+
+  Memory     sqlite at ./.coulisse/memory.db; embedder=hash (dims=256, OFFLINE — no semantic understanding)
+  Auth       proxy: open · admin: open
+
+  Agents (1)
+    assistant  openai / gpt-4o-mini
 ```
 
-The exact lines depend on your config — what matters is that memory, the (optional) extractor, and every configured agent are each acknowledged on startup.
+The exact lines depend on your config — what matters is that memory,
+auth, and every configured agent are each acknowledged on startup.
 
-The server binds to **port 8421**.
-
-Next: write [your first config](./first-config.md).
+Next: write [your first config](./first-config.md), or read the
+[CLI reference](../reference/cli.md) for every subcommand.

@@ -5,12 +5,14 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 askama.workspace = true
 axum.workspace = true
 coulisse-core.workspace = true
 rand = "0.8"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_yaml.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

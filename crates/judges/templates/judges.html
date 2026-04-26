@@ -1,7 +1,13 @@
 <div class="space-y-6">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Judges</h1>
-    <p class="mt-1 text-sm text-slate-400">LLM-as-judge evaluators configured in <code class="font-mono text-xs">coulisse.yaml</code>.</p>
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Judges</h1>
+      <p class="mt-1 text-sm text-slate-400">LLM-as-judge evaluators configured in <code class="font-mono text-xs">coulisse.yaml</code>. Edits write back to the file and hot-reload.</p>
+    </div>
+    <a
+      href="/admin/judges/new"
+      class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
+    >New judge</a>
   </div>
   <div class="rounded-lg border border-slate-800 bg-slate-900">
     <div class="border-b border-slate-800 px-4 py-3">

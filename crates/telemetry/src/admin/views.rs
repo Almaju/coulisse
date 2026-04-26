@@ -50,6 +50,11 @@ pub fn tool_call_rows(calls: Vec<ToolCall>) -> Vec<ToolCallRow> {
 }
 
 pub struct EventRow {
+    /// Pre-formatted "$0.0123" string for `llm_call` events whose payload
+    /// carries a `cost_usd` field. Empty for other kinds and for misses
+    /// in the pricing table — the template shows the badge only when
+    /// non-empty.
+    pub cost: String,
     pub duration: String,
     pub indent_px: usize,
     pub kind: &'static str,
@@ -92,19 +97,16 @@ fn walk(
         let id = e.id;
         let payload_pretty =
             serde_json::to_string_pretty(&e.payload).unwrap_or_else(|_| e.payload.to_string());
-        let label = e
-            .payload
-            .get("tool_name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
         let kind = event_kind_str(e.kind);
+        let label = label_for(kind, &e.payload);
+        let cost = format_cost(&e.payload);
         let kind_class = match kind {
             "tool_call" => "bg-amber-950/60 text-amber-300 border-amber-900/60",
             "llm_call" => "bg-sky-950/60 text-sky-300 border-sky-900/60",
             _ => "bg-slate-900 text-slate-300 border-slate-800",
         };
         out.push(EventRow {
+            cost,
             duration: e.duration_ms.map(|d| format!("{d}ms")).unwrap_or_default(),
             indent_px: depth.saturating_mul(12),
             kind,
@@ -113,6 +115,46 @@ fn walk(
             payload_pretty,
         });
         walk(Some(id), depth + 1, children_of, out);
+    }
+}
+
+/// Pull the most-informative inline label for an event row's collapsed
+/// header. `tool_call` shows the tool name; `llm_call` shows
+/// `provider/model` so the user can tell at a glance which model the
+/// cost belongs to.
+fn label_for(kind: &str, payload: &serde_json::Value) -> String {
+    match kind {
+        "llm_call" => {
+            let provider = payload
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("");
+            if provider.is_empty() && model.is_empty() {
+                String::new()
+            } else if provider.is_empty() {
+                model.to_string()
+            } else {
+                format!("{provider}/{model}")
+            }
+        }
+        _ => payload
+            .get("tool_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// Render `cost_usd` as a human-readable USD amount. Sub-cent values
+/// stay readable as `$0.0001` rather than rounding to `$0.00`. Empty
+/// when the field is missing or non-numeric.
+fn format_cost(payload: &serde_json::Value) -> String {
+    let usd = payload.get("cost_usd").and_then(|v| v.as_f64());
+    match usd {
+        Some(v) if v >= 0.01 => format!("${v:.4}"),
+        Some(v) if v > 0.0 => format!("${v:.6}"),
+        _ => String::new(),
     }
 }
 

@@ -3,9 +3,15 @@
     <span>←</span>
     <span>Back to agents</span>
   </a>
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">{{ agent.name }}</h1>
-    <p class="mt-1 text-sm text-slate-400">{{ agent.provider }} / {{ agent.model }}</p>
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">{{ agent.name }}</h1>
+      <p class="mt-1 text-sm text-slate-400">{{ agent.provider }} / {{ agent.model }}</p>
+    </div>
+    <a
+      href="/admin/agents/{{ agent.name }}/edit"
+      class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
+    >Edit</a>
   </div>
   <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
     <div class="space-y-6 lg:col-span-2">

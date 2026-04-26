@@ -6,11 +6,11 @@ The result: the studio UI gives you an offline audit trail, and any OpenTelemetr
 
 ## Span model
 
-| Span name   | Opened when                                | Fields                                                                |
-|-------------|--------------------------------------------|-----------------------------------------------------------------------|
-| `turn`      | a chat completion request arrives          | `agent`, `experiment` (when applicable), `turn_id`, `user_id`, `user_message` |
-| `tool_call` | an MCP or subagent tool fires              | `args`, `error` (on failure), `kind` (`mcp`/`subagent`), `result`, `tool_name` |
-| `llm_call`  | (reserved) a single LLM provider round-trip | `provider`, `model`, `prompt`, `response`, `usage`                    |
+| Span name   | Opened when                                | Fields                                                                                  |
+|-------------|--------------------------------------------|-----------------------------------------------------------------------------------------|
+| `turn`      | a chat completion request arrives          | `agent`, `experiment` (when applicable), `turn_id`, `user_id`, `user_message`           |
+| `tool_call` | an MCP or subagent tool fires              | `args`, `error` (on failure), `kind` (`mcp`/`subagent`), `result`, `tool_name`          |
+| `llm_call`  | a chat completion finishes (token usage is known) | `cost_usd` (when the model is in the pricing table), `model`, `provider`, `usage` |
 
 `turn` is the root; `tool_call` and `llm_call` nest under it via the tracing span tree, so OTLP backends render them as a trace tree out of the box.
 

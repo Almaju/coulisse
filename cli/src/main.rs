@@ -1,184 +1,116 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
+//! Coulisse CLI entry point. Parses subcommands and delegates to
+//! `commands::*`. With no subcommand, defaults to running the server
+//! in the foreground (preserving the historical `./coulisse` behavior).
 
-use agents::{Agents, BootConfig, RigAgents};
-use auth::Auth;
-use axum::Router;
-use axum::middleware::from_fn;
-use axum::response::Redirect;
-use axum::routing::get;
-use coulisse::admin::shell as admin_shell;
-use coulisse::banner::Banner;
-use coulisse::config::Config;
-use coulisse::server::{self, AppState};
-use coulisse_core::{AgentResolver, ScoreLookup};
-use experiments::{ExperimentResolver, ExperimentRouter};
-use judges::{Judge, JudgeConfig, Judges};
-use limits::Tracker;
-use mcp::McpServers;
-use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
-use providers::ProviderKind;
-use telemetry::Sink as TelemetrySink;
-use tokio::net::TcpListener;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config_path =
-        std::env::var("COULISSE_CONFIG").unwrap_or_else(|_| "coulisse.yaml".to_string());
-    let config = Config::from_path(&config_path)?;
-    let auth = Auth::from_config(config.auth.clone()).await?;
-    let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
+use clap::{Parser, Subcommand};
+use coulisse::commands::{check, init, restart, serve, start, status, stop, update};
 
-    let agent_configs = config.agents.clone();
-    let embedder_fallback_key = embedder_fallback_key(&config);
-    let experiment_configs = config.experiments.clone();
-    let extractor_config = config.memory.extractor.clone();
-    let judge_configs = config.judges.clone();
-    let memory_summary = memory_summary(&config.memory);
-    let settings_view = Arc::new(coulisse::admin::SettingsView::from_config(&config));
-    // Open one SQLite pool and hand clones to every persistent crate.
-    // Each crate runs its own schema migrations against the shared
-    // pool — table ownership is per-crate, but the connection is
-    // shared so operators back up one file.
-    let pool = memory::open_pool(&config.memory.backend).await?;
-    let store = Store::open(
-        pool.clone(),
-        config.memory.clone(),
-        embedder_fallback_key.as_deref(),
-    )
-    .await?;
-    let memory = Arc::new(store);
+const DEFAULT_CONFIG: &str = "coulisse.yaml";
 
-    let judges = build_judges(&judge_configs)?;
+#[derive(Parser)]
+#[command(name = "coulisse", version, about, long_about = None)]
+struct Cli {
+    /// Path to the YAML config. Defaults to ./coulisse.yaml in the
+    /// current directory. State files (PID, log) are written to
+    /// `<dir>/.coulisse/` next to this path.
+    #[arg(short, long, global = true, env = "COULISSE_CONFIG")]
+    config: Option<PathBuf>,
 
-    // Apply telemetry schema (creates `events`/`tool_calls` tables) and
-    // wire the tracing subscriber: fmt + SqliteLayer (always on by
-    // default) plus an optional OTLP exporter when `telemetry.otlp` is
-    // set in YAML. The guard keeps the background writer + OTLP
-    // provider alive for the process lifetime.
-    let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
-    let _telemetry_guard = telemetry::init_subscriber(pool.clone(), &config.telemetry)?;
-    let judge_store = Arc::new(Judges::open(pool.clone()).await?);
-    let mcp = Arc::new(McpServers::connect(config.mcp).await?);
-    let experiments = Arc::new(ExperimentRouter::new(config.experiments));
-    let resolver: Arc<dyn AgentResolver> = Arc::new(ExperimentResolver::new(
-        Arc::clone(&experiments),
-        Some(Arc::clone(&judge_store) as Arc<dyn ScoreLookup>),
-    ));
-    let prompter = Arc::new(RigAgents::new(BootConfig {
-        agents: config.agents,
-        mcp,
-        providers: config.providers,
-        resolver,
-    })?);
-
-    let extractor = extractor_config
-        .as_ref()
-        .map(|cfg| Arc::new(Extractor::new(cfg.clone(), Arc::clone(&prompter) as _)));
-
-    let tracker = Tracker::open(pool.clone()).await?;
-    let proxy_state = Arc::new(AppState {
-        agents: Arc::clone(&prompter),
-        default_user_id,
-        experiments,
-        extractor,
-        judges: Arc::new(judges),
-        judge_store: Arc::clone(&judge_store),
-        memory: Arc::clone(&memory),
-        tracker,
-    });
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
-    Banner {
-        addr,
-        agents: proxy_state.agents.agents(),
-        auth: &auth,
-        experiments: &experiment_configs,
-        extractor: extractor_config.as_ref(),
-        judges: &judge_configs,
-        memory_summary: &memory_summary,
-    }
-    .print();
-
-    // The admin surface is composed by merging each feature crate's
-    // admin router. Cross-feature views (e.g. tool calls inside a
-    // conversation page) are filled in via htmx fragments — feature
-    // crates remain decoupled and the cli only owns the layout shell
-    // and the auth wrapping.
-    let agents_for_admin = Arc::new(agent_configs);
-    let experiments_for_admin = Arc::new(experiment_configs.clone());
-    let admin_inner = Router::new()
-        .merge(agents::admin::router(agents_for_admin))
-        .merge(experiments::admin::router(experiments_for_admin))
-        .merge(judges::admin::router(
-            Arc::clone(&judge_store),
-            Arc::new(judge_configs.clone()),
-        ))
-        .merge(memory::admin::router(Arc::clone(&memory)))
-        .merge(telemetry::admin::router(Arc::clone(&telemetry)))
-        .merge(
-            Router::new()
-                .route("/settings", get(coulisse::admin::settings))
-                .with_state(settings_view),
-        )
-        .route("/overview", get(coulisse::admin::overview))
-        .route(
-            "/",
-            get(|| async { Redirect::permanent("/admin/overview") }),
-        )
-        .layer(from_fn(admin_shell));
-    let admin_router = auth.wrap_admin(admin_inner);
-    let proxy_router = auth.wrap_proxy(server::router(proxy_state));
-
-    // axum 0.8 nests asymmetrically: `nest("/admin", ...)` matches the
-    // inner `/` route at `/admin`, but a request to `/admin/` returns
-    // 404. Redirect the trailing-slash form so bookmarks don't break.
-    let app = Router::new()
-        .merge(proxy_router)
-        .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
-        .nest("/admin", admin_router);
-    let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-fn build_judges(
-    configs: &[JudgeConfig],
-) -> Result<HashMap<String, Arc<Judge>>, judges::JudgeBuildError> {
-    let mut out = HashMap::with_capacity(configs.len());
-    for cfg in configs {
-        let judge = Judge::from_config(cfg)?;
-        out.insert(cfg.name.clone(), Arc::new(judge));
-    }
-    Ok(out)
+#[derive(Subcommand)]
+enum Command {
+    /// Write a starter coulisse.yaml in the working directory.
+    Init {
+        /// Overwrite the file if it already exists.
+        #[arg(long)]
+        force: bool,
+        /// Copy the full annotated example instead of the minimal template.
+        #[arg(long)]
+        from_example: bool,
+    },
+    /// Start the server, detached. Use --foreground to run attached.
+    Start {
+        /// Run in the foreground instead of detaching.
+        #[arg(short = 'F', long)]
+        foreground: bool,
+        /// Internal: marker that we are the re-spawned detached child.
+        #[arg(long, hide = true)]
+        detached_child: bool,
+    },
+    /// Stop a running detached server (reads .coulisse/coulisse.pid).
+    Stop {
+        /// SIGKILL instead of SIGTERM if the server doesn't exit promptly.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Restart the running server (stop, then start detached).
+    Restart,
+    /// Report whether a detached server is running.
+    Status,
+    /// Validate the YAML config without starting the server.
+    Check,
+    /// Download and install the latest release from GitHub.
+    Update,
 }
 
-/// Derive an API key to use when the memory embedder config doesn't carry
-/// its own. Looks up the matching top-level provider entry so users who
-/// already configured OpenAI for completions don't have to repeat the key.
-fn embedder_fallback_key(config: &Config) -> Option<String> {
-    let kind = match &config.memory.embedder {
-        EmbedderConfig::Hash { .. } => return None,
-        EmbedderConfig::Openai { .. } => ProviderKind::Openai,
-        // Voyage is not a completion provider, so no fallback is possible;
-        // the user must set memory.embedder.api_key explicitly.
-        EmbedderConfig::Voyage { .. } => return None,
-    };
-    config.providers.get(&kind).map(|p| p.api_key.clone())
-}
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let config = cli.config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG));
 
-fn memory_summary(config: &memory::MemoryConfig) -> String {
-    let backend = match &config.backend {
-        BackendConfig::InMemory => "in-memory (ephemeral)".to_string(),
-        BackendConfig::Sqlite { path } => format!("sqlite at {}", path.display()),
-    };
-    let embedder = match &config.embedder {
-        EmbedderConfig::Hash { dims } => {
-            format!("hash (dims={dims}, OFFLINE — no semantic understanding)")
+    let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
+        None => {
+            // `coulisse` with no subcommand → run foreground.
+            run_foreground(&config)
         }
-        EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
-        EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
+        Some(Command::Init {
+            force,
+            from_example,
+        }) => init::run(
+            &config,
+            init::Options {
+                force,
+                from_example,
+            },
+        )
+        .map_err(|e| e.into()),
+        Some(Command::Start {
+            foreground,
+            detached_child,
+        }) => start::run(
+            &config,
+            start::Options {
+                detached_child,
+                foreground,
+            },
+        )
+        .map_err(|e| e.into()),
+        Some(Command::Stop { force }) => {
+            stop::run(&config, stop::Options { force }).map_err(|e| e.into())
+        }
+        Some(Command::Restart) => restart::run(&config),
+        Some(Command::Status) => status::run(&config),
+        Some(Command::Check) => check::run(&config),
+        Some(Command::Update) => update::run().map_err(|e| e.into()),
     };
-    format!("{backend}; embedder={embedder}")
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_foreground(config: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(serve::run(config))
 }

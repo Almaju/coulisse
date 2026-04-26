@@ -8,14 +8,26 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use askama::Template;
+use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Json, Response};
+use axum::routing::get;
+use coulisse_core::{ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat};
+use serde_yaml::Value;
 
 use crate::config::Config;
+use crate::config_store::ConfigStore;
+
+/// Hot-reloadable handle for the cli-owned settings summary. The
+/// underlying view is rebuilt from `Config` whenever the YAML changes
+/// (admin save or hand-edit), so the `/admin/settings` page always
+/// reflects what's actually live on disk.
+pub type SettingsHandle = Arc<ArcSwap<SettingsView>>;
 
 #[derive(Template)]
 #[template(path = "base.html")]
@@ -172,13 +184,88 @@ struct SettingsPage {
     settings: SettingsView,
 }
 
-pub async fn settings(State(view): State<Arc<SettingsView>>) -> Result<Html<String>, StatusCode> {
+pub async fn settings(State(view): State<SettingsHandle>) -> Result<Html<String>, StatusCode> {
+    let snapshot = view.load_full();
     let html = SettingsPage {
-        settings: (*view).clone(),
+        settings: (*snapshot).clone(),
     }
     .render()
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
+}
+
+/// Whole-file config endpoint. `GET` returns the YAML (or JSON when
+/// the client asks for JSON via Accept). `PUT` replaces the file
+/// atomically with the supplied body — accepts JSON, YAML, or form
+/// encoding via the same body extractor. Power-user equivalent of
+/// `git pull && systemctl reload coulisse`, but via HTTP and with the
+/// validator running before anything touches disk.
+pub fn config_router(store: Arc<ConfigStore>) -> Router {
+    Router::new()
+        .route("/config", get(get_config).put(put_config))
+        .with_state(store)
+}
+
+async fn get_config(
+    State(store): State<Arc<ConfigStore>>,
+    fmt: ResponseFormat,
+) -> Result<Response, ConfigEndpointError> {
+    let bytes =
+        std::fs::read(store.path()).map_err(|err| ConfigEndpointError::Io(err.to_string()))?;
+    if matches!(fmt, ResponseFormat::Json) {
+        let value: Value = serde_yaml::from_slice(&bytes)
+            .map_err(|err| ConfigEndpointError::Parse(err.to_string()))?;
+        let json: serde_json::Value = serde_json::to_value(&value)
+            .map_err(|err| ConfigEndpointError::Parse(err.to_string()))?;
+        return Ok(Json(json).into_response());
+    }
+    let text =
+        String::from_utf8(bytes).map_err(|err| ConfigEndpointError::Parse(err.to_string()))?;
+    let mut resp = text.into_response();
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/yaml; charset=utf-8"),
+    );
+    Ok(resp)
+}
+
+async fn put_config(
+    State(store): State<Arc<ConfigStore>>,
+    EitherFormOrJson(value): EitherFormOrJson<Value>,
+) -> Result<Response, ConfigEndpointError> {
+    store
+        .write_all(value)
+        .await
+        .map_err(ConfigEndpointError::from)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Debug)]
+pub enum ConfigEndpointError {
+    Invalid(String),
+    Io(String),
+    Parse(String),
+}
+
+impl From<ConfigPersistError> for ConfigEndpointError {
+    fn from(err: ConfigPersistError) -> Self {
+        match err {
+            ConfigPersistError::Invalid(m) => Self::Invalid(m),
+            ConfigPersistError::Io(m) => Self::Io(m),
+            ConfigPersistError::Parse(m) => Self::Parse(m),
+        }
+    }
+}
+
+impl IntoResponse for ConfigEndpointError {
+    fn into_response(self) -> Response {
+        let (status, msg) = match self {
+            Self::Invalid(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+            Self::Io(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            Self::Parse(m) => (StatusCode::BAD_REQUEST, m),
+        };
+        (status, msg).into_response()
+    }
 }
 
 fn auth_summary(scope: &Option<auth::ScopeConfig>) -> String {

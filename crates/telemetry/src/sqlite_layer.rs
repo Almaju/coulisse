@@ -10,7 +10,7 @@
 //! Field extraction expects:
 //!   - `turn`      span: `agent`, `experiment`, `turn_id`, `user_id`, `user_message`
 //!   - `tool_call` span: `args`, `error`, `kind` (`mcp`|`subagent`), `result`, `tool_name`
-//!   - `llm_call`  span: `error`, `model`, `provider`, `prompt`, `response`, `usage`
+//!   - `llm_call`  span: `cost_usd`, `error`, `model`, `provider`, `prompt`, `response`, `usage`
 //!
 //! Parent linkage in the `events` table comes from the tracing span tree:
 //! a child span's `parent_id` points at the closest ancestor that this
@@ -328,7 +328,9 @@ fn build_payload(name: &str, fields: &HashMap<&'static str, String>) -> serde_js
     let interesting: &[&str] = match name {
         "turn" => &["agent", "experiment", "user_message"],
         "tool_call" => &["args", "error", "kind", "result", "tool_name"],
-        "llm_call" => &["error", "model", "prompt", "provider", "response", "usage"],
+        "llm_call" => &[
+            "cost_usd", "error", "model", "prompt", "provider", "response", "usage",
+        ],
         _ => &[],
     };
     for &key in interesting {

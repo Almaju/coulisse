@@ -1,0 +1,74 @@
+<div class="space-y-6">
+  <a href="/admin/judges" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to judges</span>
+  </a>
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
+      {% if is_new %}New judge{% else %}Edit {{ name }}{% endif %}
+    </h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Edits write directly to <code class="font-mono text-xs">coulisse.yaml</code>.
+      Validation runs before save; invalid changes are rejected.
+    </p>
+  </div>
+  <form
+    class="space-y-4"
+    hx-{{ method }}="{{ action }}"
+    hx-target="#judge-edit-error"
+    hx-swap="innerHTML"
+  >
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">YAML body</h2>
+        <p class="mt-1 text-xs text-slate-500">
+          One YAML mapping for this judge. Top-level fields:
+          <code class="font-mono">name</code>, <code class="font-mono">provider</code>,
+          <code class="font-mono">model</code>, <code class="font-mono">sampling_rate</code>,
+          <code class="font-mono">rubrics</code>.
+        </p>
+      </div>
+      <div class="px-4 py-3">
+        <textarea
+          name="__yaml"
+          rows="20"
+          spellcheck="false"
+          class="w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 focus:border-slate-600 focus:outline-none"
+        >{{ yaml }}</textarea>
+      </div>
+    </div>
+    <div id="judge-edit-error" class="text-sm text-rose-400"></div>
+    <div class="flex items-center gap-3">
+      <button
+        type="submit"
+        class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
+      >
+        Save
+      </button>
+      {% if !is_new %}
+      <button
+        type="button"
+        hx-delete="{{ action }}"
+        hx-confirm="Delete judge '{{ name }}'? This rewrites coulisse.yaml."
+        class="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-900/60"
+      >
+        Delete
+      </button>
+      {% endif %}
+      <a
+        href="{% if is_new %}/admin/judges{% else %}/admin/judges/{{ name }}{% endif %}"
+        class="text-sm text-slate-400 hover:text-slate-100"
+      >Cancel</a>
+    </div>
+  </form>
+  <script>
+    document.currentScript.previousElementSibling
+      ?.querySelector?.('form')?.addEventListener('htmx:configRequest', function (e) {
+        const body = (e.detail.parameters && e.detail.parameters['__yaml']) || '';
+        e.detail.parameters = {};
+        e.detail.headers = e.detail.headers || {};
+        e.detail.headers['Content-Type'] = 'application/yaml';
+        e.detail.body = body;
+      });
+  </script>
+</div>

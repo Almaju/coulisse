@@ -9,18 +9,20 @@
 //! also live here — they're provider-shaped, not agent-shaped.
 
 mod conversation;
+mod pricing;
 
 use std::collections::HashMap;
 
 use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub use conversation::{
     CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, StreamEvent,
     ToolCallKind, Usage,
 };
+pub use pricing::{Cost, cost_for, warm as warm_pricing};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Anthropic,
@@ -62,7 +64,7 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProviderConfig {
     pub api_key: String,
 }

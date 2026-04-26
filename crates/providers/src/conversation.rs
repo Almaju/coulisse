@@ -16,6 +16,7 @@ use rig::client::CompletionClient;
 use rig::completion::{CompletionModel, GetTokenUsage, Message as RigMessage, PromptError};
 use rig::streaming::{StreamedAssistantContent, StreamedUserContent, StreamingPrompt};
 use rig::tool::ToolDyn;
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::Provider;
@@ -38,7 +39,7 @@ pub enum Role {
     User,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct Usage {
     pub cache_creation_input_tokens: u64,
     pub cached_input_tokens: u64,

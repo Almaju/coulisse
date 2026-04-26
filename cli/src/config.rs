@@ -17,6 +17,7 @@ use mcp::McpServerConfig;
 use memory::MemoryConfig;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
+use smoke::SmokeTestConfig;
 use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 
@@ -56,6 +57,13 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryConfig,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
+    /// Synthetic-user evaluation tests. Each entry pairs a persona prompt
+    /// with a target agent (or experiment); admin UI exposes a "Run now"
+    /// button that drives the conversation, persists every turn, and
+    /// fans the assistant turns out to the configured judges. Useful for
+    /// iterating on agent prompts and comparing experiment variants.
+    #[serde(default)]
+    pub smoke_tests: Vec<SmokeTestConfig>,
     /// Observability wiring: stderr fmt logs (always on by default),
     /// SQLite mirror that drives the studio UI (on by default), and an
     /// optional OpenTelemetry OTLP exporter for shipping traces to
@@ -186,6 +194,39 @@ impl Config {
                 }
             }
             validate_experiment_strategy_fields(self, experiment)?;
+        }
+
+        let mut smoke_names: HashSet<&str> = HashSet::new();
+        for test in &self.smoke_tests {
+            if !smoke_names.insert(test.name.as_str()) {
+                return Err(ConfigError::DuplicateSmokeTest(test.name.clone()));
+            }
+            if test.max_turns == 0 {
+                return Err(ConfigError::SmokeMaxTurnsZero(test.name.clone()));
+            }
+            if test.repetitions == 0 {
+                return Err(ConfigError::SmokeRepetitionsZero(test.name.clone()));
+            }
+            let provider = ProviderKind::parse(&test.persona.provider).ok_or_else(|| {
+                ConfigError::SmokePersonaUnknownProvider {
+                    provider: test.persona.provider.clone(),
+                    test: test.name.clone(),
+                }
+            })?;
+            if !self.providers.contains_key(&provider) {
+                return Err(ConfigError::SmokePersonaProviderNotConfigured {
+                    provider,
+                    test: test.name.clone(),
+                });
+            }
+            if !agent_names.contains(test.target.as_str())
+                && !experiment_names.contains(test.target.as_str())
+            {
+                return Err(ConfigError::SmokeUnknownTarget {
+                    target: test.target.clone(),
+                    test: test.name.clone(),
+                });
+            }
         }
 
         // Subagent references resolve against the *combined* namespace of
@@ -494,6 +535,25 @@ pub enum ConfigError {
     },
     #[error("agent '{0}' cannot list itself as a subagent")]
     SelfSubagent(String),
+    #[error("duplicate smoke test name in config: {0}")]
+    DuplicateSmokeTest(String),
+    #[error("smoke test '{0}' has max_turns=0; set it to at least 1")]
+    SmokeMaxTurnsZero(String),
+    #[error(
+        "smoke test '{test}' persona references provider '{provider}' which is not declared under `providers:`"
+    )]
+    SmokePersonaProviderNotConfigured {
+        provider: ProviderKind,
+        test: String,
+    },
+    #[error(
+        "smoke test '{test}' persona provider '{provider}' is not supported (anthropic, cohere, deepseek, gemini, groq, openai)"
+    )]
+    SmokePersonaUnknownProvider { provider: String, test: String },
+    #[error("smoke test '{0}' has repetitions=0; set it to at least 1")]
+    SmokeRepetitionsZero(String),
+    #[error("smoke test '{test}' targets '{target}' which is neither an agent nor an experiment")]
+    SmokeUnknownTarget { target: String, test: String },
     #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
     UnknownSubagent { agent: String, subagent: String },
 }
@@ -1024,6 +1084,165 @@ experiments:
                 assert_eq!(subagent, "helper");
             }
             other => panic!("expected DuplicateSubagent error, got {other:?}"),
+        }
+    }
+
+    const SMOKE_BASE: &str = r#"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+"#;
+
+    #[test]
+    fn smoke_test_with_valid_target_parses() {
+        let yaml = format!(
+            "{SMOKE_BASE}smoke_tests:
+  - name: smoke_one
+    target: assistant
+    persona:
+      provider: openai
+      model: gpt-4
+      preamble: You are a curious user.
+"
+        );
+        let config = parse(&yaml).expect("valid smoke test");
+        assert_eq!(config.smoke_tests.len(), 1);
+        assert_eq!(config.smoke_tests[0].name, "smoke_one");
+        assert_eq!(config.smoke_tests[0].max_turns, 10);
+        assert_eq!(config.smoke_tests[0].repetitions, 1);
+    }
+
+    #[test]
+    fn smoke_test_targeting_experiment_validates() {
+        let yaml = format!(
+            "{SMOKE_BASE}  - name: assistant-v2
+    provider: openai
+    model: gpt-4
+experiments:
+  - name: rollout
+    strategy: split
+    variants:
+      - agent: assistant
+      - agent: assistant-v2
+smoke_tests:
+  - name: rollout_check
+    target: rollout
+    persona:
+      provider: openai
+      model: gpt-4
+      preamble: Ask one question.
+"
+        );
+        parse(&yaml).expect("experiment as smoke target should validate");
+    }
+
+    #[test]
+    fn smoke_test_with_unknown_target_is_rejected() {
+        let yaml = format!(
+            "{SMOKE_BASE}smoke_tests:
+  - name: ghost
+    target: missing
+    persona:
+      provider: openai
+      model: gpt-4
+      preamble: x
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::SmokeUnknownTarget { target, test }) => {
+                assert_eq!(target, "missing");
+                assert_eq!(test, "ghost");
+            }
+            other => panic!("expected SmokeUnknownTarget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn smoke_test_with_unconfigured_persona_provider_is_rejected() {
+        let yaml = format!(
+            "{SMOKE_BASE}smoke_tests:
+  - name: missing_provider
+    target: assistant
+    persona:
+      provider: anthropic
+      model: claude
+      preamble: x
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::SmokePersonaProviderNotConfigured { provider, test }) => {
+                assert_eq!(provider, ProviderKind::Anthropic);
+                assert_eq!(test, "missing_provider");
+            }
+            other => panic!("expected SmokePersonaProviderNotConfigured, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn smoke_test_with_unknown_persona_provider_is_rejected() {
+        let yaml = format!(
+            "{SMOKE_BASE}smoke_tests:
+  - name: bogus_provider
+    target: assistant
+    persona:
+      provider: not-a-provider
+      model: x
+      preamble: x
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::SmokePersonaUnknownProvider { provider, test }) => {
+                assert_eq!(provider, "not-a-provider");
+                assert_eq!(test, "bogus_provider");
+            }
+            other => panic!("expected SmokePersonaUnknownProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn smoke_test_with_zero_max_turns_is_rejected() {
+        let yaml = format!(
+            "{SMOKE_BASE}smoke_tests:
+  - name: empty
+    target: assistant
+    max_turns: 0
+    persona:
+      provider: openai
+      model: gpt-4
+      preamble: x
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::SmokeMaxTurnsZero(name)) => assert_eq!(name, "empty"),
+            other => panic!("expected SmokeMaxTurnsZero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_smoke_tests_are_rejected() {
+        let yaml = format!(
+            "{SMOKE_BASE}smoke_tests:
+  - name: same
+    target: assistant
+    persona:
+      provider: openai
+      model: gpt-4
+      preamble: a
+  - name: same
+    target: assistant
+    persona:
+      provider: openai
+      model: gpt-4
+      preamble: b
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::DuplicateSmokeTest(name)) => assert_eq!(name, "same"),
+            other => panic!("expected DuplicateSmokeTest, got {other:?}"),
         }
     }
 }

@@ -2,6 +2,7 @@
 *.db-journal
 *.db-shm
 *.db-wal
+.coulisse/
 /target
 Cargo.lock
 coulisse.yaml

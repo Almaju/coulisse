@@ -13,6 +13,7 @@ judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
 memory: { ... }               # optional; defaults to sqlite + hash embedder
 providers: { ... }            # required
+smoke_tests: [ ... ]          # optional; synthetic-user evaluation runs
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
 ```
 
@@ -311,6 +312,43 @@ judges:
       accuracy:     Factual accuracy. Flag hallucinations.
       helpfulness:  Whether the assistant answered the user's question.
       tone:         Politeness and tone.
+```
+
+## `smoke_tests`
+
+- **Type:** list of smoke test configs
+- **Optional.** Omit (or leave empty) for no synthetic-user runs.
+
+Each entry pairs a *persona* (an LLM that role-plays the user) with a target agent or experiment. Triggered from the studio at `/admin/smoke/<name>`. See [Smoke tests](../features/smoke-tests.md) for the workflow.
+
+### Per-test fields
+
+| Field             | Type              | Required | Default | Notes                                                                       |
+|-------------------|-------------------|----------|---------|-----------------------------------------------------------------------------|
+| `name`            | string            | yes      | —       | Unique within `smoke_tests`.                                                |
+| `target`          | string            | yes      | —       | Agent or experiment name. Resolved per run via the experiment router.       |
+| `persona`         | object            | yes      | —       | `provider`, `model`, `preamble` for the role-played user.                   |
+| `initial_message` | string            | no       | —       | Hard-coded first persona turn. Omit to let the persona open the conversation. |
+| `stop_marker`     | string            | no       | —       | Substring that ends the run when emitted by either side.                    |
+| `max_turns`       | integer           | no       | `10`    | Cap on persona-then-agent pairs per run.                                    |
+| `repetitions`     | integer           | no       | `1`     | Independent runs launched per click. Each gets a fresh synthetic user id.   |
+
+### Example
+
+```yaml
+smoke_tests:
+  - name: jobseeker_basic
+    target: tremplin
+    persona:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      preamble: |
+        You are a 28-year-old looking for a developer job in Paris.
+        Reply like a real human; finish with "[FIN]" once satisfied.
+    initial_message: "Hi, I'm looking for work."
+    stop_marker: "[FIN]"
+    max_turns: 10
+    repetitions: 5
 ```
 
 ## `telemetry`

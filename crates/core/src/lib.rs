@@ -1,13 +1,21 @@
 //! Cross-crate primitives shared by every feature crate.
 //!
 //! This crate stays small on purpose. It holds domain types
-//! (`UserId`, `TurnId`, `Message`, `Role`, `AgentScoreSummary`) and
-//! tiny cross-cutting traits (`OneShotPrompt`, `ScoreLookup`) that
-//! sit at feature-crate boundaries. If a type lives in only one
-//! feature, keep it there.
+//! (`UserId`, `TurnId`, `Message`, `Role`, `AgentScoreSummary`),
+//! tiny cross-cutting traits (`OneShotPrompt`, `ScoreLookup`,
+//! `ConfigPersister`), and a handful of HTTP utilities every feature
+//! crate's admin router needs to share — content negotiation,
+//! either-form-or-json body parsing — so the studio surface stays a
+//! thin representation of the API rather than a parallel codebase.
+
+mod config_store;
+mod web;
 
 use std::future::Future;
 use std::pin::Pin;
+
+pub use config_store::{ConfigPersistError, ConfigPersister};
+pub use web::{BodyRejection, EitherFormOrJson, ResponseFormat};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

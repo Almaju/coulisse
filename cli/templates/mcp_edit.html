@@ -1,0 +1,68 @@
+<div class="space-y-6">
+  <a href="/admin/mcp" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to MCP servers</span>
+  </a>
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">
+      {% if is_new %}New MCP server{% else %}Edit {{ name }}{% endif %}
+    </h1>
+    <p class="mt-1 text-sm text-slate-400">
+      {% if is_new %}
+        Body must include <code class="font-mono">name</code> and either
+        <code class="font-mono">transport: stdio</code> with
+        <code class="font-mono">command</code> + <code class="font-mono">args</code>,
+        or <code class="font-mono">transport: http</code> with <code class="font-mono">url</code>.
+      {% else %}
+        Restart required to reopen the server connection.
+      {% endif %}
+    </p>
+  </div>
+  <form
+    class="space-y-4"
+    hx-{{ method }}="{{ action }}"
+    hx-target="#mcp-edit-error"
+    hx-swap="innerHTML"
+  >
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="px-4 py-3">
+        <textarea
+          name="__yaml"
+          rows="14"
+          spellcheck="false"
+          class="w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 focus:border-slate-600 focus:outline-none"
+        >{{ yaml }}</textarea>
+      </div>
+    </div>
+    <div id="mcp-edit-error" class="text-sm text-rose-400"></div>
+    <div class="flex items-center gap-3">
+      <button
+        type="submit"
+        class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
+      >
+        Save
+      </button>
+      {% if !is_new %}
+      <button
+        type="button"
+        hx-delete="{{ action }}"
+        hx-confirm="Delete MCP server '{{ name }}'? Agents referencing it will fail until reconfigured."
+        class="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-900/60"
+      >
+        Delete
+      </button>
+      {% endif %}
+      <a href="/admin/mcp" class="text-sm text-slate-400 hover:text-slate-100">Cancel</a>
+    </div>
+  </form>
+  <script>
+    document.currentScript.previousElementSibling
+      ?.querySelector?.('form')?.addEventListener('htmx:configRequest', function (e) {
+        const body = (e.detail.parameters && e.detail.parameters['__yaml']) || '';
+        e.detail.parameters = {};
+        e.detail.headers = e.detail.headers || {};
+        e.detail.headers['Content-Type'] = 'application/yaml';
+        e.detail.body = body;
+      });
+  </script>
+</div>

@@ -2,7 +2,7 @@
 //! deterministically without talking to a provider.
 
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_stream::stream;
 use coulisse_core::{OneShotError, OneShotPrompt, UserId};
@@ -18,7 +18,7 @@ use crate::{
 /// dispatched agent name in `dispatched_to`, then returns the next
 /// scripted response (or loops on the last one).
 pub struct ScriptedAgents {
-    agents: Vec<AgentConfig>,
+    agents: Arc<Vec<AgentConfig>>,
     calls: Mutex<Vec<Vec<Message>>>,
     dispatched_to: Mutex<Vec<String>>,
     replies: Mutex<Vec<ScriptedReply>>,
@@ -107,7 +107,7 @@ impl ScriptedReply {
 impl ScriptedAgents {
     pub fn new(agents: Vec<AgentConfig>, replies: Vec<ScriptedReply>) -> Self {
         Self {
-            agents,
+            agents: Arc::new(agents),
             calls: Mutex::new(Vec::new()),
             dispatched_to: Mutex::new(Vec::new()),
             replies: Mutex::new(replies),
@@ -149,8 +149,8 @@ impl ScriptedAgents {
 }
 
 impl Agents for ScriptedAgents {
-    fn agents(&self) -> &[AgentConfig] {
-        &self.agents
+    fn agents(&self) -> Arc<Vec<AgentConfig>> {
+        Arc::clone(&self.agents)
     }
 
     async fn complete(

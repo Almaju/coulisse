@@ -10,7 +10,12 @@
               <span class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {{ r.kind_class }}">{{ r.kind }}</span>
               <span class="truncate font-mono text-[11px] text-slate-300">{{ r.label }}</span>
             </div>
-            <span class="text-[10px] text-slate-500">{{ r.duration }}</span>
+            <div class="flex items-center gap-2 shrink-0">
+              {% if !r.cost.is_empty() %}
+                <span class="rounded border border-emerald-900/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-mono text-emerald-300">{{ r.cost }}</span>
+              {% endif %}
+              <span class="text-[10px] text-slate-500">{{ r.duration }}</span>
+            </div>
           </summary>
           <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-[11px] text-slate-300">{{ r.payload_pretty }}</pre>
         </details>
