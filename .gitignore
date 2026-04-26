@@ -4,7 +4,6 @@
 *.db-wal
 .coulisse/
 /target
-Cargo.lock
 coulisse.yaml
 crates/studio/dist/*
 crates/studio/target/
