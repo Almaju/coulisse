@@ -1,14 +1,31 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, UserId};
 use sqlx::Row;
-use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
+use sqlx::{SqliteConnection, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{Score, ScoreId};
+
+struct Schema;
+
+impl SchemaMigrator for Schema {
+    const NAME: &'static str = "judges";
+    const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
+    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+
+    async fn upgrade_from(
+        &self,
+        _from_version: &str,
+        _conn: &mut SqliteConnection,
+    ) -> sqlx::Result<()> {
+        unreachable!("judges has only one schema version")
+    }
+}
 
 pub struct AgentCriterionCell {
     pub agent_name: String,
@@ -22,9 +39,6 @@ pub struct JudgeVolume {
     pub judge_name: String,
 }
 
-const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
-const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
-
 /// Persistent storage for LLM-judge scores. One row per criterion per
 /// scored turn. Reads are exposed both directly (`scores`,
 /// `mean_scores_by_agent`) and via the `ScoreLookup` trait so feature
@@ -37,22 +51,7 @@ pub struct Judges {
 
 impl Judges {
     pub async fn open(pool: SqlitePool) -> Result<Self, JudgeStoreError> {
-        sqlx::query(SCHEMA_SQL).execute(&pool).await?;
-        if !MIGRATE_SQL.trim().is_empty() {
-            for stmt in MIGRATE_SQL
-                .split(';')
-                .map(str::trim)
-                .filter(|s| !s.is_empty() && !s.starts_with("--"))
-            {
-                if let Err(err) = sqlx::query(stmt).execute(&pool).await {
-                    // Migration steps that have already been applied
-                    // (ALTER TABLE on a column that already exists) are
-                    // expected to fail on subsequent boots; log and move
-                    // on. Pure-comment files are filtered above.
-                    tracing::debug!(error = %err, "migrate step skipped");
-                }
-            }
-        }
+        migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
     }
 
@@ -293,6 +292,8 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, JudgeStoreError> {
 pub enum JudgeStoreError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("schema migration failed: {0}")]
+    Migrate(#[from] coulisse_core::migrate::MigrateError),
     #[error("failed to decode row: {0}")]
     RowDecode(String),
 }

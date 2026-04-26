@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+coulisse-core.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 

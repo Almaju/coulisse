@@ -1,6 +1,7 @@
--- Current telemetry schema. Always reflects what Coulisse creates on startup.
--- When the schema changes, update this file and write the step in migrate.sql.
--- Previous revisions live in git history; never keep numbered migration files here.
+-- Current telemetry schema. Always reflects what `init` produces on a fresh
+-- DB. When the schema changes, update this file, append the new crate version
+-- to `Schema::VERSIONS` in sink.rs, and write the upgrade step in
+-- `Schema::upgrade_from`. Previous revisions live in git history.
 
 CREATE TABLE IF NOT EXISTS events (
     correlation_id  TEXT    NOT NULL,

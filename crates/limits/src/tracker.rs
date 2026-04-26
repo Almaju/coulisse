@@ -1,12 +1,26 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sqlx::SqlitePool;
+use coulisse_core::migrate::{self, SchemaMigrator};
+use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::error::WindowKind;
 use crate::{LimitError, RequestLimits};
 
-const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
-const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
+struct Schema;
+
+impl SchemaMigrator for Schema {
+    const NAME: &'static str = "limits";
+    const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
+    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+
+    async fn upgrade_from(
+        &self,
+        _from_version: &str,
+        _conn: &mut SqliteConnection,
+    ) -> sqlx::Result<()> {
+        unreachable!("limits has only one schema version")
+    }
+}
 
 /// Persistent per-user token-usage tracker. Stores the current hour/day/month
 /// counter for each user in SQLite so limits survive restarts. Shares a pool
@@ -18,16 +32,9 @@ pub struct Tracker {
 
 impl Tracker {
     /// Apply the tracker schema to `pool` and return a tracker that reads and
-    /// writes the `rate_limit_windows` table. Schema statements use
-    /// `CREATE IF NOT EXISTS`, so it is safe to call against a pool that
-    /// already carries other crates' tables.
+    /// writes the `rate_limit_windows` table.
     pub async fn open(pool: SqlitePool) -> Result<Self, LimitError> {
-        for stmt in split_sql(SCHEMA_SQL)
-            .into_iter()
-            .chain(split_sql(MIGRATE_SQL))
-        {
-            sqlx::query(&stmt).execute(&pool).await?;
-        }
+        migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
     }
 
@@ -110,22 +117,6 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn split_sql(sql: &str) -> Vec<String> {
-    let stripped: String = sql
-        .lines()
-        .map(|line| match line.find("--") {
-            Some(i) => &line[..i],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    stripped
-        .split(';')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 #[cfg(test)]

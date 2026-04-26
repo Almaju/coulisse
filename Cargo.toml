@@ -52,6 +52,7 @@ rmcp = { version = "1", features = [
     "transport-streamable-http-client-reqwest",
 ] }
 self_update = { version = "0.44", features = ["archive-tar", "compression-flate2"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

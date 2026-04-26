@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use coulisse_core::migrate::{self, SchemaMigrator};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{SqlitePool, sqlite::SqliteRow};
+use sqlx::{SqliteConnection, SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
 use crate::{
@@ -12,8 +13,21 @@ use crate::{
     MemoryKind, Message, MessageId, Role, StoredMessage, TokenCount, UserId,
 };
 
-const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
-const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
+struct Schema;
+
+impl SchemaMigrator for Schema {
+    const NAME: &'static str = "memory";
+    const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
+    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+
+    async fn upgrade_from(
+        &self,
+        _from_version: &str,
+        _conn: &mut SqliteConnection,
+    ) -> sqlx::Result<()> {
+        unreachable!("memory has only one schema version")
+    }
+}
 
 /// Top-level memory infrastructure. Owns the embedder and the SQLite pool
 /// where all per-user data lives.
@@ -43,7 +57,7 @@ impl Store {
         fallback_api_key: Option<&str>,
     ) -> Result<Self, ConfigError> {
         let embedder = BundledEmbedder::from_config(&config.embedder, fallback_api_key)?;
-        apply_schema(&pool).await?;
+        migrate::run(&pool, &Schema).await?;
         Ok(Self {
             config,
             embedder,
@@ -406,48 +420,6 @@ fn ensure_dir(path: &Path) -> Result<(), ConfigError> {
         path: path.to_path_buf(),
         source,
     })
-}
-
-async fn apply_schema(pool: &SqlitePool) -> Result<(), ConfigError> {
-    for stmt in split_sql(SCHEMA_SQL) {
-        sqlx::query(&stmt).execute(pool).await?;
-    }
-    // Migrate steps may run on a fresh database where the target shape is
-    // already in place from schema.sql. ALTER TABLE ADD COLUMN cannot be
-    // made idempotent in pure SQL, so swallow "duplicate column name"
-    // errors and let everything else surface as a fatal config error.
-    for stmt in split_sql(MIGRATE_SQL) {
-        if let Err(err) = sqlx::query(&stmt).execute(pool).await
-            && !is_already_applied(&err)
-        {
-            return Err(err.into());
-        }
-    }
-    Ok(())
-}
-
-fn is_already_applied(err: &sqlx::Error) -> bool {
-    let Some(db_err) = err.as_database_error() else {
-        return false;
-    };
-    let msg = db_err.message();
-    msg.contains("duplicate column name") || msg.contains("already exists")
-}
-
-fn split_sql(sql: &str) -> Vec<String> {
-    let stripped: String = sql
-        .lines()
-        .map(|line| match line.find("--") {
-            Some(i) => &line[..i],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    stripped
-        .split(';')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 fn check_dims(vector: &[f32], expected: usize) -> Result<(), MemoryError> {

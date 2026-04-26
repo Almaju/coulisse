@@ -9,6 +9,7 @@
 //! thin representation of the API rather than a parallel codebase.
 
 mod config_store;
+pub mod migrate;
 mod web;
 
 use std::future::Future;

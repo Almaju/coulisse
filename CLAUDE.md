@@ -106,9 +106,22 @@ Never commit commented-out code. `git log` exists.
 
 ## Migrations
 
-Commit two files per schema change: `schema.sql` (what the database looks like now) and `migrate.sql` (how to get there from the last version). Git holds the rest.
+Each persistent crate owns a `migrations/schema.sql` (the current schema; what `init` produces on a fresh database) and implements `coulisse_core::migrate::SchemaMigrator`. The trait carries:
 
-Never accumulate numbered migration files (`V001`, `V002`, `V043`). Nobody can read the schema without replaying all of them. `schema.sql` is always the current truth. `migrate.sql` is the single step forward. The previous schema version already lives in git — you don't need it in the directory.
+- `NAME` — feature name, used as the row key in the shared `coulisse_schema_versions` table. Stable forever; renaming strands prior installations.
+- `VERSIONS` — ascending list of crate versions in which the schema changed. The last entry is the version this code targets. Versions whose releases didn't touch the schema are absent.
+- `SCHEMA` — the full current schema, applied verbatim to fresh databases.
+- `upgrade_from(from_version, conn)` — carries a database from `from_version` to the next entry in `VERSIONS`, with arbitrary Rust available for data backfills. Each step runs in its own transaction.
+
+`coulisse_core::migrate::run` is idempotent: a fresh database receives `SCHEMA` and is recorded at the latest version; an older database walks `upgrade_from` forward until it catches up. Versions are stored in the shared `coulisse_schema_versions(name TEXT PK, version TEXT)` table — never `PRAGMA user_version`, which is one int per database, but Coulisse shares one database across crates.
+
+When the schema changes:
+1. Edit `schema.sql` so `init` produces the new shape.
+2. Append the next schema-bumping crate version to `VERSIONS`.
+3. Add a match arm in `upgrade_from` carrying the previous version forward.
+4. Note the schema bump in `CHANGELOG.md` under that crate version.
+
+Never accumulate numbered migration files (`V001`, `V002`, `V043`). `schema.sql` is always the current truth; the previous revision already lives in git. Never write `migrate.sql` files — that single-step model can't catch up a database that skipped intermediate versions.
 
 ## Errors
 

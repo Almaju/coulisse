@@ -1,16 +1,30 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::MessageId;
+use coulisse_core::migrate::{self, SchemaMigrator};
 use sqlx::Row;
-use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
+use sqlx::{SqliteConnection, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::types::{RunId, RunStatus, StoredMessage, StoredRun, TurnRole};
 
-const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
-const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
+struct Schema;
+
+impl SchemaMigrator for Schema {
+    const NAME: &'static str = "smoke";
+    const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
+    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+
+    async fn upgrade_from(
+        &self,
+        _from_version: &str,
+        _conn: &mut SqliteConnection,
+    ) -> sqlx::Result<()> {
+        unreachable!("smoke has only one schema version")
+    }
+}
 
 /// Persistent storage for smoke-test runs. One row per run in
 /// `smoke_runs`, plus the alternating persona/assistant turns in
@@ -23,18 +37,7 @@ pub struct SmokeStore {
 
 impl SmokeStore {
     pub async fn open(pool: SqlitePool) -> Result<Self, SmokeStoreError> {
-        sqlx::query(SCHEMA_SQL).execute(&pool).await?;
-        if !MIGRATE_SQL.trim().is_empty() {
-            for stmt in MIGRATE_SQL
-                .split(';')
-                .map(str::trim)
-                .filter(|s| !s.is_empty() && !s.starts_with("--"))
-            {
-                if let Err(err) = sqlx::query(stmt).execute(&pool).await {
-                    tracing::debug!(error = %err, "smoke migrate step skipped");
-                }
-            }
-        }
+        migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
     }
 
@@ -255,6 +258,8 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, SmokeStoreError> {
 pub enum SmokeStoreError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("schema migration failed: {0}")]
+    Migrate(#[from] coulisse_core::migrate::MigrateError),
     #[error("failed to decode row: {0}")]
     RowDecode(String),
 }

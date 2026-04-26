@@ -9,6 +9,16 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ## [Unreleased]
 
+### Changed
+
+- Database migrations replaced the prior two-file `schema.sql` + `migrate.sql`
+  model with a `coulisse_core::migrate::SchemaMigrator` trait. Each persistent
+  crate declares an ascending `VERSIONS` list of schema-bumping crate
+  versions; older databases walk `upgrade_from(version)` forward until they
+  reach the latest. Versions are stored in a shared
+  `coulisse_schema_versions` table, with arbitrary Rust available per upgrade
+  step.
+
 ## [0.1.0] - 2026-04-26
 
 Initial release.

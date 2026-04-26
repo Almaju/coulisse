@@ -13,6 +13,8 @@ pub enum LimitError {
     },
     #[error("metadata key '{key}' must be a non-negative integer, got '{value}'")]
     InvalidMetadata { key: String, value: String },
+    #[error("schema migration failed: {0}")]
+    Migrate(#[from] coulisse_core::migrate::MigrateError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

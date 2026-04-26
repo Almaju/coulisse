@@ -1,13 +1,30 @@
+use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{ToolCallKind, TurnId, UserId};
 use sqlx::Row;
-use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
+use sqlx::{SqliteConnection, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::TelemetryError;
 use crate::event::{Event, EventKind};
 use crate::id::EventId;
 use crate::tool_call::{ToolCall, ToolCallId};
+
+struct Schema;
+
+impl SchemaMigrator for Schema {
+    const NAME: &'static str = "telemetry";
+    const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
+    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+
+    async fn upgrade_from(
+        &self,
+        _from_version: &str,
+        _conn: &mut SqliteConnection,
+    ) -> sqlx::Result<()> {
+        unreachable!("telemetry has only one schema version")
+    }
+}
 
 pub struct ActivityCounts {
     pub turn_count: u32,
@@ -22,9 +39,6 @@ pub struct ToolCallStats {
     pub user_count: u32,
 }
 
-const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
-const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
-
 /// Read-only handle onto the telemetry tables. Writes flow exclusively
 /// through `SqliteLayer`, which mirrors `tracing` spans into the same
 /// `events` and `tool_calls` tables that this struct reads back for the
@@ -38,25 +52,9 @@ pub struct Sink {
 }
 
 impl Sink {
-    /// Apply the telemetry schema and return a ready-to-use sink. Schema
-    /// statements use `CREATE IF NOT EXISTS` so it's safe to call against a
-    /// pool already used by other crates.
+    /// Apply the telemetry schema and return a ready-to-use sink.
     pub async fn open(pool: SqlitePool) -> Result<Self, TelemetryError> {
-        for stmt in split_sql(SCHEMA_SQL) {
-            sqlx::query(&stmt).execute(&pool).await?;
-        }
-        // Migrate steps may run on a fresh database where the target shape
-        // is already in place from schema.sql. ALTER TABLE RENAME COLUMN
-        // can't be made idempotent in pure SQL, so swallow the "no such
-        // column" / "duplicate column" errors that signal "already
-        // applied" and let everything else surface.
-        for stmt in split_sql(MIGRATE_SQL) {
-            if let Err(err) = sqlx::query(&stmt).execute(&pool).await
-                && !is_already_applied(&err)
-            {
-                return Err(err.into());
-            }
-        }
+        migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
     }
 
@@ -312,25 +310,4 @@ fn kind_from_str(s: &str) -> Result<EventKind, TelemetryError> {
             format!("unknown event kind: {other}").into(),
         ))),
     }
-}
-
-fn is_already_applied(err: &sqlx::Error) -> bool {
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("duplicate column") || msg.contains("no such column")
-}
-
-fn split_sql(sql: &str) -> Vec<String> {
-    let stripped: String = sql
-        .lines()
-        .map(|line| match line.find("--") {
-            Some(i) => &line[..i],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    stripped
-        .split(';')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
