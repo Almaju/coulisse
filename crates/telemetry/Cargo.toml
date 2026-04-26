@@ -18,7 +18,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
 tonic = "0.14"
 tracing.workspace = true
-tracing-opentelemetry = "0.28"
+tracing-opentelemetry = "0.32"
 tracing-subscriber.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"] }
 
