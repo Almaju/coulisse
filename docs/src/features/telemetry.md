@@ -16,7 +16,7 @@ The result: the studio UI gives you an offline audit trail, and any OpenTelemetr
 
 ## Studio integration
 
-When `telemetry.sqlite.enabled` is `true` (the default), the studio's per-turn event tree and tool-call panel render directly from the same spans. Nothing extra to wire up — open `/studio` and the tree is there.
+When `telemetry.sqlite.enabled` is `true` (the default), the studio's per-turn event tree and tool-call panel render directly from the same spans. Nothing extra to wire up — open `/admin/` and the tree is there.
 
 ## OTLP backends
 

@@ -1,3 +1,4 @@
+pub mod admin;
 mod config;
 mod embedder;
 mod error;

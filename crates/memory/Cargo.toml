@@ -5,6 +5,8 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+askama.workspace = true
+axum.workspace = true
 coulisse-core.workspace = true
 reqwest = { version = "0.13", default-features = false }
 rig-core.workspace = true

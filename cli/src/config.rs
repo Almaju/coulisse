@@ -10,19 +10,25 @@ use std::collections::{HashMap, HashSet};
 use std::{fs, path::Path};
 
 use agents::AgentConfig;
+use auth::Config as AuthConfig;
 use experiments::{ExperimentConfig, Strategy};
 use judges::JudgeConfig;
 use mcp::McpServerConfig;
 use memory::MemoryConfig;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
-use studio::StudioConfig;
 use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub agents: Vec<AgentConfig>,
+    /// Authentication for the OpenAI-compatible `/v1/*` proxy and the
+    /// `/admin/*` (studio) surfaces. Each scope is independent: omit a
+    /// scope to leave it unauthenticated (fine for local dev, never for
+    /// anything exposed beyond loopback).
+    #[serde(default)]
+    pub auth: AuthConfig,
     /// Fallback user identifier for requests that don't carry a
     /// `safety_identifier` (or the deprecated `user` field). Unset means
     /// every request must supply its own identifier — appropriate for
@@ -50,11 +56,6 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryConfig,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
-    /// Authentication for the studio UI and JSON API under `/studio`. Omit
-    /// to leave the studio surface unauthenticated — fine for local dev,
-    /// never for anything exposed beyond loopback.
-    #[serde(default)]
-    pub studio: Option<StudioConfig>,
     /// Observability wiring: stderr fmt logs (always on by default),
     /// SQLite mirror that drives the studio UI (on by default), and an
     /// optional OpenTelemetry OTLP exporter for shipping traces to
@@ -87,31 +88,7 @@ impl Config {
         {
             return Err(ConfigError::BlankDefaultUserId);
         }
-        if let Some(studio) = &self.studio {
-            match (&studio.basic, &studio.oidc) {
-                (None, None) => return Err(ConfigError::StudioWithoutAuth),
-                (Some(_), Some(_)) => return Err(ConfigError::StudioBothAuthMethods),
-                (Some(basic), None) => {
-                    if basic.password.is_empty() {
-                        return Err(ConfigError::BlankStudioPassword);
-                    }
-                    if basic.username.is_empty() {
-                        return Err(ConfigError::BlankStudioUsername);
-                    }
-                }
-                (None, Some(oidc)) => {
-                    if oidc.client_id.is_empty() {
-                        return Err(ConfigError::BlankStudioOidcField("client_id"));
-                    }
-                    if oidc.issuer_url.is_empty() {
-                        return Err(ConfigError::BlankStudioOidcField("issuer_url"));
-                    }
-                    if oidc.redirect_url.is_empty() {
-                        return Err(ConfigError::BlankStudioOidcField("redirect_url"));
-                    }
-                }
-            }
-        }
+        self.auth.validate().map_err(ConfigError::Auth)?;
         let mut judge_names = HashSet::new();
         for judge in &self.judges {
             if !judge_names.insert(&judge.name) {
@@ -411,14 +388,10 @@ fn reject_field(
 /// downstream errors instead.
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error(transparent)]
+    Auth(auth::ConfigError),
     #[error("default_user_id must be non-empty when set")]
     BlankDefaultUserId,
-    #[error("studio.oidc.{0} must be non-empty")]
-    BlankStudioOidcField(&'static str),
-    #[error("studio.basic.password must be non-empty")]
-    BlankStudioPassword,
-    #[error("studio.basic.username must be non-empty")]
-    BlankStudioUsername,
     #[error("duplicate agent name in config: {0}")]
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
@@ -521,12 +494,6 @@ pub enum ConfigError {
     },
     #[error("agent '{0}' cannot list itself as a subagent")]
     SelfSubagent(String),
-    #[error("studio block must declare exactly one of `basic` or `oidc`, not both (remove one)")]
-    StudioBothAuthMethods,
-    #[error(
-        "studio block must declare one of `basic` or `oidc` (or remove the block to disable auth)"
-    )]
-    StudioWithoutAuth,
     #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
     UnknownSubagent { agent: String, subagent: String },
 }

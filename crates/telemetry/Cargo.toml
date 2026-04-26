@@ -5,6 +5,8 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+askama.workspace = true
+axum.workspace = true
 coulisse-core.workspace = true
 opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "http-proto", "reqwest-blocking-client"] }

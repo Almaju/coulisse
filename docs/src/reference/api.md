@@ -107,8 +107,8 @@ Useful for UI dropdowns that want to populate a model picker from the server.
 
 ## Studio endpoints
 
-Coulisse also serves a read-only studio UI under `/studio`. It's a server-rendered Axum + htmx surface, not a JSON API — see [Studio UI](../features/studio-ui.md) for details and authentication options.
+Coulisse also serves a read-only studio UI under `/admin/`. It's a server-rendered Axum + htmx surface, not a JSON API — see [Studio UI](../features/studio-ui.md) for details and authentication options.
 
 ## Auth
 
-Coulisse doesn't check the `Authorization` header. API keys set by your SDK are ignored — authentication and rate limiting in front of Coulisse are your responsibility (run it behind a reverse proxy or API gateway). This applies to `/studio` too: expose it only on trusted networks.
+By default Coulisse leaves `/v1/*` open. Configure the `auth.proxy` scope in YAML to require Basic credentials or OIDC for SDK clients; configure `auth.admin` to gate the studio. See [Studio UI](../features/studio-ui.md) for the schema. Anything you don't gate is your responsibility to terminate at the infrastructure layer (reverse proxy, API gateway, VPN).

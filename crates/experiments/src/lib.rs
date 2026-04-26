@@ -7,6 +7,7 @@
 //! Adding or removing a variant reshuffles users — that's the price of
 //! statelessness, and it's documented behaviour.
 
+pub mod admin;
 mod config;
 mod resolver;
 mod router;

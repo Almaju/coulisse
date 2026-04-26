@@ -47,7 +47,7 @@ Coulisse collapses this plumbing into one configurable server. You describe the 
 | OpenAI-compatible API   | ✅ `/v1/chat/completions`, `/v1/models` |
 | Streaming responses     | ✅ Server-Sent Events |
 | Rate limiting           | ✅ Per-user token quotas (hour / day / month, in-memory) |
-| Studio UI               | ✅ Read-only at `/studio` |
+| Studio UI               | ✅ Read-only at `/admin/` |
 | Workflow orchestration  | ⏳ Planned |
 | Durable rate-limit state| ⏳ Planned |
 

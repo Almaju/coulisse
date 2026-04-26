@@ -6,7 +6,9 @@ The goal is to collapse the plumbing that every multi-agent project ends up re-i
 
 # Architecture
 
-One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `experiments`, `judges`, `limits`, `mcp`, `memory`, `providers`, `studio`, `telemetry`. Each is its own crate.
+One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `auth`, `experiments`, `judges`, `limits`, `mcp`, `memory`, `providers`, `telemetry`. Each is its own crate.
+
+The studio UI is **not** its own crate. Each feature crate that has admin pages (`memory`, `telemetry`, `judges`, `experiments`) owns an `admin` module with its own routes, askama templates, and view models. Cli composes them: it merges every feature's admin router under `/admin/*`, owns the shared `base.html` shell (a tower middleware wraps non-htmx responses), and applies the `auth.admin` scope. Cross-feature views (e.g. tool-call panels inside a conversation page) are filled in via htmx fragments — the browser orchestrates the composition so feature crates remain decoupled.
 
 **Layout.** Feature crates live under `crates/`. The orchestrator binary lives at `cli/` (top level), separate from the features it composes — its role is structurally distinct, so its location is too. The workspace root holds nothing but the workspace manifest and project-level files (`coulisse.yaml`, `docs/`, `Justfile`, `.githooks/`).
 

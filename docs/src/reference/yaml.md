@@ -5,8 +5,8 @@ A complete reference for every field in `coulisse.yaml`.
 ## Top-level
 
 ```yaml
-studio: { ... }                # optional; enables Basic auth on /studio/*
 agents: [ ... ]               # required, non-empty
+auth: { ... }                 # optional; per-scope auth for /v1/* and /admin/*
 default_user_id: <string>     # optional, unset by default
 experiments: [ ... ]          # optional; A/B test groups over agents
 judges: [ ... ]               # optional; empty/omitted = no evaluation
@@ -16,16 +16,21 @@ providers: { ... }            # required
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
 ```
 
-## `studio`
+## `auth`
 
 - **Type:** object
-- **Optional.** Omit to leave the studio UI and its JSON API unauthenticated.
+- **Optional.** Omit to leave both surfaces unauthenticated (fine for local dev, never for anything exposed beyond loopback).
 
-When set, exactly one of `basic` or `oidc` must be declared. They are mutually exclusive — the server rejects a config that has both or neither. See [Studio UI](../features/studio-ui.md) for the end-to-end behavior.
+Two independent scopes:
 
-### `studio.basic`
+- `auth.proxy` guards the OpenAI-compatible `/v1/*` surface that SDK clients call.
+- `auth.admin` guards the `/admin/*` surface (the studio UI).
 
-Static HTTP Basic credentials. Best for local dev.
+Each scope is itself optional and accepts the same shape: exactly one of `basic` or `oidc` when present. They are mutually exclusive within a scope — the server rejects a scope block that has both or neither. The two scopes are independent, so you can enable Basic on one and OIDC on the other.
+
+### `auth.<scope>.basic`
+
+Static HTTP Basic credentials. Best for local dev or a single-operator deployment.
 
 | Field      | Type   | Required | Default  | Notes |
 |------------|--------|----------|----------|-------|
@@ -33,13 +38,14 @@ Static HTTP Basic credentials. Best for local dev.
 | `username` | string | no       | `admin`  | Non-empty when set. |
 
 ```yaml
-studio:
-  basic:
-    password: choose-something-strong
-    username: admin
+auth:
+  admin:
+    basic:
+      password: choose-something-strong
+      username: admin
 ```
 
-### `studio.oidc`
+### `auth.<scope>.oidc`
 
 Authorization-code-with-PKCE login against an OIDC-compliant IdP (Authentik, Keycloak, Auth0, Google, etc.). Access control is delegated to the IdP's application policy — Coulisse accepts any successfully authenticated user.
 
@@ -48,16 +54,17 @@ Authorization-code-with-PKCE login against an OIDC-compliant IdP (Authentik, Key
 | `client_id`     | string          | yes      | —                 | Must match the client registered at the IdP. |
 | `client_secret` | string          | no       | —                 | Required for confidential clients (Authentik's default); omit for public clients using PKCE only. |
 | `issuer_url`    | string          | yes      | —                 | IdP issuer. For Authentik: `https://<host>/application/o/<app-slug>/`. |
-| `redirect_url`  | string          | yes      | —                 | Public base URL of the studio. Must be registered as the redirect URI at the IdP. axum-oidc allows every subpath of this URL as a valid redirect. |
+| `redirect_url`  | string          | yes      | —                 | Public base URL inside the protected scope. Must be registered as the redirect URI at the IdP. axum-oidc allows every subpath of this URL as a valid redirect. |
 | `scopes`        | `list<string>`  | no       | `[email, profile]`| Extra OAuth2 scopes. `openid` is added automatically. |
 
 ```yaml
-studio:
-  oidc:
-    issuer_url:    https://authentik.example.com/application/o/coulisse/
-    client_id:     coulisse-studio
-    client_secret: <secret>
-    redirect_url:  http://localhost:8421/studio/
+auth:
+  admin:
+    oidc:
+      issuer_url:    https://authentik.example.com/application/o/coulisse/
+      client_id:     coulisse-admin
+      client_secret: <secret>
+      redirect_url:  http://localhost:8421/admin/
 ```
 
 ## `default_user_id`
@@ -331,9 +338,9 @@ telemetry:
 
 On startup, Coulisse checks:
 
-- `studio` (when set) declares exactly one of `basic` or `oidc`.
-- `studio.basic.password` and `studio.basic.username` are non-empty.
-- `studio.oidc.client_id`, `issuer_url`, and `redirect_url` are non-empty.
+- Each present `auth` scope (`proxy`, `admin`) declares exactly one of `basic` or `oidc`.
+- `auth.<scope>.basic.password` and `auth.<scope>.basic.username` are non-empty.
+- `auth.<scope>.oidc.client_id`, `issuer_url`, and `redirect_url` are non-empty.
 - There is at least one agent.
 - Agent names are unique.
 - Every agent's `provider` is configured.

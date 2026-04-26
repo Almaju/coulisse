@@ -130,7 +130,7 @@ Each turn's `TurnStart` event includes `agent` (the resolved variant), and when 
 
 ## Studio
 
-The studio shows configured experiments at `/studio/experiments`: strategy, sticky-by-user flag, and per-variant weight + share. For bandit experiments, the page additionally shows the configured metric, epsilon, and min-samples threshold, plus per-variant sample counts and mean scores, with the current leader highlighted. Shadow experiments call out the primary variant.
+The studio shows configured experiments at `/admin/experiments`: strategy, sticky-by-user flag, and per-variant weight + share. For bandit experiments, the page additionally shows the configured metric, epsilon, and min-samples threshold, plus per-variant sample counts and mean scores (loaded inline via htmx from the judges admin endpoints). Shadow experiments call out the primary variant.
 
 ## Validation
 

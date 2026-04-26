@@ -3,6 +3,7 @@
 //! that the studio UI renders as a causal tree. Deliberately separate from
 //! `memory` so observability growth never risks leaking into the prompt.
 
+pub mod admin;
 mod config;
 mod error;
 mod event;

@@ -12,6 +12,7 @@
 //! preamble and forces a JSON response shape internally so rubrics stay free
 //! of format/scale boilerplate.
 
+pub mod admin;
 mod config;
 mod judge;
 mod store;

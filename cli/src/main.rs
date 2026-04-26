@@ -3,9 +3,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use agents::{Agents, BootConfig, RigAgents};
+use auth::Auth;
 use axum::Router;
+use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
+use coulisse::admin::shell as admin_shell;
 use coulisse::config::Config;
 use coulisse::server::{self, AppState};
 use coulisse_core::{AgentResolver, ScoreLookup};
@@ -15,7 +18,6 @@ use limits::Tracker;
 use mcp::McpServers;
 use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
 use providers::ProviderKind;
-use studio::{OidcRuntime, StudioAuth, StudioConfig, StudioCredentials, StudioState};
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
 
@@ -24,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path =
         std::env::var("COULISSE_CONFIG").unwrap_or_else(|_| "coulisse.yaml".to_string());
     let config = Config::from_path(&config_path)?;
-    let studio_auth = build_studio_auth(config.studio.as_ref()).await?;
+    let auth = Auth::from_config(config.auth.clone()).await?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
     let embedder_fallback_key = embedder_fallback_key(&config);
@@ -83,22 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         memory: Arc::clone(&memory),
         tracker,
     });
-    let studio_state = Arc::new(StudioState {
-        auth: studio_auth,
-        experiments: experiment_configs.clone(),
-        judges: judge_store,
-        memory,
-        telemetry,
-    });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
     println!("coulisse listening on http://{addr}");
     println!("  memory: {memory_summary}");
-    match studio_state.auth.as_ref() {
-        Some(StudioAuth::Basic(_)) => println!("  studio: basic auth enabled"),
-        Some(StudioAuth::Oidc(_)) => println!("  studio: OIDC login enabled"),
-        None => println!("  studio: unauthenticated (set `studio.basic` or `studio.oidc`)"),
-    }
+    println!("  proxy auth: {}", auth.proxy_summary());
+    println!("  admin auth: {}", auth.admin_summary());
     if let Some(cfg) = &extractor_config {
         println!(
             "  extractor: {} / {} (dedup_threshold={}, max_facts_per_turn={})",
@@ -155,38 +147,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // axum 0.8 nests asymmetrically: `nest("/studio", ...)` matches the
-    // inner `/` route at `/studio`, but a request to `/studio/` returns
+    // The admin surface is composed by merging each feature crate's
+    // admin router. Cross-feature views (e.g. tool calls inside a
+    // conversation page) are filled in via htmx fragments — feature
+    // crates remain decoupled and the cli only owns the layout shell
+    // and the auth wrapping.
+    let experiments_for_admin = Arc::new(experiment_configs.clone());
+    let admin_inner = Router::new()
+        .merge(memory::admin::router(Arc::clone(&memory)))
+        .merge(telemetry::admin::router(Arc::clone(&telemetry)))
+        .merge(judges::admin::router(Arc::clone(&judge_store)))
+        .merge(experiments::admin::router(experiments_for_admin))
+        .route("/", get(|| async { Redirect::permanent("/admin/users") }))
+        .layer(from_fn(admin_shell));
+    let admin_router = auth.wrap_admin(admin_inner);
+    let proxy_router = auth.wrap_proxy(server::router(proxy_state));
+
+    // axum 0.8 nests asymmetrically: `nest("/admin", ...)` matches the
+    // inner `/` route at `/admin`, but a request to `/admin/` returns
     // 404. Redirect the trailing-slash form so bookmarks don't break.
     let app = Router::new()
-        .merge(server::router(proxy_state))
-        .route("/studio/", get(|| async { Redirect::permanent("/studio") }))
-        .nest("/studio", studio::router(studio_state));
+        .merge(proxy_router)
+        .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
+        .nest("/admin", admin_router);
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// Resolve the YAML `studio` block into a runtime `StudioAuth`. Validation
-/// at config load already guarantees that at most one of `basic`/`oidc` is
-/// set when the block is present, so this function only needs to pick the
-/// branch that exists. OIDC builds an issuer-discovered client; any
-/// failure there surfaces as a fatal startup error.
-async fn build_studio_auth(
-    config: Option<&StudioConfig>,
-) -> Result<Option<StudioAuth>, Box<dyn std::error::Error>> {
-    let Some(cfg) = config else { return Ok(None) };
-    if let Some(basic) = &cfg.basic {
-        return Ok(Some(StudioAuth::Basic(StudioCredentials::new(
-            basic.username.clone(),
-            basic.password.clone(),
-        ))));
-    }
-    if let Some(oidc) = &cfg.oidc {
-        let runtime = OidcRuntime::discover(oidc).await?;
-        return Ok(Some(StudioAuth::Oidc(Box::new(runtime))));
-    }
-    Ok(None)
 }
 
 fn build_judges(

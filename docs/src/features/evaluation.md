@@ -124,7 +124,7 @@ Each judge is independent — its own model, rate, and rubric set. A turn can en
 
 ## Viewing scores
 
-The studio UI at `/studio` now shows a **Scores** panel per user. It surfaces two things:
+The studio UI at `/admin/` now shows a **Scores** panel per user. It surfaces two things:
 
 - **Averages** — mean score per `(judge, criterion)` across every turn the user has had, with sample count.
 - **Recent** — the most recent individual scores with reasoning.

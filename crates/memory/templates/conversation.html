@@ -1,0 +1,94 @@
+<div class="space-y-6">
+  <a href="/admin/users" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to users</span>
+  </a>
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Conversation</h1>
+    <p class="mt-1 font-mono text-xs text-slate-400">{{ user_id }}</p>
+  </div>
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <div class="lg:col-span-2">
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Messages</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if messages.is_empty() %}
+            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+              No messages recorded for this user.
+            </div>
+          {% else %}
+          <div class="space-y-3">
+            {% for m in messages %}
+              <div class="space-y-2">
+                {% if m.is_assistant %}
+                  <div hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/tool-calls"
+                       hx-trigger="load"
+                       hx-swap="innerHTML"></div>
+                {% endif %}
+                <div class="rounded-lg border px-4 py-3 {{ m.role_tone }}">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold uppercase tracking-wide
+                      {% if m.is_assistant %}text-indigo-300{% else %}text-slate-300{% endif %}">
+                      {{ m.role_label }}
+                    </span>
+                    <div class="flex items-center gap-2 text-xs text-slate-500">
+                      <span>{{ m.token_count }} tok</span>
+                      <span>·</span>
+                      <span>{{ m.created_at }}</span>
+                    </div>
+                  </div>
+                  <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm text-slate-200">{{ m.content }}</pre>
+                </div>
+                {% if m.is_assistant %}
+                  <details class="mt-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+                    <summary class="cursor-pointer font-semibold uppercase tracking-wide text-slate-400">Telemetry</summary>
+                    <div class="mt-2"
+                         hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/events"
+                         hx-trigger="toggle from:closest details once delay:50ms"
+                         hx-swap="innerHTML">
+                      <span class="italic text-slate-500">Loading…</span>
+                    </div>
+                  </details>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="space-y-6">
+      <div hx-get="/admin/users/{{ user_id }}/scores" hx-trigger="load" hx-swap="innerHTML">
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-500">
+          Loading scores…
+        </div>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Memories</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if memories.is_empty() %}
+            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+              No long-term memories for this user.
+            </div>
+          {% else %}
+            <div class="space-y-2">
+              {% for m in memories %}
+                <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                  <div class="mb-1 flex items-center justify-between">
+                    <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200">{{ m.kind_label }}</span>
+                    <span class="text-xs text-slate-500">{{ m.created_at }}</span>
+                  </div>
+                  <p class="text-sm text-slate-200">{{ m.content }}</p>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
