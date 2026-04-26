@@ -5,9 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-agents.workspace = true
 coulisse-core.workspace = true
-limits.workspace = true
 oxilangtag.workspace = true
 serde.workspace = true
 serde_json.workspace = true

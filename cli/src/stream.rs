@@ -118,7 +118,8 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
 
         if !errored {
             let usage = if include_usage {
-                Some(Usage::from_agents(*final_usage.lock().unwrap()))
+                let u = *final_usage.lock().unwrap();
+                Some(Usage::new(u.input_tokens, u.output_tokens, u.total_tokens))
             } else {
                 None
             };

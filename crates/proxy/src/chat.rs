@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::UserId;
-use limits::{LimitError, RequestLimits};
 use serde::{Deserialize, Serialize};
 
 use crate::language::{LanguageTag, LanguageTagError};
@@ -73,13 +72,7 @@ impl ChatCompletionRequest {
             .find(|m| matches!(m.role, Role::User))
     }
 
-    /// Per-user token limits parsed from `metadata`. Empty when no limit keys
-    /// are present.
-    pub fn request_limits(&self) -> Result<RequestLimits, LimitError> {
-        RequestLimits::from_metadata(&self.metadata)
-    }
-
-    pub fn response_with(&self, text: String, usage: agents::Usage) -> ChatCompletionResponse {
+    pub fn response_with(&self, text: String, usage: Usage) -> ChatCompletionResponse {
         let created = now_secs();
         let message = Message {
             content: Some(text),
@@ -98,7 +91,7 @@ impl ChatCompletionRequest {
             id: response_id(created),
             model: self.model.clone(),
             object: "chat.completion".into(),
-            usage: Usage::from_agents(usage),
+            usage,
         }
     }
 
@@ -129,10 +122,6 @@ impl ChatCompletionRequest {
             .map(str::trim)
             .filter(|s| !s.is_empty())
     }
-}
-
-fn clamp_u32(n: u64) -> u32 {
-    n.min(u32::MAX as u64) as u32
 }
 
 pub fn now_secs() -> u64 {
@@ -208,13 +197,17 @@ pub struct Usage {
 }
 
 impl Usage {
-    pub fn from_agents(usage: agents::Usage) -> Self {
+    pub fn new(prompt_tokens: u64, completion_tokens: u64, total_tokens: u64) -> Self {
         Self {
-            completion_tokens: clamp_u32(usage.output_tokens),
-            prompt_tokens: clamp_u32(usage.input_tokens),
-            total_tokens: clamp_u32(usage.total_tokens),
+            completion_tokens: clamp_u32(completion_tokens),
+            prompt_tokens: clamp_u32(prompt_tokens),
+            total_tokens: clamp_u32(total_tokens),
         }
     }
+}
+
+fn clamp_u32(n: u64) -> u32 {
+    n.min(u32::MAX as u64) as u32
 }
 
 /// One frame of an SSE-streamed chat completion. Mirrors OpenAI's

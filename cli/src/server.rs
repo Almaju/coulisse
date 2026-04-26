@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use coulisse_core::OneShotPrompt;
 use experiments::Strategy;
 use judge::{Judge, Judges, spawn_score};
-use limits::Tracker;
+use limits::{RequestLimits, Tracker};
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use telemetry::TurnId;
 use tracing::{Instrument, info_span};
@@ -206,7 +206,12 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         completion.text.clone(),
     );
 
-    Ok(Json(request.response_with(completion.text, completion.usage)).into_response())
+    let usage = proxy::Usage::new(
+        completion.usage.input_tokens,
+        completion.usage.output_tokens,
+        completion.usage.total_tokens,
+    );
+    Ok(Json(request.response_with(completion.text, usage)).into_response())
 }
 
 async fn models<P: Agents + OneShotPrompt>(
@@ -251,7 +256,7 @@ async fn prepare_request<P: Agents + OneShotPrompt>(
                 .into(),
         )
     })?;
-    let limits = request.request_limits()?;
+    let limits = RequestLimits::from_metadata(&request.metadata)?;
     let language = request.language()?;
     let tracker_key = user_id.0.to_string();
     state.tracker.check(&tracker_key, limits).await?;
