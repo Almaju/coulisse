@@ -1,16 +1,37 @@
 # Installation
 
-Coulisse is a single Rust binary. You build it from source.
+Coulisse is a single Rust binary. Install it from a prebuilt release or build
+from source.
 
 ## Requirements
 
-- Rust (edition 2024) — install from [rustup.rs](https://rustup.rs)
 - A valid API key for at least one supported provider
+
+## Install from a release
+
+The latest GitHub Release ships installers for macOS (x86 + ARM), Linux GNU
+(x86 + ARM), and Windows MSVC.
+
+**macOS / Linux:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Almaju/coulisse/releases/latest/download/coulisse-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Almaju/coulisse/releases/latest/download/coulisse-installer.ps1 | iex"
+```
+
+The installer drops the `coulisse` binary on your `PATH`.
 
 ## Build from source
 
+Requires Rust (edition 2024) — install from [rustup.rs](https://rustup.rs).
+
 ```bash
-git clone <your-coulisse-repo>
+git clone https://github.com/Almaju/coulisse.git
 cd coulisse
 cargo build --release
 ```

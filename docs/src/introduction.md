@@ -52,3 +52,12 @@ Coulisse collapses this plumbing into one configurable server. You describe the 
 | Durable rate-limit state| ⏳ Planned |
 
 Continue to [Installation](./getting-started/installation.md) to get started.
+
+## Stability
+
+Coulisse is pre-1.0. It follows [Semantic Versioning](https://semver.org), but
+during the 0.x phase, minor version bumps (0.1 → 0.2) may include breaking
+changes to the YAML schema, HTTP surface, or CLI. Patch bumps (0.1.0 → 0.1.1)
+will not. See the [Releasing](./reference/releasing.md) chapter and
+[`CHANGELOG.md`](https://github.com/Almaju/coulisse/blob/main/CHANGELOG.md)
+for the version history.

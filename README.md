@@ -8,10 +8,16 @@ Every multi-agent project ends up re-implementing the same plumbing: per-user me
 
 ## Quickstart
 
-**Build:**
+**Install** — grab the latest release for your platform:
 
 ```bash
-git clone https://github.com/almaju/coulisse.git
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Almaju/coulisse/releases/latest/download/coulisse-installer.sh | sh
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/Almaju/coulisse.git
 cd coulisse
 cargo build --release
 ```
@@ -95,7 +101,10 @@ Request a specific agent by setting `model` to its name. Conversation history is
 | Rate limiting | Per-user token quotas on hour / day / month windows. |
 | YAML-driven | Every setting lives in `coulisse.yaml` with startup validation. |
 
-Status: early, but usable for prototypes and personal projects. See the [roadmap](docs/src/reference/roadmap.md) for what's next.
+Status: pre-1.0 — usable for prototypes and personal projects. Minor version
+bumps may include breaking changes until 1.0. See the
+[changelog](CHANGELOG.md) for what's shipped and the
+[roadmap](docs/src/reference/roadmap.md) for what's next.
 
 ## Documentation
 

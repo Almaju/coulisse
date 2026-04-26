@@ -38,4 +38,5 @@
 - [CLI](./reference/cli.md)
 - [HTTP API](./reference/api.md)
 - [YAML schema](./reference/yaml.md)
+- [Releasing](./reference/releasing.md)
 - [Roadmap](./reference/roadmap.md)
