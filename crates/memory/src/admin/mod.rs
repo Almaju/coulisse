@@ -20,26 +20,45 @@ use axum::routing::get;
 use uuid::Uuid;
 
 use crate::{MemoryError, Store, UserId};
-use templates::{ConversationPage, UsersPage};
-use views::{MemoryRow, message_rows};
+use templates::{AgentRecentConversationsFragment, ConversationPage, ConversationsPage};
+use views::{AgentConversationRow, MemoryRow, message_rows};
 
 /// Build the admin router for memory. Cli merges this into the combined
 /// `/admin` router and applies the admin auth scope.
 pub fn router(store: Arc<Store>) -> Router {
     Router::new()
-        .route("/users", get(users))
-        .route("/users/{user_id}", get(conversation))
+        .route(
+            "/agents/{name}/recent-conversations",
+            get(agent_recent_conversations),
+        )
+        .route("/conversations", get(conversations))
+        .route("/conversations/{user_id}", get(conversation))
         .with_state(store)
 }
 
-async fn users(State(store): State<Arc<Store>>) -> Result<Html<String>, AdminError> {
-    let users = store
-        .list_user_summaries()
+async fn agent_recent_conversations(
+    State(store): State<Arc<Store>>,
+    Path(name): Path<String>,
+) -> Result<Html<String>, AdminError> {
+    let _ = name;
+    let conversations: Vec<AgentConversationRow> = store
+        .conversation_summaries()
+        .await?
+        .into_iter()
+        .take(10)
+        .map(Into::into)
+        .collect();
+    render(AgentRecentConversationsFragment { conversations })
+}
+
+async fn conversations(State(store): State<Arc<Store>>) -> Result<Html<String>, AdminError> {
+    let conversations = store
+        .conversation_summaries()
         .await?
         .into_iter()
         .map(Into::into)
         .collect();
-    render(UsersPage { users })
+    render(ConversationsPage { conversations })
 }
 
 async fn conversation(

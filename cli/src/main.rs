@@ -30,11 +30,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth = Auth::from_config(config.auth.clone()).await?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
+    let agent_configs = config.agents.clone();
     let embedder_fallback_key = embedder_fallback_key(&config);
     let experiment_configs = config.experiments.clone();
     let extractor_config = config.memory.extractor.clone();
     let judge_configs = config.judges.clone();
     let memory_summary = memory_summary(&config.memory);
+    let settings_view = Arc::new(coulisse::admin::SettingsView::from_config(&config));
     // Open one SQLite pool and hand clones to every persistent crate.
     // Each crate runs its own schema migrations against the shared
     // pool — table ownership is per-crate, but the connection is
@@ -104,13 +106,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // conversation page) are filled in via htmx fragments — feature
     // crates remain decoupled and the cli only owns the layout shell
     // and the auth wrapping.
+    let agents_for_admin = Arc::new(agent_configs);
     let experiments_for_admin = Arc::new(experiment_configs.clone());
     let admin_inner = Router::new()
+        .merge(agents::admin::router(agents_for_admin))
+        .merge(experiments::admin::router(experiments_for_admin))
+        .merge(judges::admin::router(
+            Arc::clone(&judge_store),
+            Arc::new(judge_configs.clone()),
+        ))
         .merge(memory::admin::router(Arc::clone(&memory)))
         .merge(telemetry::admin::router(Arc::clone(&telemetry)))
-        .merge(judges::admin::router(Arc::clone(&judge_store)))
-        .merge(experiments::admin::router(experiments_for_admin))
-        .route("/", get(|| async { Redirect::permanent("/admin/users") }))
+        .merge(
+            Router::new()
+                .route("/settings", get(coulisse::admin::settings))
+                .with_state(settings_view),
+        )
+        .route("/overview", get(coulisse::admin::overview))
+        .route(
+            "/",
+            get(|| async { Redirect::permanent("/admin/overview") }),
+        )
         .layer(from_fn(admin_shell));
     let admin_router = auth.wrap_admin(admin_inner);
     let proxy_router = auth.wrap_proxy(server::router(proxy_state));

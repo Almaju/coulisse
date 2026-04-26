@@ -68,6 +68,37 @@ impl Store {
         }
     }
 
+    pub async fn conversation_summaries(&self) -> Result<Vec<ConversationSummary>, MemoryError> {
+        let rows = sqlx::query(
+            "SELECT user_id, \
+                    COUNT(*) AS message_count, \
+                    SUM(token_count) AS total_tokens, \
+                    MIN(created_at) AS first_message_at, \
+                    MAX(created_at) AS last_message_at \
+             FROM messages \
+             GROUP BY user_id \
+             ORDER BY last_message_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let user_id: String = row.try_get("user_id")?;
+            let message_count: i64 = row.try_get("message_count")?;
+            let total_tokens: i64 = row.try_get("total_tokens")?;
+            let first_message_at: i64 = row.try_get("first_message_at")?;
+            let last_message_at: i64 = row.try_get("last_message_at")?;
+            out.push(ConversationSummary {
+                first_message_at: first_message_at.max(0) as u64,
+                last_message_at: last_message_at.max(0) as u64,
+                message_count: clamp_u32(message_count),
+                total_tokens: total_tokens.max(0) as u64,
+                user_id: UserId(parse_uuid(&user_id, "user id")?),
+            });
+        }
+        Ok(out)
+    }
+
     /// Summaries of every user the store has seen, ordered by most recent
     /// activity first. Intended for read-only studio views. Counts and
     /// activity timestamps reflect only memory-owned tables (messages,
@@ -312,6 +343,14 @@ impl<'a> UserMemory<'a> {
 pub struct AssembledContext {
     pub memories: Vec<Memory>,
     pub messages: Vec<Message>,
+}
+
+pub struct ConversationSummary {
+    pub first_message_at: u64,
+    pub last_message_at: u64,
+    pub message_count: u32,
+    pub total_tokens: u64,
+    pub user_id: UserId,
 }
 
 /// Aggregate view of a single user's stored data. Returned by

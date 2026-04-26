@@ -20,5 +20,5 @@ mod types;
 
 pub use config::JudgeConfig;
 pub use judge::{Judge, JudgeBuildError, spawn_score};
-pub use store::{JudgeStoreError, Judges};
+pub use store::{AgentCriterionCell, JudgeStoreError, JudgeVolume, Judges};
 pub use types::{Score, ScoreId};

@@ -1,0 +1,96 @@
+<div class="space-y-6">
+  <a href="/admin/judges" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to judges</span>
+  </a>
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">{{ judge.name }}</h1>
+    <p class="mt-1 text-sm text-slate-400">{{ judge.provider }} / {{ judge.model }} · sampling {{ judge.sampling_rate }}</p>
+  </div>
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <div class="space-y-6 lg:col-span-2">
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Rubrics</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if judge.rubrics.is_empty() %}
+            <span class="text-xs italic text-slate-500">No rubrics defined</span>
+          {% else %}
+            <div class="space-y-2">
+            {% for r in judge.rubrics %}
+              <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                <div class="font-mono text-sm text-slate-200">{{ r.name }}</div>
+                <p class="mt-1 text-xs text-slate-400">{{ r.description }}</p>
+              </div>
+            {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      {% if !matrix.criteria.is_empty() %}
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Agent × Criterion (7d)</h2>
+        </div>
+        <div class="overflow-x-auto px-4 py-3">
+          <table class="w-full text-left text-xs">
+            <thead class="text-slate-500 uppercase tracking-wide">
+              <tr>
+                <th class="py-1 font-medium">Agent</th>
+                {% for c in matrix.criteria %}
+                <th class="py-1 text-right font-medium">{{ c }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+            {% for row in matrix.rows %}
+              <tr class="border-t border-slate-800">
+                <td class="py-1 font-mono text-slate-200">
+                  <a href="/admin/agents/{{ row.agent_name }}" class="hover:text-slate-100">{{ row.agent_name }}</a>
+                </td>
+                {% for cell in row.cells %}
+                <td class="py-1 text-right font-mono {{ cell.color_class }}">
+                  {{ cell.mean }}
+                  <span class="text-slate-500">({{ cell.samples }})</span>
+                </td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    <div>
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Recent scores</h2>
+        </div>
+        <div class="px-4 py-3">
+          {% if recent_scores.is_empty() %}
+            <span class="text-xs italic text-slate-500">No scores yet</span>
+          {% else %}
+            <div class="space-y-2">
+            {% for s in recent_scores %}
+              <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                <div class="mb-1 flex items-center justify-between">
+                  <div class="min-w-0">
+                    <span class="text-sm text-slate-200">{{ s.criterion }}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-sm text-slate-100">{{ s.score }}</span>
+                    <span class="text-xs text-slate-500">{{ s.created_at }}</span>
+                  </div>
+                </div>
+                <p class="text-xs text-slate-400">{{ s.reasoning }}</p>
+              </div>
+            {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

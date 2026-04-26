@@ -1,0 +1,54 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Agents</h1>
+    <p class="mt-1 text-sm text-slate-400">All agents configured in <code class="font-mono text-xs">coulisse.yaml</code>.</p>
+  </div>
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">{{ agents.len() }} agent{% if agents.len() != 1 %}s{% endif %}</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if agents.is_empty() %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+          No agents configured.
+        </div>
+      {% else %}
+      <div class="overflow-hidden rounded-md border border-slate-800">
+        <table class="w-full text-left">
+          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th class="px-4 py-2 font-medium">Name</th>
+              <th class="px-4 py-2 font-medium">Provider / Model</th>
+              <th class="px-4 py-2 text-right font-medium">Tools</th>
+              <th class="px-4 py-2 text-right font-medium">Subagents</th>
+              <th class="px-4 py-2 text-right font-medium">Judges</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for a in agents %}
+            <tr
+              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
+              hx-get="/admin/agents/{{ a.name }}"
+              hx-push-url="true"
+            >
+              <td class="px-4 py-3">
+                <div class="font-mono text-sm text-slate-200">{{ a.name }}</div>
+                {% match a.purpose %}
+                  {% when Some with (p) %}
+                  <div class="mt-0.5 text-xs text-slate-500">{{ p }}</div>
+                  {% when None %}
+                {% endmatch %}
+              </td>
+              <td class="px-4 py-3 text-sm text-slate-300">{{ a.provider }} / {{ a.model }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ a.tool_count }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ a.subagent_count }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ a.judge_count }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>

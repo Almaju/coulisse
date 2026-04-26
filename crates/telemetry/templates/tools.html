@@ -1,0 +1,51 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Tools</h1>
+    <p class="mt-1 text-sm text-slate-400">MCP and subagent tool calls observed in the last 7 days.</p>
+  </div>
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">{{ tools.len() }} tool{% if tools.len() != 1 %}s{% endif %}</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if tools.is_empty() %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+          No tool calls recorded in the last 7 days.
+        </div>
+      {% else %}
+      <div class="overflow-hidden rounded-md border border-slate-800">
+        <table class="w-full text-left">
+          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th class="px-4 py-2 font-medium">Tool</th>
+              <th class="px-4 py-2 font-medium">Kind</th>
+              <th class="px-4 py-2 text-right font-medium">Calls</th>
+              <th class="px-4 py-2 text-right font-medium">Errors</th>
+              <th class="px-4 py-2 text-right font-medium">Error rate</th>
+              <th class="px-4 py-2 text-right font-medium">Users</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for t in tools %}
+            <tr
+              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
+              hx-get="/admin/tools/{{ t.tool_name }}"
+              hx-push-url="true"
+            >
+              <td class="px-4 py-3 font-mono text-sm text-slate-200">{{ t.tool_name }}</td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold uppercase {{ t.kind_class }}">{{ t.kind_label }}</span>
+              </td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ t.call_count }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ t.error_count }}</td>
+              <td class="px-4 py-3 text-right text-sm {% if t.error_rate_high %}text-rose-300{% else %}text-slate-300{% endif %}">{{ t.error_rate }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ t.user_count }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>

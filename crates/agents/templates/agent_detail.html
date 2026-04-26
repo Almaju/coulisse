@@ -1,0 +1,101 @@
+<div class="space-y-6">
+  <a href="/admin/agents" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to agents</span>
+  </a>
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">{{ agent.name }}</h1>
+    <p class="mt-1 text-sm text-slate-400">{{ agent.provider }} / {{ agent.model }}</p>
+  </div>
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+    <div class="space-y-6 lg:col-span-2">
+      {% match agent.purpose %}
+        {% when Some with (p) %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Purpose</h2>
+          <p class="text-sm text-slate-200">{{ p }}</p>
+        </div>
+        {% when None %}
+      {% endmatch %}
+      {% if !agent.preamble.is_empty() %}
+      <details class="rounded-lg border border-slate-800 bg-slate-900">
+        <summary class="cursor-pointer border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-100">Preamble</summary>
+        <div class="px-4 py-3">
+          <pre class="whitespace-pre-wrap break-words font-mono text-xs text-slate-300">{{ agent.preamble }}</pre>
+        </div>
+      </details>
+      {% endif %}
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Configuration</h2>
+        </div>
+        <div class="divide-y divide-slate-800">
+          <div class="px-4 py-3">
+            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">MCP Tools</h3>
+            {% if agent.mcp_tools.is_empty() %}
+              <span class="text-xs italic text-slate-500">No tools configured</span>
+            {% else %}
+              <div class="space-y-1">
+              {% for t in agent.mcp_tools %}
+                <div class="flex items-center gap-2 text-sm">
+                  <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">{{ t.server }}</span>
+                  {% match t.only %}
+                    {% when Some with (names) %}
+                    <span class="text-xs text-slate-400">{{ names }}</span>
+                    {% when None %}
+                    <span class="text-xs text-slate-500 italic">all tools</span>
+                  {% endmatch %}
+                </div>
+              {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+          <div class="px-4 py-3">
+            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Subagents</h3>
+            {% if agent.subagents.is_empty() %}
+              <span class="text-xs italic text-slate-500">None</span>
+            {% else %}
+              <div class="flex flex-wrap gap-2">
+              {% for s in agent.subagents %}
+                <a href="/admin/agents/{{ s }}" class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300 hover:bg-emerald-900/40">{{ s }}</a>
+              {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+          <div class="px-4 py-3">
+            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Judges</h3>
+            {% if agent.judges.is_empty() %}
+              <span class="text-xs italic text-slate-500">None</span>
+            {% else %}
+              <div class="flex flex-wrap gap-2">
+              {% for j in agent.judges %}
+                <a href="/admin/judges/{{ j }}" class="inline-flex items-center rounded-md border border-sky-900/60 bg-sky-950/60 px-2 py-0.5 text-xs text-sky-300 hover:bg-sky-900/40">{{ j }}</a>
+              {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-slate-100">Recent conversations</h2>
+        </div>
+        <div class="px-4 py-3"
+             hx-get="/admin/agents/{{ agent.name }}/recent-conversations"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+          <span class="text-xs italic text-slate-500">Loading…</span>
+        </div>
+      </div>
+    </div>
+    <div class="space-y-6">
+      <div hx-get="/admin/agents/{{ agent.name }}/scores"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-500">
+          Loading scores…
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

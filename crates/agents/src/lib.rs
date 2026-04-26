@@ -1,3 +1,4 @@
+pub mod admin;
 mod config;
 mod error;
 mod runtime;

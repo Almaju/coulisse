@@ -6,12 +6,16 @@
 //! Bookmarked deep URLs render with full navigation; htmx-driven
 //! navigations stay lean.
 
+use std::sync::Arc;
+
 use askama::Template;
 use axum::body::{Body, to_bytes};
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
+
+use crate::config::Config;
 
 #[derive(Template)]
 #[template(path = "base.html")]
@@ -62,4 +66,132 @@ pub async fn shell(request: Request, next: Next) -> Response {
     };
     parts.headers.remove(header::CONTENT_LENGTH);
     Response::from_parts(parts, Body::from(html))
+}
+
+#[derive(Template)]
+#[template(path = "overview.html")]
+struct OverviewPage;
+
+pub async fn overview() -> Result<Html<String>, StatusCode> {
+    let html = OverviewPage
+        .render()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+#[derive(Clone)]
+pub struct ProviderRow {
+    pub kind: String,
+    pub masked_key: String,
+}
+
+#[derive(Clone)]
+pub struct SettingsView {
+    pub agent_count: usize,
+    pub auth_admin: String,
+    pub auth_proxy: String,
+    pub experiment_count: usize,
+    pub judge_count: usize,
+    pub memory_backend: String,
+    pub memory_context_budget: u32,
+    pub memory_embedder: String,
+    pub memory_extractor: String,
+    pub providers: Vec<ProviderRow>,
+    pub telemetry_fmt: bool,
+    pub telemetry_otlp: String,
+    pub telemetry_sqlite: bool,
+}
+
+impl SettingsView {
+    pub fn from_config(config: &Config) -> Self {
+        let auth_admin = auth_summary(&config.auth.admin);
+        let auth_proxy = auth_summary(&config.auth.proxy);
+
+        let memory_backend = match &config.memory.backend {
+            memory::BackendConfig::InMemory => "In-memory (ephemeral)".to_string(),
+            memory::BackendConfig::Sqlite { path } => format!("SQLite at {}", path.display()),
+        };
+
+        let memory_embedder = match &config.memory.embedder {
+            memory::EmbedderConfig::Hash { dims } => format!("hash (dims={dims})"),
+            memory::EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
+            memory::EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
+        };
+
+        let memory_extractor = config
+            .memory
+            .extractor
+            .as_ref()
+            .map(|e| format!("{} / {}", e.provider, e.model))
+            .unwrap_or_else(|| "Disabled".to_string());
+
+        let mut providers: Vec<ProviderRow> = config
+            .providers
+            .iter()
+            .map(|(kind, cfg)| {
+                let key = &cfg.api_key;
+                let masked_key = if key.len() > 4 {
+                    format!("····{}", &key[key.len() - 4..])
+                } else {
+                    "····".to_string()
+                };
+                ProviderRow {
+                    kind: kind.as_str().to_string(),
+                    masked_key,
+                }
+            })
+            .collect();
+        providers.sort_by(|a, b| a.kind.cmp(&b.kind));
+
+        Self {
+            agent_count: config.agents.len(),
+            auth_admin,
+            auth_proxy,
+            experiment_count: config.experiments.len(),
+            judge_count: config.judges.len(),
+            memory_backend,
+            memory_context_budget: config.memory.context_budget.0,
+            memory_embedder,
+            memory_extractor,
+            providers,
+            telemetry_fmt: config.telemetry.fmt.enabled,
+            telemetry_otlp: config
+                .telemetry
+                .otlp
+                .as_ref()
+                .map(|o| o.endpoint.clone())
+                .unwrap_or_else(|| "Disabled".to_string()),
+            telemetry_sqlite: config.telemetry.sqlite.enabled,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "settings.html")]
+struct SettingsPage {
+    settings: SettingsView,
+}
+
+pub async fn settings(State(view): State<Arc<SettingsView>>) -> Result<Html<String>, StatusCode> {
+    let html = SettingsPage {
+        settings: (*view).clone(),
+    }
+    .render()
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+fn auth_summary(scope: &Option<auth::ScopeConfig>) -> String {
+    match scope {
+        None => "Unauthenticated".to_string(),
+        Some(s) => {
+            if s.basic.is_some() {
+                "Basic auth".to_string()
+            } else if let Some(oidc) = &s.oidc {
+                format!("OIDC ({})", oidc.issuer_url)
+            } else {
+                "Unconfigured".to_string()
+            }
+        }
+    }
 }

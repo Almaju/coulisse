@@ -1,0 +1,47 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Judges</h1>
+    <p class="mt-1 text-sm text-slate-400">LLM-as-judge evaluators configured in <code class="font-mono text-xs">coulisse.yaml</code>.</p>
+  </div>
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">{{ judges.len() }} judge{% if judges.len() != 1 %}s{% endif %}</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if judges.is_empty() %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+          No judges configured. Add a <code class="font-mono text-xs">judges:</code> entry to your config.
+        </div>
+      {% else %}
+      <div class="overflow-hidden rounded-md border border-slate-800">
+        <table class="w-full text-left">
+          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th class="px-4 py-2 font-medium">Name</th>
+              <th class="px-4 py-2 font-medium">Provider / Model</th>
+              <th class="px-4 py-2 text-right font-medium">Criteria</th>
+              <th class="px-4 py-2 text-right font-medium">Sampling</th>
+              <th class="px-4 py-2 text-right font-medium">Scores (7d)</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for j in judges %}
+            <tr
+              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
+              hx-get="/admin/judges/{{ j.name }}"
+              hx-push-url="true"
+            >
+              <td class="px-4 py-3 font-mono text-sm text-slate-200">{{ j.name }}</td>
+              <td class="px-4 py-3 text-sm text-slate-300">{{ j.provider }} / {{ j.model }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ j.criteria_count }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ j.sampling_rate }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ j.score_count_7d }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>

@@ -19,6 +19,6 @@ pub use error::TelemetryError;
 pub use event::{Event, EventKind};
 pub use id::EventId;
 pub use init::{InitError, TelemetryGuard, init_subscriber};
-pub use sink::Sink;
+pub use sink::{ActivityCounts, Sink, ToolCallStats};
 pub use sqlite_layer::{SqliteLayer, SqliteLayerGuard};
 pub use tool_call::{ToolCall, ToolCallId};

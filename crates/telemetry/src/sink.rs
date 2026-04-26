@@ -9,6 +9,19 @@ use crate::event::{Event, EventKind};
 use crate::id::EventId;
 use crate::tool_call::{ToolCall, ToolCallId};
 
+pub struct ActivityCounts {
+    pub turn_count: u32,
+    pub user_count: u32,
+}
+
+pub struct ToolCallStats {
+    pub call_count: u32,
+    pub error_count: u32,
+    pub kind: ToolCallKind,
+    pub tool_name: String,
+    pub user_count: u32,
+}
+
 const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
 const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
 
@@ -110,6 +123,78 @@ impl Sink {
              turn_id, user_id FROM tool_calls WHERE user_id = ? ORDER BY rowid ASC",
         )
         .bind(user_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_tool_call).collect()
+    }
+
+    pub async fn recent_activity_counts(
+        &self,
+        since: u64,
+    ) -> Result<ActivityCounts, TelemetryError> {
+        let row = sqlx::query(
+            "SELECT COUNT(DISTINCT user_id) AS user_count, \
+             COUNT(DISTINCT correlation_id) AS turn_count \
+             FROM events \
+             WHERE created_at >= ?",
+        )
+        .bind(since as i64)
+        .fetch_one(&self.pool)
+        .await?;
+        let turn_count: i64 = row.try_get("turn_count")?;
+        let user_count: i64 = row.try_get("user_count")?;
+        Ok(ActivityCounts {
+            turn_count: turn_count.max(0) as u32,
+            user_count: user_count.max(0) as u32,
+        })
+    }
+
+    pub async fn tool_call_stats(&self, since: u64) -> Result<Vec<ToolCallStats>, TelemetryError> {
+        let rows = sqlx::query(
+            "SELECT tool_name, kind, \
+             COUNT(*) AS call_count, \
+             SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS error_count, \
+             COUNT(DISTINCT user_id) AS user_count \
+             FROM tool_calls \
+             WHERE created_at >= ? \
+             GROUP BY tool_name, kind \
+             ORDER BY call_count DESC",
+        )
+        .bind(since as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let call_count: i64 = row.try_get("call_count")?;
+            let error_count: i64 = row.try_get("error_count")?;
+            let kind: String = row.try_get("kind")?;
+            let tool_name: String = row.try_get("tool_name")?;
+            let user_count: i64 = row.try_get("user_count")?;
+            out.push(ToolCallStats {
+                call_count: call_count.max(0) as u32,
+                error_count: error_count.max(0) as u32,
+                kind: parse_tool_call_kind(&kind)?,
+                tool_name,
+                user_count: user_count.max(0) as u32,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn tool_calls_for_tool(
+        &self,
+        tool_name: &str,
+        limit: u32,
+    ) -> Result<Vec<ToolCall>, TelemetryError> {
+        let rows = sqlx::query(
+            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
+             turn_id, user_id FROM tool_calls \
+             WHERE tool_name = ? \
+             ORDER BY created_at DESC \
+             LIMIT ?",
+        )
+        .bind(tool_name)
+        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(row_to_tool_call).collect()

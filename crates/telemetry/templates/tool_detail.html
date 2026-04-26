@@ -1,0 +1,83 @@
+<div class="space-y-6">
+  <a href="/admin/tools" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
+    <span>←</span>
+    <span>Back to tools</span>
+  </a>
+  <div>
+    <div class="flex items-center gap-3">
+      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">{{ tool.tool_name }}</h1>
+      <span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold uppercase {{ tool.kind_class }}">{{ tool.kind_label }}</span>
+    </div>
+  </div>
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <div class="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3">
+      <div class="text-xs font-semibold uppercase tracking-wide text-slate-400">Calls (7d)</div>
+      <div class="mt-1 text-2xl font-semibold text-slate-100">{{ tool.call_count }}</div>
+    </div>
+    <div class="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3">
+      <div class="text-xs font-semibold uppercase tracking-wide text-slate-400">Errors (7d)</div>
+      <div class="mt-1 text-2xl font-semibold text-slate-100">{{ tool.error_count }}</div>
+      <div class="text-xs text-slate-500">{{ tool.error_rate }}</div>
+    </div>
+    <div class="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3">
+      <div class="text-xs font-semibold uppercase tracking-wide text-slate-400">Users (7d)</div>
+      <div class="mt-1 text-2xl font-semibold text-slate-100">{{ tool.user_count }}</div>
+    </div>
+  </div>
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">Recent calls</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if recent_calls.is_empty() %}
+        <span class="text-xs italic text-slate-500">No recent calls</span>
+      {% else %}
+        <div class="space-y-2">
+        {% for c in recent_calls %}
+          <details class="rounded-md border border-slate-800 bg-slate-950/80 px-3 py-2 text-sm text-slate-300">
+            <summary class="flex cursor-pointer items-center justify-between gap-2">
+              <span class="font-mono text-xs text-slate-400">{{ c.user_id }}</span>
+              <div class="flex items-center gap-2">
+                {% match c.error %}
+                  {% when Some with (_) %}
+                  <span class="text-xs text-rose-400">error</span>
+                  {% when None %}
+                  {% match c.result %}
+                    {% when Some with (_) %}
+                    <span class="text-xs text-slate-500">ok</span>
+                    {% when None %}
+                    <span class="text-xs text-slate-500">pending</span>
+                  {% endmatch %}
+                {% endmatch %}
+                <span class="text-xs text-slate-500">{{ c.created_at }}</span>
+              </div>
+            </summary>
+            <div class="mt-2 space-y-2">
+              <div>
+                <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Args</div>
+                <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">{{ c.args }}</pre>
+              </div>
+              {% match c.error %}
+              {% when Some with (err) %}
+                <div>
+                  <div class="text-[10px] font-semibold uppercase tracking-wide text-rose-400">Error</div>
+                  <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-rose-300">{{ err }}</pre>
+                </div>
+              {% when None %}
+                {% match c.result %}
+                {% when Some with (res) %}
+                  <div>
+                    <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Result</div>
+                    <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">{{ res }}</pre>
+                  </div>
+                {% when None %}
+                {% endmatch %}
+              {% endmatch %}
+            </div>
+          </details>
+        {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>

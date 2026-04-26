@@ -10,6 +10,18 @@ use uuid::Uuid;
 
 use crate::{Score, ScoreId};
 
+pub struct AgentCriterionCell {
+    pub agent_name: String,
+    pub criterion: String,
+    pub mean: f32,
+    pub samples: u32,
+}
+
+pub struct JudgeVolume {
+    pub count: u32,
+    pub judge_name: String,
+}
+
 const SCHEMA_SQL: &str = include_str!("../migrations/schema.sql");
 const MIGRATE_SQL: &str = include_str!("../migrations/migrate.sql");
 
@@ -67,6 +79,58 @@ impl Judges {
         Ok(score.id)
     }
 
+    pub async fn agent_criterion_matrix(
+        &self,
+        judge: &str,
+        since: u64,
+    ) -> Result<Vec<AgentCriterionCell>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_name, criterion, AVG(score) AS mean, COUNT(*) AS samples \
+             FROM scores \
+             WHERE judge_name = ? AND created_at >= ? \
+             GROUP BY agent_name, criterion \
+             ORDER BY agent_name, criterion",
+        )
+        .bind(judge)
+        .bind(since as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let agent_name: String = row.try_get("agent_name")?;
+            let criterion: String = row.try_get("criterion")?;
+            let mean: f64 = row.try_get("mean")?;
+            let samples: i64 = row.try_get("samples")?;
+            out.push(AgentCriterionCell {
+                agent_name,
+                criterion,
+                mean: mean as f32,
+                samples: samples as u32,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn all_scores_since(
+        &self,
+        since: u64,
+        limit: u32,
+    ) -> Result<Vec<Score>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id \
+             FROM scores \
+             WHERE created_at >= ? \
+             ORDER BY created_at DESC \
+             LIMIT ?",
+        )
+        .bind(since as i64)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_score).collect()
+    }
+
     /// All judge scores recorded for `user_id`, chronological.
     pub async fn scores(&self, user_id: UserId) -> Result<Vec<Score>, JudgeStoreError> {
         let rows = sqlx::query(
@@ -86,6 +150,61 @@ impl Judges {
             .fetch_one(&self.pool)
             .await?;
         Ok(row.0 as usize)
+    }
+
+    pub async fn score_volume(&self, since: u64) -> Result<Vec<JudgeVolume>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT judge_name, COUNT(*) AS count \
+             FROM scores \
+             WHERE created_at >= ? \
+             GROUP BY judge_name \
+             ORDER BY judge_name",
+        )
+        .bind(since as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let judge_name: String = row.try_get("judge_name")?;
+            let count: i64 = row.try_get("count")?;
+            out.push(JudgeVolume {
+                count: count as u32,
+                judge_name,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn scores_for_agent(&self, agent_name: &str) -> Result<Vec<Score>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id \
+             FROM scores WHERE agent_name = ? ORDER BY created_at DESC LIMIT 50",
+        )
+        .bind(agent_name)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_score).collect()
+    }
+
+    pub async fn scores_for_judge(
+        &self,
+        judge: &str,
+        limit: u32,
+    ) -> Result<Vec<Score>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id \
+             FROM scores \
+             WHERE judge_name = ? \
+             ORDER BY created_at DESC \
+             LIMIT ?",
+        )
+        .bind(judge)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_score).collect()
     }
 
     /// Mean and sample count of scores grouped by `agent_name`, scoped to

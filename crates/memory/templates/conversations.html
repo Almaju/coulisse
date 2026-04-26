@@ -8,7 +8,7 @@
       <h2 class="text-sm font-semibold text-slate-100">Users</h2>
     </div>
     <div class="px-4 py-3">
-      {% if users.is_empty() %}
+      {% if conversations.is_empty() %}
         <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
           No users have interacted with the server yet.
         </div>
@@ -19,24 +19,23 @@
             <tr>
               <th class="px-4 py-2 font-medium">User id</th>
               <th class="px-4 py-2 text-right font-medium">Messages</th>
-              <th class="px-4 py-2 text-right font-medium">Memories</th>
+              <th class="px-4 py-2 text-right font-medium">Tokens</th>
+              <th class="px-4 py-2 text-right font-medium">Duration</th>
               <th class="px-4 py-2 text-right font-medium">Last activity</th>
             </tr>
           </thead>
           <tbody>
-          {% for u in users %}
+          {% for c in conversations %}
             <tr
               class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
-              onclick="window.location='/admin/users/{{ u.user_id }}'"
+              hx-get="/admin/conversations/{{ c.user_id }}"
+              hx-push-url="true"
             >
-              <td class="px-4 py-3 font-mono text-xs text-slate-300">{{ u.user_id }}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ u.message_count }}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">
-                <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200">
-                  {{ u.memory_count }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-right text-sm text-slate-400">{{ u.last_activity_at }}</td>
+              <td class="px-4 py-3 font-mono text-xs text-slate-300">{{ c.user_id }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ c.message_count }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ c.total_tokens }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-400">{{ c.duration }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-400">{{ c.last_activity_at }}</td>
             </tr>
           {% endfor %}
           </tbody>

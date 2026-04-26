@@ -5,7 +5,9 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+askama.workspace = true
 async-stream.workspace = true
+axum.workspace = true
 coulisse-core.workspace = true
 futures.workspace = true
 mcp.workspace = true
@@ -16,4 +18,3 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-

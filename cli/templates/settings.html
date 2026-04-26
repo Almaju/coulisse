@@ -1,0 +1,103 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Settings</h1>
+    <p class="mt-1 text-sm text-slate-400">Running configuration (read-only). Edit <code class="font-mono text-xs">coulisse.yaml</code> and restart to apply changes.</p>
+  </div>
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Providers</h2>
+      </div>
+      <div class="px-4 py-3">
+        {% if settings.providers.is_empty() %}
+          <span class="text-xs italic text-slate-500">No providers configured</span>
+        {% else %}
+        <div class="space-y-2">
+          {% for p in settings.providers %}
+          <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+            <span class="font-mono text-sm text-slate-200">{{ p.kind }}</span>
+            <span class="font-mono text-xs text-slate-500">{{ p.masked_key }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Memory</h2>
+      </div>
+      <div class="divide-y divide-slate-800">
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Backend</span>
+          <span class="text-sm text-slate-300">{{ settings.memory_backend }}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Embedder</span>
+          <span class="text-sm text-slate-300">{{ settings.memory_embedder }}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Extractor</span>
+          <span class="text-sm text-slate-300">{{ settings.memory_extractor }}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Context budget</span>
+          <span class="font-mono text-sm text-slate-300">{{ settings.memory_context_budget }} tokens</span>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Telemetry</h2>
+      </div>
+      <div class="divide-y divide-slate-800">
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Stderr logs</span>
+          <span class="text-sm {% if settings.telemetry_fmt %}text-emerald-300{% else %}text-slate-500{% endif %}">{% if settings.telemetry_fmt %}Enabled{% else %}Disabled{% endif %}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">SQLite layer</span>
+          <span class="text-sm {% if settings.telemetry_sqlite %}text-emerald-300{% else %}text-slate-500{% endif %}">{% if settings.telemetry_sqlite %}Enabled{% else %}Disabled{% endif %}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">OTLP</span>
+          <span class="text-sm text-slate-300">{{ settings.telemetry_otlp }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Auth</h2>
+      </div>
+      <div class="divide-y divide-slate-800">
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Proxy scope</span>
+          <span class="text-sm text-slate-300">{{ settings.auth_proxy }}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Admin scope</span>
+          <span class="text-sm text-slate-300">{{ settings.auth_admin }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-100">Summary</h2>
+      </div>
+      <div class="divide-y divide-slate-800">
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Agents</span>
+          <span class="font-mono text-sm text-slate-300">{{ settings.agent_count }}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Experiments</span>
+          <span class="font-mono text-sm text-slate-300">{{ settings.experiment_count }}</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Judges</span>
+          <span class="font-mono text-sm text-slate-300">{{ settings.judge_count }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

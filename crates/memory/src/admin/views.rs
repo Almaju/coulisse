@@ -4,24 +4,90 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{Memory, MemoryKind, Role, StoredMessage, UserSummary};
+use crate::{ConversationSummary, Memory, MemoryKind, Role, StoredMessage};
 
-pub struct UserRow {
+pub struct AgentConversationRow {
     pub last_activity_at: String,
-    pub memory_count: u32,
     pub message_count: u32,
+    pub user_id: String,
+    pub user_id_short: String,
+}
+
+impl From<ConversationSummary> for AgentConversationRow {
+    fn from(s: ConversationSummary) -> Self {
+        let full = s.user_id.0.to_string();
+        let short = if full.len() > 8 {
+            format!("{}…", &full[..8])
+        } else {
+            full.clone()
+        };
+        Self {
+            last_activity_at: relative_time(s.last_message_at),
+            message_count: s.message_count,
+            user_id: full,
+            user_id_short: short,
+        }
+    }
+}
+
+pub struct ConversationRow {
+    pub duration: String,
+    pub last_activity_at: String,
+    pub message_count: u32,
+    pub total_tokens: String,
     pub user_id: String,
 }
 
-impl From<UserSummary> for UserRow {
-    fn from(s: UserSummary) -> Self {
+impl From<ConversationSummary> for ConversationRow {
+    fn from(s: ConversationSummary) -> Self {
         Self {
-            last_activity_at: relative_time(s.last_activity_at),
-            memory_count: s.memory_count,
+            duration: format_duration(s.first_message_at, s.last_message_at),
+            last_activity_at: relative_time(s.last_message_at),
             message_count: s.message_count,
+            total_tokens: format_tokens(s.total_tokens),
             user_id: s.user_id.0.to_string(),
         }
     }
+}
+
+fn format_duration(first: u64, last: u64) -> String {
+    let diff = last.saturating_sub(first);
+    if diff < 60 {
+        return "< 1m".into();
+    }
+    let minutes = diff / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if days > 0 {
+        let remaining_hours = hours % 24;
+        if remaining_hours > 0 {
+            return format!("{}d {}h", days, remaining_hours);
+        }
+        return format!("{}d", days);
+    }
+    if hours > 0 {
+        let remaining_minutes = minutes % 60;
+        if remaining_minutes > 0 {
+            return format!("{}h {}m", hours, remaining_minutes);
+        }
+        return format!("{}h", hours);
+    }
+    format!("{}m", minutes)
+}
+
+fn format_tokens(n: u64) -> String {
+    if n == 0 {
+        return "0".into();
+    }
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
 }
 
 pub struct MessageRow {
