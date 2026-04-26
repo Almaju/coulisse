@@ -18,8 +18,3 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-sqlx.workspace = true
-telemetry.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
-tracing-subscriber.workspace = true
