@@ -25,6 +25,7 @@
                 {% if m.is_assistant %}
                   <div hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/tool-calls"
                        hx-trigger="load"
+                       hx-target="this"
                        hx-swap="innerHTML"></div>
                 {% endif %}
                 <div class="rounded-lg border px-4 py-3 {{ m.role_tone }}">
@@ -47,6 +48,7 @@
                     <div class="mt-2"
                          hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/events"
                          hx-trigger="toggle from:closest details once delay:50ms"
+                         hx-target="this"
                          hx-swap="innerHTML">
                       <span class="italic text-slate-500">Loading…</span>
                     </div>
@@ -60,7 +62,7 @@
       </div>
     </div>
     <div class="space-y-6">
-      <div hx-get="/admin/users/{{ user_id }}/scores" hx-trigger="load" hx-swap="innerHTML">
+      <div hx-get="/admin/users/{{ user_id }}/scores" hx-trigger="load" hx-target="this" hx-swap="innerHTML">
         <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-500">
           Loading scores…
         </div>
