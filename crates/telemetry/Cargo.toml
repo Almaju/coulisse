@@ -8,7 +8,7 @@ version.workspace = true
 askama.workspace = true
 axum.workspace = true
 coulisse-core.workspace = true
-opentelemetry = "0.27"
+opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 serde = { workspace = true, features = ["derive"] }
