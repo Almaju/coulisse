@@ -9,6 +9,8 @@ RUN apt-get update \
 
 WORKDIR /build
 COPY Cargo.toml ./
+COPY cli ./cli
+COPY coulisse.example.yaml ./
 COPY crates ./crates
 
 RUN cargo build --release --bin coulisse
