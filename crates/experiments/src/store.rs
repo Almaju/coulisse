@@ -168,8 +168,7 @@ fn row_to_dynamic_experiment(row: &SqliteRow) -> Result<DynamicExperimentRow, Ex
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| coulisse_core::u64_to_i64(d.as_secs()))
-        .unwrap_or(0)
+        .map_or(0, |d| coulisse_core::u64_to_i64(d.as_secs()))
 }
 
 #[derive(Debug, Error)]

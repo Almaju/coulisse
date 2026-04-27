@@ -271,8 +271,7 @@ fn average_by_criterion(scores: &[Score]) -> Vec<CriterionAverageRow> {
 fn relative_time(seconds: u64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(seconds);
+        .map_or(seconds, |d| d.as_secs());
     let diff = now.saturating_sub(seconds);
     if diff < 60 {
         return "just now".into();

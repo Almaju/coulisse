@@ -72,8 +72,7 @@ impl ExperimentRouter {
             .unwrap_or(BANDIT_DEFAULT_WINDOW_SECONDS);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         let since = now.saturating_sub(window);
         Some((judge.to_string(), criterion.to_string(), since))
     }
@@ -288,8 +287,7 @@ fn sticky_seed(user_id: UserId, experiment_name: &str) -> u64 {
 fn per_request_seed(user_id: UserId, experiment_name: &str) -> u64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     let mut hasher = Fnv64::new();
     hasher.write(user_id.0.as_bytes());
     hasher.write(experiment_name.as_bytes());

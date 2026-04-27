@@ -375,8 +375,7 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Visitor that flattens `tracing` field values into a string map. Captures

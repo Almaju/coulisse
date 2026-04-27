@@ -78,8 +78,7 @@ impl ExperimentRow {
                     let window = exp.bandit_window_seconds.unwrap_or(7 * 24 * 60 * 60);
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                        .map_or(0, |d| d.as_secs());
                     let since = now.saturating_sub(window);
                     format!(
                         "/admin/scores/means?judge={}&criterion={}&since={}",
