@@ -1,11 +1,18 @@
 # syntax=docker/dockerfile:1
 
 # --- Build stage ---------------------------------------------------------
-FROM rust:1-slim AS builder
+# Alpine uses musl libc, producing a statically-linked binary with no
+# glibc dependency — required for aarch64 hosts (Raspberry Pi) that run
+# an older glibc than whatever rust:slim currently ships.
+FROM rust:alpine AS builder
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+    musl-dev \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static
+
+ENV OPENSSL_STATIC=1
 
 WORKDIR /build
 COPY Cargo.toml ./
@@ -16,13 +23,11 @@ COPY crates ./crates
 RUN cargo build --release --bin coulisse
 
 # --- Runtime stage -------------------------------------------------------
-FROM debian:bookworm-slim
+FROM alpine:3
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-RUN useradd --system --user-group --home-dir /var/lib/coulisse coulisse \
+RUN apk add --no-cache ca-certificates \
+ && addgroup -S coulisse \
+ && adduser -S -G coulisse -h /var/lib/coulisse coulisse \
  && mkdir -p /var/lib/coulisse /etc/coulisse \
  && chown -R coulisse:coulisse /var/lib/coulisse /etc/coulisse
 
