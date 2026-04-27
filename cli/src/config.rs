@@ -65,14 +65,17 @@ pub struct Config {
     #[serde(default)]
     pub smoke_tests: Vec<SmokeTestConfig>,
     /// Observability wiring: stderr fmt logs (always on by default),
-    /// SQLite mirror that drives the studio UI (on by default), and an
+    /// `SQLite` mirror that drives the studio UI (on by default), and an
     /// optional OpenTelemetry OTLP exporter for shipping traces to
-    /// Grafana / SigNoz / Jaeger / etc.
+    /// Grafana / `SigNoz` / Jaeger / etc.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
 }
 
 impl Config {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| ConfigError::ReadConfig {
@@ -87,6 +90,10 @@ impl Config {
     /// Whole-graph schema validation. Run once on YAML load and again on
     /// every runtime mutation so cross-references (agent → provider, agent
     /// → judge, agent → mcp, agent → subagent) stay consistent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.agents.is_empty() {
             return Err(ConfigError::NoAgents);
@@ -592,11 +599,11 @@ mod tests {
         Ok(config)
     }
 
-    const BASE_PROVIDERS: &str = r#"
+    const BASE_PROVIDERS: &str = r"
 providers:
   openai:
     api_key: test
-"#;
+";
 
     #[test]
     fn subagents_and_purpose_parse_and_validate() {
@@ -1112,7 +1119,7 @@ experiments:
         }
     }
 
-    const SMOKE_BASE: &str = r#"
+    const SMOKE_BASE: &str = r"
 providers:
   openai:
     api_key: test
@@ -1120,7 +1127,7 @@ agents:
   - name: assistant
     provider: openai
     model: gpt-4
-"#;
+";
 
     #[test]
     fn smoke_test_with_valid_target_parses() {

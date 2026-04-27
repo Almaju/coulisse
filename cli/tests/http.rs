@@ -46,7 +46,7 @@ fn make_agents() -> Vec<AgentConfig> {
 }
 
 /// Per-test wiring. Holds the telemetry sink (for assertions) plus the
-/// SqliteLayer subscriber guard so tests can `flush().await` before
+/// `SqliteLayer` subscriber guard so tests can `flush().await` before
 /// reading rows. Drop order matters: drop the subscriber default last
 /// so any spans emitted during teardown are still recorded.
 pub struct TestHarness {
@@ -54,7 +54,7 @@ pub struct TestHarness {
     pub sink: Arc<telemetry::Sink>,
     pub state: Arc<AppState<ScriptedAgents>>,
     pub telemetry_guard: telemetry::SqliteLayerGuard,
-    _subscriber_guard: tracing::subscriber::DefaultGuard,
+    pub subscriber_guard: tracing::subscriber::DefaultGuard,
 }
 
 async fn make_app(replies: Vec<ScriptedReply>) -> TestHarness {
@@ -96,7 +96,7 @@ async fn make_app_with_experiments(
     let tracker = Tracker::open(pool.clone()).await.unwrap();
     let sink = Arc::new(telemetry::Sink::open(pool.clone()).await.unwrap());
     let (sqlite_layer, telemetry_guard) = telemetry::SqliteLayer::spawn(pool.clone());
-    let _subscriber_guard =
+    let subscriber_guard =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(sqlite_layer));
     let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
@@ -115,11 +115,11 @@ async fn make_app_with_experiments(
         sink,
         state,
         telemetry_guard,
-        _subscriber_guard,
+        subscriber_guard,
     }
 }
 
-fn json_request(body: serde_json::Value) -> Request<Body> {
+fn json_request(body: &serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri("/v1/chat/completions")
@@ -137,7 +137,7 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::text("Hello there").with_usage(Usage {
         input_tokens: 7,
@@ -147,7 +147,7 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
     })])
     .await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -178,10 +178,10 @@ async fn non_streaming_returns_openai_shape_and_persists_turn() {
 async fn request_without_user_id_is_rejected() {
     let TestHarness {
         app,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::text("unused")]).await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "messages": [{"role": "user", "content": "Hi"}],
     }));
@@ -193,10 +193,10 @@ async fn request_without_user_id_is_rejected() {
 async fn request_without_user_message_is_rejected() {
     let TestHarness {
         app,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::text("unused")]).await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "system", "content": "be brief"}],
@@ -209,10 +209,10 @@ async fn request_without_user_message_is_rejected() {
 async fn unknown_agent_returns_not_found() {
     let TestHarness {
         app,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::text("unused")]).await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "does-not-exist",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -312,7 +312,7 @@ async fn experiment_resolves_request_to_a_variant() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with_experiments(
         agents,
@@ -327,7 +327,7 @@ async fn experiment_resolves_request_to_a_variant() {
     )
     .await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "alice",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -355,7 +355,7 @@ async fn sticky_routing_keeps_same_user_on_same_variant() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with_experiments(
         agents,
@@ -371,7 +371,7 @@ async fn sticky_routing_keeps_same_user_on_same_variant() {
     .await;
 
     for _ in 0..5 {
-        let req = json_request(serde_json::json!({
+        let req = json_request(&serde_json::json!({
             "model": "alice",
             "safety_identifier": "alice",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -413,7 +413,7 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with_experiments(
         vec![agent_v1, agent_v2],
@@ -459,7 +459,7 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
         state.judge_store.append_score(s).await.unwrap();
     }
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "alice",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -498,7 +498,7 @@ async fn bandit_forces_exploration_when_arms_are_under_sampled() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with_experiments(
         vec![agent_v1, agent_v2],
@@ -513,7 +513,7 @@ async fn bandit_forces_exploration_when_arms_are_under_sampled() {
     )
     .await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "alice",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -564,7 +564,7 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with_experiments(
         vec![agent_v1, agent_v2],
@@ -578,7 +578,7 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
     )
     .await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "alice",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -623,7 +623,7 @@ async fn history_is_loaded_on_the_second_request() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![
         ScriptedReply::text("first reply"),
@@ -632,7 +632,7 @@ async fn history_is_loaded_on_the_second_request() {
     .await;
 
     // Turn 1.
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "first"}],
@@ -642,7 +642,7 @@ async fn history_is_loaded_on_the_second_request() {
     drop(collect(resp.into_body()).await);
 
     // Turn 2 — the scripted prompter sees the assembled context.
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "second"}],
@@ -670,18 +670,18 @@ async fn users_cannot_see_each_others_history() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::text("reply")]).await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "alice-secret"}],
     }));
     let _ = app.clone().oneshot(req).await.unwrap();
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "bob",
         "messages": [{"role": "user", "content": "bob-question"}],
@@ -704,7 +704,7 @@ async fn users_cannot_see_each_others_history() {
 async fn models_endpoint_lists_configured_agents() {
     let TestHarness {
         app,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![]).await;
     let req = Request::builder()
@@ -737,10 +737,10 @@ fn parse_sse(bytes: &[u8]) -> Vec<String> {
 async fn streaming_emits_role_content_stop_and_done_in_order() {
     let TestHarness {
         app,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::deltas(["Hel", "lo", " world"])]).await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "hi"}],
@@ -785,7 +785,7 @@ async fn streaming_emits_role_content_stop_and_done_in_order() {
 async fn streaming_include_usage_puts_usage_on_terminal_chunk() {
     let TestHarness {
         app,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::deltas(["hi"]).with_usage(Usage {
         input_tokens: 4,
@@ -794,7 +794,7 @@ async fn streaming_include_usage_puts_usage_on_terminal_chunk() {
         ..Usage::default()
     })])
     .await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "ping"}],
@@ -817,10 +817,10 @@ async fn streaming_persists_full_assistant_message_on_normal_completion() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::deltas(["one ", "two ", "three"])]).await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "count"}],
@@ -871,11 +871,11 @@ async fn judge_scores_are_persisted_after_a_turn() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with(agents, judges, replies).await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "What is the capital of France?"}],
@@ -926,11 +926,11 @@ async fn judge_scores_are_persisted_after_a_streaming_turn() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with(agents, judges, replies).await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "hi"}],
@@ -971,11 +971,11 @@ async fn judge_sampling_rate_zero_records_nothing() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app_with(agents, judges, replies).await;
 
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "Q"}],
@@ -1010,9 +1010,9 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
         sink,
         state,
         telemetry_guard,
-        _subscriber_guard,
+        subscriber_guard: _guard,
     } = make_app(vec![reply]).await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "capital of France?"}],
@@ -1060,7 +1060,7 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
     let TestHarness {
         app,
         state,
-        _subscriber_guard,
+        subscriber_guard: _guard,
         ..
     } = make_app(vec![ScriptedReply::deltas([
         "piece-one",
@@ -1068,7 +1068,7 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
         "piece-three",
     ])])
     .await;
-    let req = json_request(serde_json::json!({
+    let req = json_request(&serde_json::json!({
         "model": "assistant",
         "safety_identifier": "alice",
         "messages": [{"role": "user", "content": "go"}],

@@ -28,7 +28,7 @@ pub struct ChatCompletionRequest {
     pub tool_choice: Option<ToolChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
-    /// Deprecated by OpenAI in favor of `safety_identifier`. Still accepted
+    /// Deprecated by `OpenAI` in favor of `safety_identifier`. Still accepted
     /// for backwards compatibility; `safety_identifier` takes precedence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
@@ -37,7 +37,8 @@ pub struct ChatCompletionRequest {
 impl ChatCompletionRequest {
     /// True when the client asked for `stream_options.include_usage`. The
     /// `usage` field is then included on the terminal `chat.completion.chunk`
-    /// (matching OpenAI's contract); otherwise it's omitted.
+    /// (matching `OpenAI`'s contract); otherwise it's omitted.
+    #[must_use]
     pub fn include_usage(&self) -> bool {
         self.stream_options
             .as_ref()
@@ -46,6 +47,7 @@ impl ChatCompletionRequest {
     }
 
     /// True when the client asked for a streamed (SSE) response.
+    #[must_use]
     pub fn is_streaming(&self) -> bool {
         self.stream.unwrap_or(false)
     }
@@ -54,6 +56,10 @@ impl ChatCompletionRequest {
     /// `Ok(None)` means the key is absent — the model falls back to whatever
     /// language the user wrote in. `Err` means the key is present but
     /// malformed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn language(&self) -> Result<Option<LanguageTag>, LanguageTagError> {
         match self.metadata.get(METADATA_LANGUAGE) {
             Some(raw) => LanguageTag::parse(raw).map(Some),
@@ -64,6 +70,7 @@ impl ChatCompletionRequest {
     /// The last user message in the request. Only this message is treated
     /// as new input; the rest of the conversation history comes from the
     /// memory store.
+    #[must_use]
     pub fn last_user_message(&self) -> Option<&Message> {
         self.messages
             .iter()
@@ -71,6 +78,7 @@ impl ChatCompletionRequest {
             .find(|m| matches!(m.role, Role::User))
     }
 
+    #[must_use]
     pub fn response_with(&self, text: String, usage: Usage) -> ChatCompletionResponse {
         let created = coulisse_core::now_secs();
         let message = Message {
@@ -123,6 +131,7 @@ impl ChatCompletionRequest {
     }
 }
 
+#[must_use]
 pub fn response_id(created: u64) -> String {
     format!("chatcmpl-coulisse-{created}")
 }
@@ -167,6 +176,7 @@ pub struct Message {
 }
 
 impl Message {
+    #[must_use]
     pub fn content_or_empty(&self) -> &str {
         self.content.as_deref().unwrap_or("")
     }
@@ -189,6 +199,7 @@ pub struct Usage {
 }
 
 impl Usage {
+    #[must_use]
     pub fn new(prompt_tokens: u64, completion_tokens: u64, total_tokens: u64) -> Self {
         Self {
             completion_tokens: clamp_u32(completion_tokens),
@@ -199,10 +210,10 @@ impl Usage {
 }
 
 fn clamp_u32(n: u64) -> u32 {
-    n.min(u32::MAX as u64) as u32
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// One frame of an SSE-streamed chat completion. Mirrors OpenAI's
+/// One frame of an SSE-streamed chat completion. Mirrors `OpenAI`'s
 /// `chat.completion.chunk` object: each frame carries a `delta` for one
 /// choice. The first frame announces the role, mid-frames carry text, and
 /// the terminal frame sets `finish_reason` (and `usage` when requested).
@@ -289,7 +300,7 @@ mod tests {
     #[test]
     fn language_rejects_empty_value() {
         let mut metadata = HashMap::new();
-        metadata.insert("language".into(), "".into());
+        metadata.insert("language".into(), String::new());
         let req = request_with_metadata(metadata);
         assert!(req.language().is_err());
     }

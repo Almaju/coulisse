@@ -9,6 +9,9 @@ use nix::unistd::Pid;
 
 use crate::paths::StatePaths;
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let paths = StatePaths::for_config(config_path);
     match read_pid(&paths.pid) {
@@ -30,6 +33,7 @@ pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[must_use]
 pub fn read_pid(path: &Path) -> Option<i32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
@@ -37,6 +41,7 @@ pub fn read_pid(path: &Path) -> Option<i32> {
 /// `kill(pid, 0)` returns success if the process exists and we can
 /// signal it, ESRCH if it doesn't exist, EPERM if it exists but we
 /// can't signal it (still alive).
+#[must_use]
 pub fn pid_alive(pid: i32) -> bool {
     match signal::kill(Pid::from_raw(pid), None) {
         Ok(()) | Err(Errno::EPERM) => true,

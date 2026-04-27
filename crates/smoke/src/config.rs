@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// One smoke test: a synthetic-user persona that drives a conversation
 /// against an agent (or experiment) for evaluation. Each repetition uses
-/// a fresh synthetic user_id, so split/bandit experiments sample variants
+/// a fresh synthetic `user_id`, so split/bandit experiments sample variants
 /// naturally across reps.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SmokeTestConfig {
@@ -20,7 +20,7 @@ pub struct SmokeTestConfig {
     pub name: String,
     pub persona: PersonaConfig,
     /// How many independent runs to launch when the test is triggered.
-    /// Each run gets its own synthetic user_id.
+    /// Each run gets its own synthetic `user_id`.
     #[serde(default = "default_repetitions")]
     pub repetitions: u32,
     /// If either side emits this substring, the run terminates after
@@ -53,6 +53,7 @@ fn default_repetitions() -> u32 {
 /// the other feature crates.
 pub type SmokeList = Arc<ArcSwap<Vec<SmokeTestConfig>>>;
 
+#[must_use]
 pub fn smoke_list(initial: Vec<SmokeTestConfig>) -> SmokeList {
     Arc::new(ArcSwap::from_pointee(initial))
 }

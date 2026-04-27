@@ -122,6 +122,10 @@ impl Conversation {
     /// message becomes the prompt; everything else becomes history.
     /// `agent_preamble` is prepended to any system messages so the
     /// agent's static instructions always lead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn from_messages(messages: Vec<Message>, agent_preamble: &str) -> Result<Self, CallError> {
         let mut preamble_parts = Vec::new();
         if !agent_preamble.is_empty() {
@@ -152,6 +156,10 @@ impl Provider {
     /// Run the conversation synchronously and return the final reply.
     /// Dispatches to the matching Rig client internally — callers never
     /// need to match on `Provider` variants.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn send(
         &self,
         conversation: Conversation,
@@ -172,6 +180,10 @@ impl Provider {
     /// `Subagent` if its tool name appears in `subagent_names`,
     /// otherwise `Mcp` — the classification lives here because it's
     /// trivial to do on the fly and saves callers a wrapping pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn stream(
         &self,
         conversation: Conversation,

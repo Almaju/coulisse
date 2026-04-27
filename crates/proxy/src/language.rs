@@ -10,6 +10,10 @@ use serde::{Deserialize, Deserializer};
 pub struct LanguageTag(RawLanguageTag<String>);
 
 impl LanguageTag {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn parse(input: &str) -> Result<Self, LanguageTagError> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -19,6 +23,7 @@ impl LanguageTag {
         Ok(Self(raw))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -26,6 +31,7 @@ impl LanguageTag {
     /// A sentence suitable for appending to a system preamble. Phrased as a
     /// hard constraint so the model doesn't helpfully mirror the user's
     /// language or append parenthetical translations.
+    #[must_use]
     pub fn instruction(&self) -> String {
         let name = display_name(self.0.primary_language()).unwrap_or_else(|| self.as_str());
         format!(

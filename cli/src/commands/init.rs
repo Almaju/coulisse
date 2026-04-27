@@ -24,7 +24,10 @@ pub struct Options {
     pub from_example: bool,
 }
 
-pub fn run(config_path: &Path, opts: Options) -> Result<(), InitError> {
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
+pub fn run(config_path: &Path, opts: &Options) -> Result<(), InitError> {
     if config_path.exists() && !opts.force {
         return Err(InitError::AlreadyExists(config_path.display().to_string()));
     }

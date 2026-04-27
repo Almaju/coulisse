@@ -76,7 +76,7 @@ pub(crate) fn judges_for_agent<P: Agents + OneShotPrompt>(
 /// usage, and computed USD cost for the turn. The span is opened and
 /// immediately closed — there's no body to instrument, just a record for
 /// the telemetry layer's `on_close` hook to mirror into the `events`
-/// table. Pricing misses (model not in the vendored LiteLLM table) leave
+/// table. Pricing misses (model not in the vendored `LiteLLM` table) leave
 /// `cost_usd` empty rather than failing the request.
 pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(
     state: &AppState<P>,
@@ -224,12 +224,12 @@ async fn stream_response<P: Agents + OneShotPrompt + 'static>(
 > {
     if let Some((experiment, messages)) = routing.shadow_inputs {
         spawn_shadow_runs(
-            Arc::clone(&state),
+            &state,
             &experiment,
             routing.turn_id,
             prepared.user_id,
-            prepared.user_message.clone(),
-            messages,
+            &prepared.user_message,
+            &messages,
         );
     }
     let inner = state
@@ -257,13 +257,13 @@ async fn finalize_non_streaming<P: Agents + OneShotPrompt + 'static>(
     routing: &Routing,
     completion: &agents::Completion,
 ) -> Result<(), ApiError> {
-    if let Some((experiment, messages)) = routing.shadow_inputs.clone() {
+    if let Some((experiment, messages)) = routing.shadow_inputs.as_ref() {
         spawn_shadow_runs(
-            Arc::clone(state),
-            &experiment,
+            state,
+            experiment,
             routing.turn_id,
             prepared.user_id,
-            prepared.user_message.clone(),
+            &prepared.user_message,
             messages,
         );
     }

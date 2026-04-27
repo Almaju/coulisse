@@ -7,6 +7,9 @@ use std::path::Path;
 
 use crate::config::Config;
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path(config_path)?;
     println!(

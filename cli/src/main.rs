@@ -73,7 +73,7 @@ fn main() -> ExitCode {
             from_example,
         }) => init::run(
             &config,
-            init::Options {
+            &init::Options {
                 force,
                 from_example,
             },
@@ -84,14 +84,14 @@ fn main() -> ExitCode {
             detached_child,
         }) => start::run(
             &config,
-            start::Options {
+            &start::Options {
                 detached_child,
                 foreground,
             },
         )
         .map_err(std::convert::Into::into),
         Some(Command::Stop { force }) => {
-            stop::run(&config, stop::Options { force }).map_err(std::convert::Into::into)
+            stop::run(&config, &stop::Options { force }).map_err(std::convert::Into::into)
         }
         Some(Command::Restart) => restart::run(&config),
         Some(Command::Status) => status::run(&config),

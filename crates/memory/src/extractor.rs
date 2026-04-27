@@ -43,18 +43,22 @@ impl Extractor {
         }
     }
 
+    #[must_use]
     pub fn dedup_threshold(&self) -> f32 {
         self.dedup_threshold
     }
 
+    #[must_use]
     pub fn max_facts_per_turn(&self) -> usize {
         self.max_facts_per_turn
     }
 
+    #[must_use]
     pub fn model(&self) -> &str {
         &self.model
     }
 
+    #[must_use]
     pub fn provider(&self) -> &str {
         &self.provider
     }

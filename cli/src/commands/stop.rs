@@ -29,7 +29,10 @@ pub struct Options {
     pub force: bool,
 }
 
-pub fn run(config_path: &Path, opts: Options) -> Result<(), StopError> {
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
+pub fn run(config_path: &Path, opts: &Options) -> Result<(), StopError> {
     let paths = StatePaths::for_config(config_path);
     let Some(pid) = read_pid(&paths.pid) else {
         println!("not running");

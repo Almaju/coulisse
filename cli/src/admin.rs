@@ -40,9 +40,9 @@ struct BaseShell<'a> {
 /// responses, and non-HTML content. Streamed responses are buffered;
 /// admin pages are small enough that buffering is fine.
 pub async fn shell(request: Request, next: Next) -> Response {
-    let is_htmx = request.headers().contains_key("hx-request");
+    let from_htmx = request.headers().contains_key("hx-request");
     let response = next.run(request).await;
-    if is_htmx || !response.status().is_success() {
+    if from_htmx || !response.status().is_success() {
         return response;
     }
     let is_html = response
@@ -83,6 +83,9 @@ pub async fn shell(request: Request, next: Next) -> Response {
 #[template(path = "overview.html")]
 struct OverviewPage;
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub async fn overview() -> Result<Html<String>, StatusCode> {
     let html = OverviewPage
         .render()
@@ -114,9 +117,10 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
+    #[must_use]
     pub fn from_config(config: &Config) -> Self {
-        let auth_admin = auth_summary(&config.auth.admin);
-        let auth_proxy = auth_summary(&config.auth.proxy);
+        let auth_admin = auth_summary(config.auth.admin.as_ref());
+        let auth_proxy = auth_summary(config.auth.proxy.as_ref());
 
         let memory_backend = match &config.memory.backend {
             memory::BackendConfig::InMemory => "In-memory (ephemeral)".to_string(),
@@ -180,6 +184,9 @@ struct SettingsPage {
     settings: SettingsView,
 }
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub async fn settings(State(view): State<SettingsHandle>) -> Result<Html<String>, StatusCode> {
     let snapshot = view.load_full();
     let html = SettingsPage {
@@ -264,7 +271,7 @@ impl IntoResponse for ConfigEndpointError {
     }
 }
 
-fn auth_summary(scope: &Option<auth::ScopeConfig>) -> String {
+fn auth_summary(scope: Option<&auth::ScopeConfig>) -> String {
     match scope {
         None => "Unauthenticated".to_string(),
         Some(s) => {

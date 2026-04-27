@@ -71,57 +71,7 @@ unsafe_code = "deny"
 unused_must_use = "deny"
 
 [workspace.lints.clippy]
-# Trial: enable the pedantic group, then opt out every rule it
-# fires on so the workspace builds cleanly. The opt-out list IS the
-# "what would pedantic cost us" report — flip any line to `warn`
-# and fix the violations to graduate that rule into our standards.
-# Counts (workspace + tests) at the time this trial was assembled.
 pedantic = { level = "warn", priority = -1 }
-
-# --- documentation churn (no real bug-finding value) ---------------
-doc_markdown = "allow"               # 54 — wants backticks around CamelCase identifiers in doc comments
-missing_errors_doc = "allow"         # 99 — `# Errors` section on every fn returning Result
-missing_panics_doc = "allow"         # 6  — `# Panics` section on every fn that calls .unwrap()
-must_use_candidate = "allow"         #  83 — `#[must_use]` on every constructor returning Self
-return_self_not_must_use = "allow"   #  3 — same family as above
-
-# --- numeric casts: mostly intentional u64↔i64 sqlite binds --------
-cast_lossless = "allow"              # 20 — would prefer `From` over `as`
-cast_possible_truncation = "allow"   # 33
-cast_possible_wrap = "allow"         # 26
-cast_precision_loss = "allow"        # 11
-cast_sign_loss = "allow"             # 31
-
-# --- frequent false positives on this codebase ---------------------
-borrow_as_ptr = "allow"              #  1 — sqlite_layer raw-pointer counter access
-ref_as_ptr = "allow"                  #  1 — same site as borrow_as_ptr
-elidable_lifetime_names = "allow"    #  1 — generic store impl block uses `'static`
-manual_string_new = "allow"          #  1 — test asserts behavior on `""` literally
-needless_raw_string_hashes = "allow" #  1 — test JSON literal with too-many-hashes
-ref_option = "allow"                 #  1 — &Option<_> param in cli signature
-similar_names = "allow"              #  3 — flags short/idiomatic bindings
-stable_sort_primitive = "allow"      #  1 — embedder ranks Vec<f32> by index, sort_by needed
-used_underscore_binding = "allow"    #  1 — test fixture binds `_state` it later reads
-unreadable_literal = "allow"         #  2 — wants underscores in 7*86400-style literals
-
-# --- graduated to `warn`: cherry-picked real-signal rules ----------
-# These are flipped on; the corresponding violations were fixed in
-# this commit. Remaining `allow` lines below are the ones we judged
-# too noisy or low-value to adopt.
-default_trait_access = "warn"             #  2
-float_cmp = "warn"                        #  9 — `f32 == f32` comparisons (real signal)
-format_push_string = "warn"               #  3 — `s.push_str(&format!(..))` → `write!(s, ..)`
-map_unwrap_or = "warn"                    # 14 — `.map(..).unwrap_or(..)` → `.map_or(..)`
-match_same_arms = "warn"                  #  4
-semicolon_if_nothing_returned = "warn"    #  6
-single_match_else = "warn"                #  2
-too_many_lines = "warn"                   #  4
-
-# --- still allowed (would-fix list) -------------------------------
-manual_let_else = "allow"                 #  — kept previously at `warn`
-needless_pass_by_value = "allow"          # 20 — owned args that are only borrowed
-redundant_closure_for_method_calls = "allow"  # — kept previously at `warn`
-uninlined_format_args = "allow"           # — kept previously at `warn`
 
 # Restrictions: project-wide hygiene rules. Keep small and meaningful;
 # CLAUDE.md handles unwrap/expect/panic culturally rather than via lints

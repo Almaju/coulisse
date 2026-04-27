@@ -44,7 +44,10 @@ pub struct Options {
     pub foreground: bool,
 }
 
-pub fn run(config_path: &Path, opts: Options) -> Result<(), StartError> {
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
+pub fn run(config_path: &Path, opts: &Options) -> Result<(), StartError> {
     if !config_path.exists() {
         return Err(StartError::ConfigMissing(config_path.display().to_string()));
     }
@@ -66,7 +69,7 @@ fn run_foreground(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         return Err(StartError::AlreadyRunning(pid));
     }
     fs::create_dir_all(&paths.dir)?;
-    write_pid(&paths.pid, std::process::id() as i32)?;
+    write_pid(&paths.pid, current_pid())?;
     let result = serve_blocking(config_path);
     let _ = fs::remove_file(&paths.pid);
     result
@@ -75,7 +78,7 @@ fn run_foreground(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
 /// Variant of foreground that runs after self-respawn: the parent has
 /// already redirected stdio and we just need to write the pid and serve.
 fn run_as_detached_child(config_path: &Path, paths: &StatePaths) -> Result<(), StartError> {
-    write_pid(&paths.pid, std::process::id() as i32)?;
+    write_pid(&paths.pid, current_pid())?;
     let result = serve_blocking(config_path);
     let _ = fs::remove_file(&paths.pid);
     result
@@ -161,4 +164,10 @@ fn write_pid(path: &Path, pid: i32) -> io::Result<()> {
     }
     let mut f = File::create(path)?;
     writeln!(f, "{pid}")
+}
+
+/// `std::process::id()` returns u32; nix's `Pid::from_raw` and our pid
+/// file format use i32. Real PIDs always fit (Linux caps at 2^22).
+fn current_pid() -> i32 {
+    i32::try_from(std::process::id()).unwrap_or(i32::MAX)
 }

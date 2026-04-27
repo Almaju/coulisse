@@ -1,7 +1,7 @@
 //! Startup banner. Prints the proxy/admin URLs and a per-feature
 //! summary of the live configuration. Uses OSC 8 hyperlinks for
 //! clickable URLs in supported terminals (iTerm2, modern Terminal.app,
-//! VS Code, WezTerm) and falls back to plain text when stdout isn't a
+//! VS Code, `WezTerm`) and falls back to plain text when stdout isn't a
 //! TTY.
 
 use std::io::IsTerminal;

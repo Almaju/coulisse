@@ -43,11 +43,17 @@ pub struct Experiments {
 }
 
 impl Experiments {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn open(pool: SqlitePool) -> Result<Self, ExperimentsError> {
         migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn list_dynamic(&self) -> Result<Vec<DynamicExperimentRow>, ExperimentsError> {
         let rows = sqlx::query(
             "SELECT config_json, created_at, disabled, name, updated_at \
@@ -55,9 +61,12 @@ impl Experiments {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_dynamic_experiment).collect()
+        rows.iter().map(row_to_dynamic_experiment).collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn put_active_dynamic(
         &self,
         name: &str,
@@ -83,6 +92,9 @@ impl Experiments {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), ExperimentsError> {
         let now = now_secs();
         sqlx::query(
@@ -101,6 +113,9 @@ impl Experiments {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn delete_dynamic(&self, name: &str) -> Result<bool, ExperimentsError> {
         let result = sqlx::query("DELETE FROM dynamic_experiments WHERE name = ?")
             .bind(name)
@@ -111,6 +126,10 @@ impl Experiments {
 
     /// Read every dynamic row, merge against `yaml_experiments`, and atomically
     /// swap the effective list into `list`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn rebuild(
         &self,
         list: &ExperimentList,
@@ -124,7 +143,7 @@ impl Experiments {
     }
 }
 
-fn row_to_dynamic_experiment(row: SqliteRow) -> Result<DynamicExperimentRow, ExperimentsError> {
+fn row_to_dynamic_experiment(row: &SqliteRow) -> Result<DynamicExperimentRow, ExperimentsError> {
     let config_json: Option<String> = row.try_get("config_json")?;
     let created_at: i64 = row.try_get("created_at")?;
     let disabled: i64 = row.try_get("disabled")?;
@@ -149,7 +168,7 @@ fn row_to_dynamic_experiment(row: SqliteRow) -> Result<DynamicExperimentRow, Exp
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| coulisse_core::u64_to_i64(d.as_secs()))
         .unwrap_or(0)
 }
 

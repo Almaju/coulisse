@@ -20,6 +20,7 @@ pub struct ScoredExchange {
 pub struct ScoreId(pub Uuid);
 
 impl ScoreId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -54,6 +55,7 @@ pub struct Score {
 
 impl Score {
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         user_id: UserId,
         message_id: MessageId,

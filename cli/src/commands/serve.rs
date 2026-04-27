@@ -32,6 +32,9 @@ use crate::config_store::ConfigStore;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path(config_path)?;
     let auth = Auth::from_config(config.auth.clone()).await?;
@@ -128,7 +131,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Persistent stores opened against the shared SQLite pool, plus the
+/// Persistent stores opened against the shared `SQLite` pool, plus the
 /// hot-reloadable arc-swap lists each feature crate watches.
 struct Stores {
     agents_list: agents::AgentList,
@@ -149,7 +152,7 @@ struct Stores {
     yaml_smoke: smoke::SmokeList,
 }
 
-/// Open one SQLite pool, every per-feature store, and reconcile each
+/// Open one `SQLite` pool, every per-feature store, and reconcile each
 /// store with the YAML it was given. Each crate runs its own schema
 /// migrations against the shared pool — table ownership is per-crate,
 /// the connection is shared so operators back up one file.
@@ -528,7 +531,7 @@ fn build_judges(
 
 /// Derive an API key to use when the memory embedder config doesn't carry
 /// its own. Looks up the matching top-level provider entry so users who
-/// already configured OpenAI for completions don't have to repeat the key.
+/// already configured `OpenAI` for completions don't have to repeat the key.
 fn embedder_fallback_key(config: &Config) -> Option<String> {
     let kind = match &config.memory.embedder {
         EmbedderConfig::Openai { .. } => ProviderKind::Openai,

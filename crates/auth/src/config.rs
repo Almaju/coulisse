@@ -34,9 +34,9 @@ pub struct BasicConfig {
     pub username: String,
 }
 
-/// OIDC (OpenID Connect) login. Validated against any compliant IdP —
+/// OIDC (`OpenID` Connect) login. Validated against any compliant `IdP` —
 /// Authentik, Keycloak, Auth0, Google, Microsoft, Okta. Access control
-/// (who may use the surface) is delegated to the IdP's application
+/// (who may use the surface) is delegated to the `IdP`'s application
 /// bindings, not configured here.
 #[derive(Clone, Debug, Deserialize)]
 pub struct OidcConfig {
@@ -48,11 +48,11 @@ pub struct OidcConfig {
     /// OIDC issuer URL. For Authentik, typically
     /// `https://authentik.example.com/application/o/<app-slug>/`.
     pub issuer_url: String,
-    /// Absolute URL the IdP will redirect to after login. Must be
-    /// whitelisted in the IdP's client config and match a route served by
+    /// Absolute URL the `IdP` will redirect to after login. Must be
+    /// whitelisted in the `IdP`'s client config and match a route served by
     /// Coulisse inside the protected scope.
     pub redirect_url: String,
-    /// Additional OAuth2 scopes beyond the implicit `openid`. Defaults to
+    /// Additional `OAuth2` scopes beyond the implicit `openid`. Defaults to
     /// `profile` and `email`.
     #[serde(default = "default_oidc_scopes")]
     pub scopes: Vec<String>,
@@ -62,6 +62,10 @@ impl Config {
     /// Validate that any present scope declares exactly one auth method
     /// and that all required fields are non-empty. Cli calls this at
     /// startup as part of the cross-feature validation pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if let Some(scope) = &self.admin {
             scope.validate("admin")?;

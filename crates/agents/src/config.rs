@@ -40,6 +40,7 @@ pub struct AgentConfig {
 /// writers, writers never block readers.
 pub type AgentList = Arc<ArcSwap<Vec<AgentConfig>>>;
 
+#[must_use]
 pub fn agent_list(initial: Vec<AgentConfig>) -> AgentList {
     Arc::new(ArcSwap::from_pointee(initial))
 }

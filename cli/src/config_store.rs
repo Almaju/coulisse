@@ -40,7 +40,7 @@ pub type OnReload =
 pub struct ConfigStore {
     /// Last validated `Config` snapshot. Updated on every successful
     /// admin write and every file-watcher reload. Admin handlers for
-    /// sections that don't have their own ArcSwap (providers, mcp,
+    /// sections that don't have their own `ArcSwap` (providers, mcp,
     /// memory, telemetry, auth) read straight off this — they're
     /// edited the same way as agents/judges/experiments but the
     /// runtime that consumes them only picks the change up on
@@ -84,6 +84,10 @@ impl ConfigStore {
     /// Spawn the filesystem watcher. Returns a guard that, when
     /// dropped, stops the watcher. Holding the guard for the lifetime
     /// of the process keeps reloads flowing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn spawn_watcher(self: &Arc<Self>) -> Result<WatcherGuard, ConfigPersistError> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
         let mut watcher = RecommendedWatcher::new(

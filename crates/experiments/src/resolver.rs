@@ -19,6 +19,7 @@ pub struct ExperimentResolver {
 }
 
 impl ExperimentResolver {
+    #[must_use]
     pub fn new(router: Arc<ExperimentRouter>, scores: Option<Arc<dyn ScoreLookup>>) -> Self {
         Self { router, scores }
     }

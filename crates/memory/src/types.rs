@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub struct MemoryId(pub Uuid);
 
 impl MemoryId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -26,11 +27,13 @@ pub struct TokenCount(pub u32);
 
 impl TokenCount {
     /// Rough approximation: ~4 characters per token. Swap for tiktoken when accuracy matters.
+    #[must_use]
     pub fn estimate(text: &str) -> Self {
-        let chars = text.chars().count() as u32;
+        let chars = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
         Self(chars / 4 + 1)
     }
 
+    #[must_use]
     pub fn saturating_sub(self, rhs: Self) -> Self {
         Self(self.0.saturating_sub(rhs.0))
     }
@@ -61,6 +64,7 @@ pub struct StoredMessage {
 }
 
 impl StoredMessage {
+    #[must_use]
     pub fn new(user_id: UserId, role: Role, content: String) -> Self {
         Self::new_with_id(user_id, role, content, MessageId::new())
     }
@@ -68,6 +72,7 @@ impl StoredMessage {
     /// Build a `StoredMessage` with a caller-supplied id. Used by the chat
     /// handler so the assistant message's id can be generated before the
     /// prompter runs and reused as the telemetry turn correlation id.
+    #[must_use]
     pub fn new_with_id(user_id: UserId, role: Role, content: String, id: MessageId) -> Self {
         let token_count = TokenCount::estimate(&content);
         Self {
@@ -80,6 +85,7 @@ impl StoredMessage {
         }
     }
 
+    #[must_use]
     pub fn as_message(&self) -> Message {
         Message {
             content: self.content.clone(),
@@ -96,6 +102,7 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Fact => "fact",
@@ -131,6 +138,7 @@ pub struct Memory {
 }
 
 impl Memory {
+    #[must_use]
     pub fn new(user_id: UserId, kind: MemoryKind, content: String, embedding: Vec<f32>) -> Self {
         Self {
             created_at: now_secs(),

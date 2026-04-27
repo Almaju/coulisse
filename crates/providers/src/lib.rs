@@ -34,6 +34,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
@@ -45,6 +46,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "anthropic" => Some(Self::Anthropic),
@@ -83,6 +85,9 @@ pub enum Provider {
 }
 
 impl Provider {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn new(kind: ProviderKind, api_key: &str) -> Result<Self, ClientInitError> {
         let result = match kind {
             ProviderKind::Anthropic => anthropic::Client::new(api_key).map(Provider::Anthropic),
@@ -107,6 +112,9 @@ pub struct Providers {
 }
 
 impl Providers {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn new(providers: HashMap<ProviderKind, ProviderConfig>) -> Result<Self, ClientInitError> {
         let mut by_kind = HashMap::with_capacity(providers.len());
         for (kind, provider) in providers {
@@ -115,10 +123,12 @@ impl Providers {
         Ok(Self { by_kind })
     }
 
+    #[must_use]
     pub fn get(&self, kind: ProviderKind) -> Option<&Provider> {
         self.by_kind.get(&kind)
     }
 
+    #[must_use]
     pub fn contains(&self, kind: ProviderKind) -> bool {
         self.by_kind.contains_key(&kind)
     }

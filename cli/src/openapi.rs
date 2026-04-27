@@ -1,4 +1,4 @@
-//! OpenAPI 3.1 description for the `/admin/*` config API.
+//! `OpenAPI` 3.1 description for the `/admin/*` config API.
 //!
 //! Hand-written rather than macro-generated: keeps coulisse-core thin
 //! (no `schemars` dep on every feature crate), keeps the spec free to
@@ -30,8 +30,9 @@ async fn openapi_json(State(_store): State<Arc<ConfigStore>>) -> Response {
     Json(spec()).into_response()
 }
 
-/// Build the OpenAPI document. Pulled into a free function so tests can
+/// Build the `OpenAPI` document. Pulled into a free function so tests can
 /// load it without the HTTP wrapper.
+#[must_use]
 pub fn spec() -> Value {
     json!({
         "openapi": "3.1.0",

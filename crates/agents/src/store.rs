@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use coulisse_core::migrate::{self, SchemaMigrator};
-use coulisse_core::now_secs;
+use coulisse_core::{now_secs, u64_to_i64};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{SqliteConnection, SqlitePool};
@@ -48,6 +48,9 @@ pub struct DynamicAgents {
 }
 
 impl DynamicAgents {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn open(pool: SqlitePool) -> Result<Self, DynamicAgentsError> {
         migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
@@ -55,6 +58,10 @@ impl DynamicAgents {
 
     /// Every row, in name order. Used by the merge step that produces the
     /// effective agent list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn list(&self) -> Result<Vec<DynamicRow>, DynamicAgentsError> {
         let rows = sqlx::query(
             "SELECT config_json, created_at, disabled, name, updated_at \
@@ -62,18 +69,22 @@ impl DynamicAgents {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_dynamic).collect()
+        rows.iter().map(row_to_dynamic).collect()
     }
 
     /// Upsert an active row (override or dynamic). `created_at` is preserved
     /// across updates; `updated_at` is bumped to now. Any existing tombstone
     /// of the same name is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn put_active(
         &self,
         name: &str,
         config: &AgentConfig,
     ) -> Result<(), DynamicAgentsError> {
-        let now = now_secs() as i64;
+        let now = u64_to_i64(now_secs());
         let json = serde_json::to_string(config)
             .map_err(|e| DynamicAgentsError::Serialize(e.to_string()))?;
         sqlx::query(
@@ -95,8 +106,12 @@ impl DynamicAgents {
 
     /// Upsert a tombstone row. Replaces any existing override of the same
     /// name. Use this to disable a YAML-declared agent at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn put_tombstone(&self, name: &str) -> Result<(), DynamicAgentsError> {
-        let now = now_secs() as i64;
+        let now = u64_to_i64(now_secs());
         sqlx::query(
             "INSERT INTO dynamic_agents (config_json, created_at, disabled, name, updated_at) \
              VALUES (NULL, ?, 1, ?, ?) \
@@ -116,6 +131,10 @@ impl DynamicAgents {
     /// Physically remove the row. Returns true if a row was deleted. Used by
     /// "reset to YAML default" (drop an override so YAML reasserts) and by
     /// hard-delete of pure dynamic agents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn delete(&self, name: &str) -> Result<bool, DynamicAgentsError> {
         let result = sqlx::query("DELETE FROM dynamic_agents WHERE name = ?")
             .bind(name)
@@ -128,6 +147,10 @@ impl DynamicAgents {
     /// effective list into `list`. Called once at boot, after every YAML
     /// reload, and after every admin write so all readers see one
     /// consistent view.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn rebuild(
         &self,
         list: &AgentList,
@@ -141,7 +164,7 @@ impl DynamicAgents {
     }
 }
 
-fn row_to_dynamic(row: SqliteRow) -> Result<DynamicRow, DynamicAgentsError> {
+fn row_to_dynamic(row: &SqliteRow) -> Result<DynamicRow, DynamicAgentsError> {
     let config_json: Option<String> = row.try_get("config_json")?;
     let created_at: i64 = row.try_get("created_at")?;
     let disabled: i64 = row.try_get("disabled")?;
