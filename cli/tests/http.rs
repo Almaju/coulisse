@@ -615,7 +615,7 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
     assert_eq!(scores.len(), 1);
     assert_eq!(scores[0].agent_name, "alice-v2");
     assert_eq!(scores[0].criterion, "helpfulness");
-    assert_eq!(scores[0].score, 4.0);
+    assert!((scores[0].score - 4.0).abs() < f32::EPSILON);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -892,11 +892,11 @@ async fn judge_scores_are_persisted_after_a_turn() {
     scores.sort_by(|a, b| a.criterion.cmp(&b.criterion));
     assert_eq!(scores.len(), 2);
     assert_eq!(scores[0].criterion, "accuracy");
-    assert_eq!(scores[0].score, 8.0);
+    assert!((scores[0].score - 8.0).abs() < f32::EPSILON);
     assert_eq!(scores[0].reasoning, "mostly right");
     assert_eq!(scores[0].judge_name, "quality");
     assert_eq!(scores[1].criterion, "helpfulness");
-    assert_eq!(scores[1].score, 9.0);
+    assert!((scores[1].score - 9.0).abs() < f32::EPSILON);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -947,7 +947,7 @@ async fn judge_scores_are_persisted_after_a_streaming_turn() {
     let scores = state.judge_store.scores(user_id).await.unwrap();
     assert_eq!(scores.len(), 1);
     assert_eq!(scores[0].criterion, "helpfulness");
-    assert_eq!(scores[0].score, 7.0);
+    assert!((scores[0].score - 7.0).abs() < f32::EPSILON);
 }
 
 #[tokio::test(flavor = "current_thread")]

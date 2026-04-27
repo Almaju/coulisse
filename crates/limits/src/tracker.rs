@@ -107,7 +107,7 @@ impl Tracker {
         .bind(start as i64)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(c,)| c.max(0) as u64).unwrap_or(0))
+        Ok(row.map_or(0, |(c,)| c.max(0) as u64))
     }
 }
 

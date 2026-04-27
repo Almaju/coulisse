@@ -197,8 +197,7 @@ fn bandit_pick<'a>(
             scores
                 .iter()
                 .find(|s| s.agent_name == v.agent)
-                .map(|s| s.samples < min_samples)
-                .unwrap_or(true)
+                .is_none_or(|s| s.samples < min_samples)
         })
         .collect();
     if !forced.is_empty() {
@@ -222,13 +221,11 @@ fn bandit_pick<'a>(
             let mean_a = scores
                 .iter()
                 .find(|s| s.agent_name == a.agent)
-                .map(|s| s.mean)
-                .unwrap_or(f32::MIN);
+                .map_or(f32::MIN, |s| s.mean);
             let mean_b = scores
                 .iter()
                 .find(|s| s.agent_name == b.agent)
-                .map(|s| s.mean)
-                .unwrap_or(f32::MIN);
+                .map_or(f32::MIN, |s| s.mean);
             mean_a
                 .partial_cmp(&mean_b)
                 .unwrap_or(std::cmp::Ordering::Equal)

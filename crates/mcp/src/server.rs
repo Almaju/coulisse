@@ -112,7 +112,7 @@ impl McpServer {
             }
         };
         let listed = service
-            .list_tools(Default::default())
+            .list_tools(Option::default())
             .await
             .map_err(|source| McpError::ListTools {
                 server: name.to_string(),

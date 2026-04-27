@@ -104,20 +104,23 @@ stable_sort_primitive = "allow"      #  1 — embedder ranks Vec<f32> by index, 
 used_underscore_binding = "allow"    #  1 — test fixture binds `_state` it later reads
 unreadable_literal = "allow"         #  2 — wants underscores in 7*86400-style literals
 
-# --- the rest: real signal we'd want to fix to graduate -----------
-# Listed here as `allow` so the PR builds cleanly. Flip to `warn`
-# and clean up the call sites if you want to adopt them.
-default_trait_access = "allow"            #  2
-float_cmp = "allow"                       #  9 — `f32 == f32` comparisons (real signal)
-format_push_string = "allow"              #  3 — `s.push_str(&format!(..))` → `write!(s, ..)`
+# --- graduated to `warn`: cherry-picked real-signal rules ----------
+# These are flipped on; the corresponding violations were fixed in
+# this commit. Remaining `allow` lines below are the ones we judged
+# too noisy or low-value to adopt.
+default_trait_access = "warn"             #  2
+float_cmp = "warn"                        #  9 — `f32 == f32` comparisons (real signal)
+format_push_string = "warn"               #  3 — `s.push_str(&format!(..))` → `write!(s, ..)`
+map_unwrap_or = "warn"                    # 14 — `.map(..).unwrap_or(..)` → `.map_or(..)`
+match_same_arms = "warn"                  #  4
+semicolon_if_nothing_returned = "warn"    #  6
+single_match_else = "warn"                #  2
+too_many_lines = "warn"                   #  4
+
+# --- still allowed (would-fix list) -------------------------------
 manual_let_else = "allow"                 #  — kept previously at `warn`
-map_unwrap_or = "allow"                   # 14 — `.map(..).unwrap_or(..)` → `.map_or(..)`
-match_same_arms = "allow"                 #  4
 needless_pass_by_value = "allow"          # 20 — owned args that are only borrowed
 redundant_closure_for_method_calls = "allow"  # — kept previously at `warn`
-semicolon_if_nothing_returned = "allow"   #  6
-single_match_else = "allow"               #  2
-too_many_lines = "allow"                  #  4
 uninlined_format_args = "allow"           # — kept previously at `warn`
 
 # Restrictions: project-wide hygiene rules. Keep small and meaningful;

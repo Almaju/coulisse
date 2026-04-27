@@ -134,13 +134,16 @@ impl ExperimentRow {
 /// criteria are alphanumeric in practice but the encoder is robust to any
 /// future relaxation of the rules.
 fn urlencode(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

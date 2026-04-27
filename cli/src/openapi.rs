@@ -399,6 +399,9 @@ fn body_of(schema_name: &str) -> Value {
     })
 }
 
+// One big literal: the OpenAPI components/schemas tree. Splitting it
+// scatters a single declarative document across helpers.
+#[allow(clippy::too_many_lines)]
 fn schemas() -> Value {
     json!({
         "AgentConfig": {

@@ -49,8 +49,7 @@ pub async fn shell(request: Request, next: Next) -> Response {
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.starts_with("text/html"))
-        .unwrap_or(false);
+        .is_some_and(|v| v.starts_with("text/html"));
     if !is_html {
         return response;
     }
@@ -130,12 +129,10 @@ impl SettingsView {
             memory::EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
         };
 
-        let memory_extractor = config
-            .memory
-            .extractor
-            .as_ref()
-            .map(|e| format!("{} / {}", e.provider, e.model))
-            .unwrap_or_else(|| "Disabled".to_string());
+        let memory_extractor = config.memory.extractor.as_ref().map_or_else(
+            || "Disabled".to_string(),
+            |e| format!("{} / {}", e.provider, e.model),
+        );
 
         let mut providers: Vec<ProviderRow> = config
             .providers
@@ -171,8 +168,7 @@ impl SettingsView {
                 .telemetry
                 .otlp
                 .as_ref()
-                .map(|o| o.endpoint.clone())
-                .unwrap_or_else(|| "Disabled".to_string()),
+                .map_or_else(|| "Disabled".to_string(), |o| o.endpoint.clone()),
             telemetry_sqlite: config.telemetry.sqlite.enabled,
         }
     }

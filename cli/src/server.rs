@@ -103,6 +103,10 @@ pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(
     });
 }
 
+// Per CLAUDE.md: this handler is the request-flow spec — top-to-bottom
+// it documents what happens to a chat request. Splitting it would
+// scatter that order of operations across helpers.
+#[allow(clippy::too_many_lines)]
 async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     State(state): State<Arc<AppState<P>>>,
     Json(request): Json<ChatCompletionRequest>,
@@ -129,22 +133,23 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
 
-    let turn_span = match experiment_name.as_deref() {
-        Some(experiment) => info_span!(
+    let turn_span = if let Some(experiment) = experiment_name.as_deref() {
+        info_span!(
             "turn",
             agent = %agent_name,
             experiment = %experiment,
             turn_id = %turn_id.0,
             user_id = %prepared.user_id.0,
             user_message = %prepared.user_message,
-        ),
-        None => info_span!(
+        )
+    } else {
+        info_span!(
             "turn",
             agent = %agent_name,
             turn_id = %turn_id.0,
             user_id = %prepared.user_id.0,
             user_message = %prepared.user_message,
-        ),
+        )
     };
 
     // Clone inputs for shadow variants so they run against the same context
@@ -349,13 +354,14 @@ async fn prepare_request<P: Agents + OneShotPrompt>(
 }
 
 fn format_memory_block(memories: &[Memory]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::from("Known about the user:\n");
     for m in memories {
         let tag = match m.kind {
             MemoryKind::Fact => "fact",
             MemoryKind::Preference => "preference",
         };
-        out.push_str(&format!("- [{tag}] {}\n", m.content));
+        let _ = writeln!(out, "- [{tag}] {}", m.content);
     }
     out
 }

@@ -67,33 +67,30 @@ pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGua
     // call into two branches avoids the layer's type leaking into a
     // helper signature, which doesn't compose cleanly with the
     // already-stacked `Layered<...>` chain.
-    match config.otlp.as_ref() {
-        Some(cfg) => {
-            let provider = build_otlp_provider(cfg)?;
-            let tracer = provider.tracer("coulisse");
-            let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt_layer)
-                .with(sqlite_layer)
-                .with(otlp_layer)
-                .init();
-            Ok(TelemetryGuard {
-                sqlite: sqlite_guard,
-                otlp: Some(OtlpGuard { provider }),
-            })
-        }
-        None => {
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt_layer)
-                .with(sqlite_layer)
-                .init();
-            Ok(TelemetryGuard {
-                sqlite: sqlite_guard,
-                otlp: None,
-            })
-        }
+    if let Some(cfg) = config.otlp.as_ref() {
+        let provider = build_otlp_provider(cfg)?;
+        let tracer = provider.tracer("coulisse");
+        let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(sqlite_layer)
+            .with(otlp_layer)
+            .init();
+        Ok(TelemetryGuard {
+            sqlite: sqlite_guard,
+            otlp: Some(OtlpGuard { provider }),
+        })
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(sqlite_layer)
+            .init();
+        Ok(TelemetryGuard {
+            sqlite: sqlite_guard,
+            otlp: None,
+        })
     }
 }
 

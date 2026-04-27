@@ -209,8 +209,7 @@ async fn basic_check(creds: Credentials, request: Request, next: Next) -> Respon
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .map(|h| creds.verify_header(h))
-        .unwrap_or(false);
+        .is_some_and(|h| creds.verify_header(h));
     if ok {
         next.run(request).await
     } else {

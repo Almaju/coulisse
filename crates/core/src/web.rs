@@ -57,8 +57,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ResponseFormat {
             .headers
             .get(header::ACCEPT)
             .and_then(|v| v.to_str().ok())
-            .map(prefers_json)
-            .unwrap_or(false);
+            .is_some_and(prefers_json);
         if prefers_json {
             return Ok(Self::Json);
         }

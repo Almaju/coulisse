@@ -34,17 +34,17 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut retry_after: Option<u64> = None;
         let (status, kind) = match &self {
-            Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
-            Self::Language(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Self::BadRequest(_)
+            | Self::Language(_)
+            | Self::Limit(LimitError::InvalidMetadata { .. }) => {
+                (StatusCode::BAD_REQUEST, "invalid_request")
+            }
             Self::Limit(LimitError::Database(_) | LimitError::Migrate(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "rate_limit_error")
             }
             Self::Limit(LimitError::Exceeded { retry_after: s, .. }) => {
                 retry_after = Some(*s);
                 (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
-            }
-            Self::Limit(LimitError::InvalidMetadata { .. }) => {
-                (StatusCode::BAD_REQUEST, "invalid_request")
             }
             Self::Memory(_) => (StatusCode::INTERNAL_SERVER_ERROR, "memory_error"),
             Self::Agents(err) => match err {

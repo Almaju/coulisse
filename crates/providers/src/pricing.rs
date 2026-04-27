@@ -125,7 +125,7 @@ fn table() -> &'static std::collections::HashMap<String, ModelPricing> {
         let raw: serde_json::Value =
             serde_json::from_str(RAW_PRICES).expect("vendored model_prices.json is valid JSON");
         let serde_json::Value::Object(map) = raw else {
-            return Default::default();
+            return std::collections::HashMap::default();
         };
         map.into_iter()
             .filter_map(|(k, v)| {

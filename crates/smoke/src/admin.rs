@@ -321,8 +321,9 @@ impl IntoResponse for AdminError {
                 StatusCode::NOT_FOUND,
                 format!("smoke test '{name}' not found"),
             ),
-            Self::Dispatch(DispatchError::Other(m)) => (StatusCode::INTERNAL_SERVER_ERROR, m),
-            Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            Self::Dispatch(DispatchError::Other(m)) | Self::Internal(m) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, m)
+            }
             Self::InvalidRunId => (
                 StatusCode::BAD_REQUEST,
                 "run_id must be a valid UUID".to_string(),

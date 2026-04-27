@@ -39,8 +39,7 @@ pub fn read_pid(path: &Path) -> Option<i32> {
 /// can't signal it (still alive).
 pub fn pid_alive(pid: i32) -> bool {
     match signal::kill(Pid::from_raw(pid), None) {
-        Ok(()) => true,
-        Err(Errno::EPERM) => true,
+        Ok(()) | Err(Errno::EPERM) => true,
         Err(_) => false,
     }
 }

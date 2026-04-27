@@ -32,6 +32,10 @@ use crate::config_store::ConfigStore;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
 
+// Intentionally long: this is the orchestrator that wires every feature
+// crate together. CLAUDE.md treats it as documentation of the boot
+// sequence — splitting it scatters the "what happens at startup" answer.
+#[allow(clippy::too_many_lines)]
 pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path(config_path)?;
     let auth = Auth::from_config(config.auth.clone()).await?;
@@ -338,11 +342,10 @@ fn build_judges(
 /// already configured OpenAI for completions don't have to repeat the key.
 fn embedder_fallback_key(config: &Config) -> Option<String> {
     let kind = match &config.memory.embedder {
-        EmbedderConfig::Hash { .. } => return None,
         EmbedderConfig::Openai { .. } => ProviderKind::Openai,
-        // Voyage is not a completion provider, so no fallback is possible;
-        // the user must set memory.embedder.api_key explicitly.
-        EmbedderConfig::Voyage { .. } => return None,
+        // Hash and Voyage are not completion providers — no fallback applies.
+        // For Voyage, the user must set memory.embedder.api_key explicitly.
+        EmbedderConfig::Hash { .. } | EmbedderConfig::Voyage { .. } => return None,
     };
     config.providers.get(&kind).map(|p| p.api_key.clone())
 }

@@ -138,8 +138,7 @@ impl JudgeListRow {
         let score_count_7d = volumes
             .iter()
             .find(|v| v.judge_name == row.name)
-            .map(|v| v.count)
-            .unwrap_or(0);
+            .map_or(0, |v| v.count);
         match &row.config {
             Some(cfg) => Self {
                 criteria_count: cfg.rubrics.len(),

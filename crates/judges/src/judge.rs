@@ -142,13 +142,14 @@ async fn run_score(
 }
 
 fn build_preamble(rubrics: &BTreeMap<String, String>) -> String {
+    use std::fmt::Write as _;
     let mut out = String::from(
         "You are an evaluation judge. Score the assistant's reply against each \
          criterion below on an integer scale from 0 (worst) to 10 (best), with a \
          concise one-sentence reasoning.\n\nCriteria:\n",
     );
     for (name, description) in rubrics {
-        out.push_str(&format!("- {name}: {description}\n"));
+        let _ = writeln!(out, "- {name}: {description}");
     }
     out.push_str(
         "\nRespond ONLY with a JSON object whose top-level keys are the exact \
@@ -237,7 +238,8 @@ mod tests {
         let cfg = config(&[("a", "b")], 1.5, "openai");
         assert!(matches!(
             Judge::from_config(&cfg),
-            Err(JudgeBuildError::InvalidSamplingRate { value, .. }) if value == 1.5,
+            Err(JudgeBuildError::InvalidSamplingRate { value, .. })
+                if (value - 1.5).abs() < f32::EPSILON,
         ));
     }
 
@@ -297,9 +299,9 @@ mod tests {
 
     #[test]
     fn clamp_score_bounds_to_0_10() {
-        assert_eq!(clamp_score(-3.0), 0.0);
-        assert_eq!(clamp_score(15.0), 10.0);
-        assert_eq!(clamp_score(5.5), 5.5);
-        assert_eq!(clamp_score(f32::NAN), 0.0);
+        assert!((clamp_score(-3.0) - 0.0).abs() < f32::EPSILON);
+        assert!((clamp_score(15.0) - 10.0).abs() < f32::EPSILON);
+        assert!((clamp_score(5.5) - 5.5).abs() < f32::EPSILON);
+        assert!((clamp_score(f32::NAN) - 0.0).abs() < f32::EPSILON);
     }
 }
