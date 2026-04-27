@@ -30,14 +30,6 @@ pub struct Config {
     /// anything exposed beyond loopback).
     #[serde(default)]
     pub auth: AuthConfig,
-    /// Fallback user identifier for requests that don't carry a
-    /// `safety_identifier` (or the deprecated `user` field). Unset means
-    /// every request must supply its own identifier — appropriate for
-    /// multi-tenant deployments. Set to e.g. `"main"` for single-user or
-    /// local-dev setups so behavior stays identical whether or not the
-    /// client bothers to send an id; the same memory bucket is used.
-    #[serde(default)]
-    pub default_user_id: Option<String>,
     /// A/B test groups that wrap one or more agents under a single
     /// addressable name. Clients send the experiment name as the `model`
     /// field; the router picks a variant per request (sticky-by-user by
@@ -70,6 +62,32 @@ pub struct Config {
     /// Grafana / `SigNoz` / Jaeger / etc.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// User identification mode. `shared` (default) collapses every
+    /// request onto a single hardcoded identity — fine for local dev or
+    /// single-user setups, but means *all* memory is shared. `per-request`
+    /// requires each request to carry `safety_identifier` (or the
+    /// deprecated `user` field) and rejects unidentified requests so
+    /// memory stays isolated per caller.
+    #[serde(default)]
+    pub users: Users,
+}
+
+/// How Coulisse derives a `UserId` from incoming requests. The default
+/// (`shared`) gets a fresh install working with zero client-side
+/// configuration; `per-request` is the multi-tenant posture and is
+/// enforced strictly.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Users {
+    /// Every request maps to the same hardcoded identity. All memory is
+    /// shared across callers. The startup banner warns about this so
+    /// operators can't accidentally ship it to multi-tenant prod.
+    #[default]
+    Shared,
+    /// Each request must carry `safety_identifier` (or the deprecated
+    /// `user` field). Missing identifiers return a clear 400 explaining
+    /// the active mode and the fix.
+    PerRequest,
 }
 
 impl Config {
@@ -97,11 +115,6 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.agents.is_empty() {
             return Err(ConfigError::NoAgents);
-        }
-        if let Some(id) = &self.default_user_id
-            && id.trim().is_empty()
-        {
-            return Err(ConfigError::BlankDefaultUserId);
         }
         self.auth.validate().map_err(ConfigError::Auth)?;
         let judge_names = self.validate_judges()?;
@@ -463,8 +476,6 @@ fn reject_field(
 pub enum ConfigError {
     #[error(transparent)]
     Auth(auth::ConfigError),
-    #[error("default_user_id must be non-empty when set")]
-    BlankDefaultUserId,
     #[error("duplicate agent name in config: {0}")]
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
@@ -604,6 +615,46 @@ providers:
   openai:
     api_key: test
 ";
+
+    #[test]
+    fn users_defaults_to_shared_when_omitted() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}agents:
+  - name: solo
+    provider: openai
+    model: gpt-4
+"
+        );
+        let config = parse(&yaml).expect("config without `users:` should parse");
+        assert_eq!(config.users, Users::Shared);
+    }
+
+    #[test]
+    fn users_per_request_parses_kebab_case() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}users: per-request
+agents:
+  - name: solo
+    provider: openai
+    model: gpt-4
+"
+        );
+        let config = parse(&yaml).expect("`users: per-request` should parse");
+        assert_eq!(config.users, Users::PerRequest);
+    }
+
+    #[test]
+    fn users_rejects_unknown_value() {
+        let yaml = format!(
+            "{BASE_PROVIDERS}users: free-for-all
+agents:
+  - name: solo
+    provider: openai
+    model: gpt-4
+"
+        );
+        assert!(parse(&yaml).is_err(), "unknown `users` variant must fail");
+    }
 
     #[test]
     fn subagents_and_purpose_parse_and_validate() {

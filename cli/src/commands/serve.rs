@@ -19,7 +19,7 @@ use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::McpServers;
-use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
+use memory::{BackendConfig, EmbedderConfig, Extractor, Store};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
 use telemetry::Sink as TelemetrySink;
@@ -38,7 +38,6 @@ use crate::smoke_runner::SmokeRunner;
 pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path(config_path)?;
     let auth = Auth::from_config(config.auth.clone()).await?;
-    let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
 
     // Warm the vendored LiteLLM pricing table so the first chat
     // completion doesn't pay for ~9k JSON entries on the request
@@ -49,7 +48,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let stores = boot_stores(&config).await?;
     let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
     let runtime = build_runtime(&config, &stores).await?;
-    let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
+    let proxy_state = build_proxy_state(config.users, &stores, runtime);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
     print_banner(addr, &auth, &config, &stores, &proxy_state, &memory_summary);
@@ -314,19 +313,19 @@ async fn build_runtime(
 }
 
 fn build_proxy_state(
-    default_user_id: Option<UserId>,
+    users: crate::config::Users,
     stores: &Stores,
     runtime: Runtime,
 ) -> Arc<AppState<RigAgents>> {
     Arc::new(AppState {
         agents: runtime.prompter,
-        default_user_id,
         experiments: runtime.experiments,
         extractor: runtime.extractor,
         judges: Arc::new(runtime.judges),
         judge_store: Arc::clone(&stores.judge_store),
         memory: Arc::clone(&stores.memory),
         tracker: runtime.tracker,
+        users,
     })
 }
 
@@ -349,6 +348,7 @@ fn print_banner(
         extractor: config.memory.extractor.as_ref(),
         judges: &judges_snapshot,
         memory_summary,
+        users: config.users,
     }
     .print();
 }

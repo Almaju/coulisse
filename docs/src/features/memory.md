@@ -1,6 +1,6 @@
 # Per-user memory
 
-Every request that carries a user identifier gets an isolated, persistent memory scope. Coulisse tracks two kinds of memory:
+Every request gets an isolated, persistent memory scope based on its user identity. In `users: per-request` mode, that identity comes from `safety_identifier` (or the deprecated `user` field) on each request; in the default `users: shared` mode, every request shares one hardcoded identity (and one memory bucket). See [User identification](../configuration/user-id.md). Coulisse tracks two kinds of memory:
 
 - **Conversation history** — the running transcript of messages the user has exchanged.
 - **Long-term memories** — durable facts and preferences, embedded for semantic recall.
@@ -9,7 +9,7 @@ You don't need to manage this — it happens automatically on every request. Whe
 
 ## What happens on each request
 
-1. Coulisse identifies the user from `safety_identifier` (or `user`).
+1. Coulisse identifies the user — from `safety_identifier` / `user` in `per-request` mode, or from the shared identity in `shared` mode.
 2. It pulls the user's recent messages, fitting as many as possible into the context budget.
 3. It runs a semantic recall against the user's long-term memories, picking the top matches.
 4. It builds the final prompt: agent preamble → recalled memories → recent history → new message.

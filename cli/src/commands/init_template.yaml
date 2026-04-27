@@ -5,9 +5,13 @@
 # Run `coulisse init --from-example` instead for the full annotated tour
 # (every section, every option) — or read docs/configuration/.
 
-# Fallback user identifier for requests without `safety_identifier`.
-# Useful for local / single-user setups; omit for multi-tenant.
-default_user_id: main
+# How requests are mapped to users. `shared` (default) routes every
+# request to a single hardcoded identity — perfect for trying Coulisse
+# locally, but ALL memory is shared across callers. Switch to
+# `per-request` for multi-user deployments: each request must then carry
+# `safety_identifier` (or the deprecated `user` field) and unidentified
+# requests are rejected. See docs/configuration/user-id.md.
+users: shared
 
 # Memory: sqlite for conversation history + offline `hash` embedder.
 # Swap the embedder to `openai` (text-embedding-3-small) for real

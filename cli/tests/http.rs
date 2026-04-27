@@ -17,6 +17,7 @@ use agents::{ToolCallKind, Usage};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
+use coulisse::config::Users;
 use coulisse::server::AppState;
 use experiments::{ExperimentConfig, Strategy, Variant};
 use http_body_util::BodyExt;
@@ -101,13 +102,13 @@ async fn make_app_with_experiments(
     let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
-        default_user_id: None,
         experiments,
         extractor: None,
         judges: Arc::new(judges),
         judge_store,
         memory,
         tracker,
+        users: Users::PerRequest,
     });
     let app = coulisse::server::router(Arc::clone(&state));
     TestHarness {

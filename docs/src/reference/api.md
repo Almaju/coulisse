@@ -28,7 +28,7 @@ The main chat endpoint. Accepts the standard OpenAI chat completion request shap
 | `stream_options`    | no       | Object. `include_usage: true` adds the `usage` field to the terminal stream chunk. |
 | `user`              | —        | Deprecated OpenAI field; accepted as a fallback. |
 
-¹ Required unless a `default_user_id` is set in `coulisse.yaml` — see [User identification](../configuration/user-id.md).
+¹ Required when `users: per-request` is set in `coulisse.yaml` (the multi-user mode). With the default `users: shared`, the field is ignored and every request maps to a single shared identity. See [User identification](../configuration/user-id.md).
 
 ### Recognized metadata keys
 

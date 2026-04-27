@@ -24,6 +24,16 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
+- User identification is now an explicit two-mode setting. The top-level
+  `users` field replaces `default_user_id`: `users: shared` (the new default,
+  written by `coulisse init`) routes every request to a single hardcoded
+  identity so a fresh install works with zero client-side configuration;
+  `users: per-request` requires `safety_identifier` (or the deprecated `user`
+  field) on every request and rejects unidentified ones with a clear 400 that
+  names the active mode. The startup banner prints a loud warning whenever
+  `shared` is active so it can't be silently shipped to a multi-tenant
+  deployment. Breaking change for configs that set `default_user_id`: replace
+  with `users: shared` (the same single-bucket behavior, no value to specify).
 - Database migrations replaced the prior two-file `schema.sql` + `migrate.sql`
   model with a `coulisse_core::migrate::SchemaMigrator` trait. Each persistent
   crate declares an ascending `VERSIONS` list of schema-bumping crate

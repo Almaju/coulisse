@@ -1,13 +1,30 @@
 # User identification
 
-Coulisse keeps separate memory per user. To do that, it needs to know *who* is making each request.
+Coulisse keeps separate memory per user. To do that, it needs to know *who* is making each request. The `users` setting picks how that identity is derived.
 
-## How users are identified
+```yaml
+users: shared        # default — single shared identity for every request
+# users: per-request # require an identifier on every request
+```
 
-Requests identify the user via one of these fields, in order:
+## `shared` (default)
+
+Every request is attributed to the same hardcoded internal identity. All conversation history, extracted memories, and rate-limit counters land in one bucket.
+
+This is what `coulisse init` writes. It's the right setting for:
+
+- Trying Coulisse out locally.
+- Single-user setups (you're the only person hitting your instance).
+- Plugging tools like LibreChat at your desk and seeing it work without first wiring up an identifier on the client side.
+
+The startup banner prints a loud warning whenever this mode is active, because shipping it to a multi-user deployment silently merges everyone's memory together.
+
+## `per-request`
+
+Coulisse rejects any request that doesn't identify its user. The identifier travels in the OpenAI request body:
 
 1. `safety_identifier` (preferred — matches OpenAI's recent schema)
-2. `user` (deprecated, but still accepted)
+2. `user` (deprecated, but still accepted as a fallback)
 
 ```json
 {
@@ -17,43 +34,17 @@ Requests identify the user via one of these fields, in order:
 }
 ```
 
-The identifier can be anything — an email, an internal user ID, a UUID, an opaque token. Coulisse derives a stable internal UUID from it:
+The identifier can be anything — an email, an internal user ID, a UUID, an opaque token. Coulisse derives a stable internal UUID from it: a real UUID stays as-is; any other string is hashed to a deterministic v5 UUID, so the same identifier always maps to the same user.
 
-- If you pass a valid UUID, that's what's used.
-- Otherwise, a deterministic v5 UUID is derived from the string, so the same identifier always maps to the same user.
+When a request arrives without one, Coulisse returns a 400 with a message that names the active mode and how to fix it — either set the field on the client, or switch the server back to `shared`.
 
-## Requiring identification
+## Picking a mode
 
-By default, Coulisse **requires** every request to carry an identifier. Unidentified requests are rejected with an error. This is the safe default: memory only works if you know who you're talking to.
+| You're… | Use |
+|---|---|
+| Trying Coulisse on your laptop. | `shared` |
+| Running a single-user deployment behind your own auth. | `shared` |
+| Pointing LibreChat / Open WebUI / your own SaaS at Coulisse with multiple end users. | `per-request`, and configure the client to forward each user's identifier in `safety_identifier`. |
+| Building any multi-tenant deployment. | `per-request` |
 
-## `default_user_id`: a single-user fallback
-
-For local development or single-user deployments, you can declare a `default_user_id` in `coulisse.yaml`. When a request arrives without `safety_identifier` or `user`, Coulisse acts as if that default had been passed.
-
-```yaml
-default_user_id: main        # everyone's anonymous requests bucket here
-
-providers:
-  anthropic:
-    api_key: sk-ant-...
-
-agents:
-  - name: assistant
-    provider: anthropic
-    model: claude-sonnet-4-5-20250929
-```
-
-With a `default_user_id` set:
-
-- Requests that omit both `safety_identifier` and `user` fall back to the default. They get memory like any other user — just scoped to that shared bucket.
-- Requests that *do* include an identifier still get their own scope.
-- All anonymous requests share one memory bucket and one rate-limit counter, because they all map to the same id.
-
-## When to set it
-
-Good reasons:
-
-- Local / single-user setups where you don't want to bother sending an identifier.
-- Small deployments behind an auth layer that handles identity upstream but doesn't want to plumb it through.
-
-Don't set `default_user_id` in multi-tenant deployments — every user would share one bucket, which defeats isolation. Leave it unset so missing identifiers are rejected.
+Switching modes is a single line in `coulisse.yaml`. There's no migration: identities derived in `shared` mode keep their memory under the hardcoded bucket; identities derived in `per-request` mode keep their own buckets.

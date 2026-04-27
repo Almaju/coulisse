@@ -65,7 +65,7 @@ If a metadata value isn't a valid non-negative integer, the server returns `400 
 ## Scope and isolation
 
 - **Per user.** Each user (keyed by `safety_identifier` or the fallback `user` field) has isolated counters.
-- **Anonymous requests can't be rate-limited.** Coulisse needs an identifier. In setups with a `default_user_id` (see [User identification](../configuration/user-id.md)), all anonymous requests share *that* user's counter.
+- **Anonymous requests can't be rate-limited per caller.** Coulisse needs an identifier. With the default `users: shared` mode (see [User identification](../configuration/user-id.md)), every request maps to one shared identity and shares a single counter; with `users: per-request`, anonymous requests are rejected outright.
 - **Per process.** Counters live in memory. If you run multiple Coulisse instances behind a load balancer, each has its own view — for shared quotas, limit upstream (in a gateway) instead.
 - **Lost on restart.** Counters are not persisted. This is deliberate for now; durable accounting is on the [roadmap](../reference/roadmap.md).
 

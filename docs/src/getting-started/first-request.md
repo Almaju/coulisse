@@ -57,9 +57,9 @@ console.log(response.choices[0].message.content);
 
 ## The `safety_identifier` field
 
-Coulisse identifies users through the `safety_identifier` field (or the deprecated `user` field, which works too). The identifier is what keeps each user's conversation history isolated.
+Coulisse identifies users through the `safety_identifier` field (or the deprecated `user` field, which works too). The identifier is what keeps each user's conversation history isolated when you run Coulisse for multiple users.
 
-You can turn this off — see [User identification](../configuration/user-id.md) — but by default every request needs one.
+By default (`users: shared`), Coulisse routes every request to a single shared identity, so the field is ignored and you don't need to send it — handy when you're trying things out. Switch to `users: per-request` in `coulisse.yaml` once you have real users; Coulisse will then require the field on every request and reject anything that omits it. See [User identification](../configuration/user-id.md).
 
 ## Listing available agents
 

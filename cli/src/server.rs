@@ -18,17 +18,21 @@ use tracing::{Instrument, Span, info_span};
 use proxy::ChatCompletionRequest;
 use proxy::Message as ChatMessage;
 
+use crate::config::Users;
 use crate::error::ApiError;
 use crate::shadow::spawn_shadow_runs;
 use crate::stream::{StreamContext, sse_response};
+
+/// Hardcoded identity used in `Users::Shared` mode. Stable across
+/// restarts because `UserId::from_string` derives the same UUID v5 from
+/// the same input — and reserved enough that no real client will collide
+/// with it. Memory and rate-limit counters are scoped to this id.
+const SHARED_USER_ID: &str = "main";
 
 /// Shared state for the OpenAI-compatible proxy. Held in an `Arc` so axum
 /// handlers can cheaply clone the reference.
 pub struct AppState<P: Agents + OneShotPrompt> {
     pub agents: Arc<P>,
-    /// Fallback user id applied to requests that don't supply their own.
-    /// `None` means such requests are rejected (multi-tenant posture).
-    pub default_user_id: Option<UserId>,
     /// A/B routing table. Cli does top-level experiment resolution here
     /// (before calling `agents.complete`); agents itself never sees this
     /// — it asks an `AgentResolver` for subagent dispatch instead.
@@ -46,6 +50,10 @@ pub struct AppState<P: Agents + OneShotPrompt> {
     pub judges: Arc<HashMap<String, Arc<Judge>>>,
     pub memory: Arc<Store>,
     pub tracker: Tracker,
+    /// User identification mode. `Shared` collapses every request onto
+    /// `SHARED_USER_ID`; `PerRequest` requires the client to send
+    /// `safety_identifier` (or the deprecated `user` field).
+    pub users: Users,
 }
 
 pub fn router<P: Agents + OneShotPrompt + 'static>(state: Arc<AppState<P>>) -> Router {
@@ -352,12 +360,19 @@ async fn prepare_request<P: Agents + OneShotPrompt>(
     state: &Arc<AppState<P>>,
     request: &ChatCompletionRequest,
 ) -> Result<PreparedRequest, ApiError> {
-    let user_id = request.user_id().or(state.default_user_id).ok_or_else(|| {
-        ApiError::BadRequest(
-            "missing user identifier: set `safety_identifier` (preferred) or the deprecated `user` field"
-                .into(),
-        )
-    })?;
+    let user_id = match state.users {
+        Users::Shared => UserId::from_string(SHARED_USER_ID),
+        Users::PerRequest => request.user_id().ok_or_else(|| {
+            ApiError::BadRequest(
+                "this Coulisse instance runs in `users: per-request` mode and requires every \
+                 request to identify its user. Set the `safety_identifier` field (preferred) or \
+                 the deprecated `user` field on the OpenAI request body. To run a single-user / \
+                 trial deployment instead, switch the server to `users: shared` in coulisse.yaml \
+                 — note that all requests will then share the same memory."
+                    .into(),
+            )
+        })?,
+    };
     let limits = RequestLimits::from_metadata(&request.metadata)?;
     let language = request.language()?;
     let tracker_key = user_id.0.to_string();

@@ -1,11 +1,13 @@
 # Copy to coulisse.yaml and fill in the values.
 # Supported providers: anthropic, cohere, deepseek, gemini, groq, openai
 
-# Fallback user identifier for requests that don't supply `safety_identifier`
-# (or the deprecated `user` field). Leave unset for multi-tenant deployments
-# so every request must identify its user. Set to a value like "main" for
-# local / single-user setups: memory still works, just scoped to that bucket.
-# default_user_id: main
+# How requests are mapped to users.
+#   shared (default) — every request maps to one hardcoded identity. Memory
+#                      is shared across callers. Great for local / trial use.
+#   per-request      — each request must carry `safety_identifier` (or the
+#                      deprecated `user` field). Unidentified requests are
+#                      rejected. Use for multi-tenant deployments.
+# users: per-request
 
 # Memory subsystem. Entire block is optional — omit for defaults: sqlite at
 # ./coulisse-memory.db with the offline `hash` embedder (OFFLINE, no semantic

@@ -13,6 +13,8 @@ use experiments::{ExperimentConfig, Strategy};
 use judges::JudgeConfig;
 use memory::ExtractorConfig;
 
+use crate::config::Users;
+
 pub struct Banner<'a> {
     pub addr: SocketAddr,
     pub agents: &'a [AgentConfig],
@@ -21,6 +23,7 @@ pub struct Banner<'a> {
     pub extractor: Option<&'a ExtractorConfig>,
     pub judges: &'a [JudgeConfig],
     pub memory_summary: &'a str,
+    pub users: Users,
 }
 
 impl Banner<'_> {
@@ -61,6 +64,7 @@ impl Banner<'_> {
             dim = s.dim,
             reset = s.reset,
         );
+        println!("  {}{}", label("Users"), users_summary(self.users));
         match self.extractor {
             Some(cfg) => println!(
                 "  {}{} / {} {dim}(dedup={}, max={}){reset}",
@@ -84,6 +88,30 @@ impl Banner<'_> {
         self.print_agents(&s);
         self.print_judges(&s);
         self.print_experiments(&s);
+        self.print_shared_mode_warning(&s);
+    }
+
+    fn print_shared_mode_warning(&self, s: &Style) {
+        if self.users != Users::Shared {
+            return;
+        }
+        println!(
+            "  {yellow}{bold}WARNING{reset} {yellow}users: shared{reset} {dim}—{reset} \
+             every request is attributed to a single hardcoded identity and {bold}all memory \
+             is shared{reset} across callers.",
+            bold = s.bold,
+            dim = s.dim,
+            reset = s.reset,
+            yellow = s.yellow,
+        );
+        println!(
+            "  {dim}Switch to{reset} {bold}users: per-request{reset} {dim}in coulisse.yaml \
+             to require `safety_identifier` on each request and isolate memory per user.{reset}",
+            bold = s.bold,
+            dim = s.dim,
+            reset = s.reset,
+        );
+        println!();
     }
 
     fn display_url(&self) -> String {
@@ -187,6 +215,13 @@ impl Banner<'_> {
     }
 }
 
+fn users_summary(users: Users) -> &'static str {
+    match users {
+        Users::Shared => "shared (all requests → one identity)",
+        Users::PerRequest => "per-request (safety_identifier required)",
+    }
+}
+
 fn section_header(s: &Style, name: &str, count: usize) {
     println!(
         "  {bold}{name}{reset} {dim}({count}){reset}",
@@ -202,6 +237,7 @@ struct Style {
     dim: &'static str,
     hyperlinks: bool,
     reset: &'static str,
+    yellow: &'static str,
 }
 
 impl Style {
@@ -213,6 +249,7 @@ impl Style {
                 dim: "\x1b[2m",
                 hyperlinks: true,
                 reset: "\x1b[0m",
+                yellow: "\x1b[33m",
             }
         } else {
             Self {
@@ -221,6 +258,7 @@ impl Style {
                 dim: "",
                 hyperlinks: false,
                 reset: "",
+                yellow: "",
             }
         }
     }

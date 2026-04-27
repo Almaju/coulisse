@@ -7,7 +7,6 @@ A complete reference for every field in `coulisse.yaml`.
 ```yaml
 agents: [ ... ]               # required, non-empty
 auth: { ... }                 # optional; per-scope auth for /v1/* and /admin/*
-default_user_id: <string>     # optional, unset by default
 experiments: [ ... ]          # optional; A/B test groups over agents
 judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
@@ -15,6 +14,7 @@ memory: { ... }               # optional; defaults to sqlite + hash embedder
 providers: { ... }            # required
 smoke_tests: [ ... ]          # optional; synthetic-user evaluation runs
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
+users: shared | per-request   # optional; default `shared`
 ```
 
 ## `auth`
@@ -68,13 +68,17 @@ auth:
       redirect_url:  http://localhost:8421/admin/
 ```
 
-## `default_user_id`
+## `users`
 
-- **Type:** string
-- **Default:** unset
-- **Purpose:** fallback identifier for requests that don't supply `safety_identifier` (or the deprecated `user`).
+- **Type:** enum (`shared` | `per-request`)
+- **Default:** `shared`
+- **Purpose:** how Coulisse derives a user identity from incoming requests.
 
-Leave it unset for multi-tenant deployments — unidentified requests will be rejected. Set it to something like `"main"` for local or single-user setups so memory still works whether or not the client bothers to send an id. See [User identification](../configuration/user-id.md).
+`shared` (the default written by `coulisse init`) routes every request to a single hardcoded internal identity — fine for local or single-user setups, but every caller's memory ends up in the same bucket. The startup banner prints a loud warning when this mode is active.
+
+`per-request` requires every request to carry `safety_identifier` (preferred) or the deprecated `user` field. Unidentified requests are rejected with a 400 explaining the active mode and the fix. Use this for any multi-tenant deployment.
+
+See [User identification](../configuration/user-id.md) for the full guide.
 
 ## `providers`
 
