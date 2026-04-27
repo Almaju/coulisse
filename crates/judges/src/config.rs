@@ -37,6 +37,7 @@ fn default_sampling_rate() -> f32 {
 /// cli's reload pipeline whenever the YAML changes.
 pub type JudgeList = Arc<ArcSwap<Vec<JudgeConfig>>>;
 
+#[must_use]
 pub fn judge_list(initial: Vec<JudgeConfig>) -> JudgeList {
     Arc::new(ArcSwap::from_pointee(initial))
 }

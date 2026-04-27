@@ -1,10 +1,12 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::migrate::{self, SchemaMigrator};
-use coulisse_core::{AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, UserId};
+use coulisse_core::{
+    AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, UserId, i64_to_u32, i64_to_u64,
+    now_secs, u64_to_i64,
+};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, SqliteConnection, SqlitePool};
@@ -81,6 +83,9 @@ pub struct Judges {
 }
 
 impl Judges {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn open(pool: SqlitePool) -> Result<Self, JudgeStoreError> {
         migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
@@ -88,6 +93,10 @@ impl Judges {
 
     /// Persist one judge score row. Called from background tasks spawned
     /// off the response path so the client is never blocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn append_score(&self, score: Score) -> Result<ScoreId, JudgeStoreError> {
         sqlx::query(
             "INSERT INTO scores (agent_name, created_at, criterion, id, judge_model, judge_name, \
@@ -95,7 +104,7 @@ impl Judges {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&score.agent_name)
-        .bind(score.created_at as i64)
+        .bind(u64_to_i64(score.created_at))
         .bind(&score.criterion)
         .bind(score.id.0.to_string())
         .bind(&score.judge_model)
@@ -109,6 +118,9 @@ impl Judges {
         Ok(score.id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn agent_criterion_matrix(
         &self,
         judge: &str,
@@ -122,7 +134,7 @@ impl Judges {
              ORDER BY agent_name, criterion",
         )
         .bind(judge)
-        .bind(since as i64)
+        .bind(u64_to_i64(since))
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -134,13 +146,17 @@ impl Judges {
             out.push(AgentCriterionCell {
                 agent_name,
                 criterion,
+                #[allow(clippy::cast_possible_truncation)] // score means are bounded 0..10
                 mean: mean as f32,
-                samples: samples as u32,
+                samples: i64_to_u32(samples),
             });
         }
         Ok(out)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn all_scores_since(
         &self,
         since: u64,
@@ -154,14 +170,18 @@ impl Judges {
              ORDER BY created_at DESC \
              LIMIT ?",
         )
-        .bind(since as i64)
-        .bind(limit as i64)
+        .bind(u64_to_i64(since))
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_score).collect()
+        rows.iter().map(row_to_score).collect()
     }
 
     /// All judge scores recorded for `user_id`, chronological.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn scores(&self, user_id: UserId) -> Result<Vec<Score>, JudgeStoreError> {
         let rows = sqlx::query(
             "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
@@ -171,17 +191,23 @@ impl Judges {
         .bind(user_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_score).collect()
+        rows.iter().map(row_to_score).collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn score_count(&self, user_id: UserId) -> Result<usize, JudgeStoreError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM scores WHERE user_id = ?")
             .bind(user_id.0.to_string())
             .fetch_one(&self.pool)
             .await?;
-        Ok(row.0 as usize)
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn score_volume(&self, since: u64) -> Result<Vec<JudgeVolume>, JudgeStoreError> {
         let rows = sqlx::query(
             "SELECT judge_name, COUNT(*) AS count \
@@ -190,7 +216,7 @@ impl Judges {
              GROUP BY judge_name \
              ORDER BY judge_name",
         )
-        .bind(since as i64)
+        .bind(u64_to_i64(since))
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -198,13 +224,16 @@ impl Judges {
             let judge_name: String = row.try_get("judge_name")?;
             let count: i64 = row.try_get("count")?;
             out.push(JudgeVolume {
-                count: count as u32,
+                count: i64_to_u32(count),
                 judge_name,
             });
         }
         Ok(out)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn scores_for_agent(&self, agent_name: &str) -> Result<Vec<Score>, JudgeStoreError> {
         let rows = sqlx::query(
             "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
@@ -214,9 +243,12 @@ impl Judges {
         .bind(agent_name)
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_score).collect()
+        rows.iter().map(row_to_score).collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn scores_for_judge(
         &self,
         judge: &str,
@@ -231,10 +263,10 @@ impl Judges {
              LIMIT ?",
         )
         .bind(judge)
-        .bind(limit as i64)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_score).collect()
+        rows.iter().map(row_to_score).collect()
     }
 
     /// Mean and sample count of scores grouped by `agent_name`, scoped to
@@ -242,6 +274,10 @@ impl Judges {
     /// the bandit strategy. Aggregates across all users (the experiment
     /// is global, not per-user). Empty when no scores match — callers
     /// fall back to exploration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn mean_scores_by_agent(
         &self,
         judge: &str,
@@ -256,7 +292,7 @@ impl Judges {
         )
         .bind(judge)
         .bind(criterion)
-        .bind(since as i64)
+        .bind(u64_to_i64(since))
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -266,8 +302,9 @@ impl Judges {
             let samples: i64 = row.try_get("samples")?;
             out.push(AgentScoreSummary {
                 agent_name,
+                #[allow(clippy::cast_possible_truncation)] // score means are bounded 0..10
                 mean: mean as f32,
-                samples: samples as u32,
+                samples: i64_to_u32(samples),
             });
         }
         Ok(out)
@@ -276,6 +313,10 @@ impl Judges {
 
 impl Judges {
     /// Every dynamic-judge row, in name order. Used by the merge step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn list_dynamic(&self) -> Result<Vec<DynamicJudgeRow>, JudgeStoreError> {
         let rows = sqlx::query(
             "SELECT config_json, created_at, disabled, name, updated_at \
@@ -283,17 +324,21 @@ impl Judges {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_dynamic_judge).collect()
+        rows.iter().map(row_to_dynamic_judge).collect()
     }
 
     /// Upsert an active row (override or dynamic). `created_at` is preserved
     /// across updates; `updated_at` is bumped to now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn put_active_dynamic(
         &self,
         name: &str,
         config: &JudgeConfig,
     ) -> Result<(), JudgeStoreError> {
-        let now = now_secs();
+        let now = u64_to_i64(now_secs());
         let json = serde_json::to_string(config)
             .map_err(|e| JudgeStoreError::RowDecode(format!("serialize: {e}")))?;
         sqlx::query(
@@ -315,8 +360,12 @@ impl Judges {
 
     /// Upsert a tombstone row. Use this to disable a YAML-declared judge at
     /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), JudgeStoreError> {
-        let now = now_secs();
+        let now = u64_to_i64(now_secs());
         sqlx::query(
             "INSERT INTO dynamic_judges (config_json, created_at, disabled, name, updated_at) \
              VALUES (NULL, ?, 1, ?, ?) \
@@ -334,6 +383,10 @@ impl Judges {
     }
 
     /// Physically remove the row. Returns true if a row was deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn delete_dynamic(&self, name: &str) -> Result<bool, JudgeStoreError> {
         let result = sqlx::query("DELETE FROM dynamic_judges WHERE name = ?")
             .bind(name)
@@ -345,6 +398,10 @@ impl Judges {
     /// Read every dynamic row, merge against `yaml_judges`, and atomically
     /// swap the effective list into `list`. Called once at boot, after every
     /// YAML reload, and after every admin write.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn rebuild_judges(
         &self,
         list: &JudgeList,
@@ -374,7 +431,7 @@ impl ScoreLookup for Judges {
     }
 }
 
-fn row_to_score(row: SqliteRow) -> Result<Score, JudgeStoreError> {
+fn row_to_score(row: &SqliteRow) -> Result<Score, JudgeStoreError> {
     let agent_name: String = row.try_get("agent_name")?;
     let created_at: i64 = row.try_get("created_at")?;
     let criterion: String = row.try_get("criterion")?;
@@ -387,7 +444,7 @@ fn row_to_score(row: SqliteRow) -> Result<Score, JudgeStoreError> {
     let user_id: String = row.try_get("user_id")?;
     Ok(Score {
         agent_name,
-        created_at: created_at as u64,
+        created_at: i64_to_u64(created_at),
         criterion,
         id: ScoreId(parse_uuid(&id, "score id")?),
         judge_model,
@@ -403,7 +460,7 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, JudgeStoreError> {
     Uuid::parse_str(s).map_err(|e| JudgeStoreError::RowDecode(format!("invalid {label}: {e}")))
 }
 
-fn row_to_dynamic_judge(row: SqliteRow) -> Result<DynamicJudgeRow, JudgeStoreError> {
+fn row_to_dynamic_judge(row: &SqliteRow) -> Result<DynamicJudgeRow, JudgeStoreError> {
     let config_json: Option<String> = row.try_get("config_json")?;
     let created_at: i64 = row.try_get("created_at")?;
     let disabled: i64 = row.try_get("disabled")?;
@@ -423,13 +480,6 @@ fn row_to_dynamic_judge(row: SqliteRow) -> Result<DynamicJudgeRow, JudgeStoreErr
         name,
         updated_at,
     })
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[derive(Debug, Error)]

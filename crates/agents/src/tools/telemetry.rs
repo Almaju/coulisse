@@ -5,7 +5,7 @@ use rig::wasm_compat::WasmBoxedFuture;
 use tracing::{Instrument, info_span};
 
 /// Tool decorator that opens a `tool_call` tracing span around any inner
-/// `ToolDyn`. The telemetry crate's SqliteLayer mirrors the span (with
+/// `ToolDyn`. The telemetry crate's `SqliteLayer` mirrors the span (with
 /// `args`, `result`, `error`, `tool_name`, `kind` fields) into the
 /// `events` and `tool_calls` tables — closing the blind spot that let
 /// hallucinated tool-failure replies hide real upstream errors.

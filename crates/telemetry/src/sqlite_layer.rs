@@ -3,9 +3,9 @@
 //! `tracing_subscriber::Layer` that captures `turn`, `tool_call`, and
 //! `llm_call` spans and persists them to the same `events` and `tool_calls`
 //! tables that the studio UI reads. The bridge is the only thing that knows
-//! about SQLite — feature crates remain agnostic and just emit `tracing!`.
+//! about `SQLite` — feature crates remain agnostic and just emit `tracing!`.
 //!
-//! Spans are written on close. Layer callbacks are sync; the actual SQLite
+//! Spans are written on close. Layer callbacks are sync; the actual `SQLite`
 //! INSERT runs on a background tokio task fed by an unbounded mpsc channel,
 //! so `on_close` never blocks the request hot path.
 //!
@@ -23,7 +23,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use coulisse_core::{ToolCallKind, TurnId, UserId};
+use coulisse_core::{ToolCallKind, TurnId, UserId, u64_to_i64};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
@@ -109,7 +109,7 @@ impl SqliteLayerGuard {
     }
 }
 
-/// `tracing_subscriber::Layer` that mirrors selected spans into SQLite.
+/// `tracing_subscriber::Layer` that mirrors selected spans into `SQLite`.
 /// Cheap to clone (`tx` is `Arc`-backed inside `mpsc`), so it can be added
 /// to any subscriber stack.
 #[derive(Clone)]
@@ -122,6 +122,7 @@ impl SqliteLayer {
     /// the layer paired with a guard. Caller installs the layer with
     /// `tracing_subscriber::registry().with(layer)` and keeps the guard
     /// alive for the process lifetime (or `flush()`es it in tests).
+    #[must_use]
     pub fn spawn(pool: SqlitePool) -> (Self, SqliteLayerGuard) {
         let (tx, mut rx) = mpsc::unbounded_channel::<WriteJob>();
         tokio::spawn(async move {
@@ -213,7 +214,8 @@ where
         let Some(span_ext) = extensions.get::<SpanExt>() else {
             return;
         };
-        let duration_ms = span_ext.started_at.elapsed().as_millis() as u64;
+        let duration_ms =
+            u64::try_from(span_ext.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let event_id = span_ext.event_id;
         let started_at_ms = span_ext.started_at_ms;
         let fields = &span_ext.fields;
@@ -230,7 +232,7 @@ where
         let turn_ctx = span.scope().find_map(|s| {
             s.extensions()
                 .get::<TurnExt>()
-                .map(|t| (t.user_id, t.turn_id, &t.ordinal as *const AtomicU32))
+                .map(|t| (t.user_id, t.turn_id, &raw const t.ordinal))
         });
 
         let (user_id, turn_id) = match (turn_ctx, name) {
@@ -337,8 +339,8 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&row.correlation_id)
-            .bind(row.created_at_ms as i64)
-            .bind(row.duration_ms as i64)
+            .bind(u64_to_i64(row.created_at_ms))
+            .bind(u64_to_i64(row.duration_ms))
             .bind(&row.id)
             .bind(row.kind)
             .bind(row.parent_id.as_deref())
@@ -354,11 +356,11 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&row.args)
-            .bind(row.created_at_secs as i64)
+            .bind(u64_to_i64(row.created_at_secs))
             .bind(row.error.as_deref())
             .bind(&row.id)
             .bind(row.kind)
-            .bind(row.ordinal as i64)
+            .bind(i64::from(row.ordinal))
             .bind(row.result.as_deref())
             .bind(&row.tool_name)
             .bind(&row.turn_id)
@@ -373,8 +375,7 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Visitor that flattens `tracing` field values into a string map. Captures
@@ -548,7 +549,7 @@ mod tests {
         let calls = sink.tool_calls_for_turn(turn).await.unwrap();
         assert_eq!(calls.len(), 3);
         let mut ords: Vec<u32> = calls.iter().map(|c| c.ordinal).collect();
-        ords.sort();
+        ords.sort_unstable();
         assert_eq!(ords, vec![0, 1, 2]);
     }
 }

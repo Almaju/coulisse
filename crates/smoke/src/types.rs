@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct RunId(pub Uuid);
 
 impl RunId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -31,6 +32,7 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -39,6 +41,7 @@ impl RunStatus {
         }
     }
 
+    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "completed" => Some(Self::Completed),
@@ -59,6 +62,7 @@ pub enum TurnRole {
 }
 
 impl TurnRole {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Assistant => "assistant",
@@ -66,6 +70,7 @@ impl TurnRole {
         }
     }
 
+    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "assistant" => Some(Self::Assistant),

@@ -14,6 +14,9 @@ pub enum UpdateError {
     SelfUpdate(#[from] self_update::errors::Error),
 }
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub fn run() -> Result<(), UpdateError> {
     let status = self_update::backends::github::Update::configure()
         .repo_owner("Almaju")

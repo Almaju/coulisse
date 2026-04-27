@@ -15,6 +15,11 @@ use serde::de::DeserializeOwned;
 /// Build a response that redirects browser navigations (`303 See Other`)
 /// and htmx requests (`HX-Redirect` header) to the same target. Every
 /// admin handler that mutates state and falls back to HTML uses this.
+///
+/// # Panics
+///
+/// Panics if invariants documented above are violated.
+#[must_use]
 pub fn redirect_to(to: &str) -> Response {
     let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
     resp.headers_mut().insert(
@@ -41,6 +46,7 @@ impl ResponseFormat {
     /// (htmx) or as a full page. Useful for handlers that produce the
     /// same HTML body for both and let the shell middleware do the
     /// wrapping.
+    #[must_use]
     pub fn is_html(self) -> bool {
         matches!(self, Self::Html | Self::Htmx)
     }
@@ -57,8 +63,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ResponseFormat {
             .headers
             .get(header::ACCEPT)
             .and_then(|v| v.to_str().ok())
-            .map(prefers_json)
-            .unwrap_or(false);
+            .is_some_and(prefers_json);
         if prefers_json {
             return Ok(Self::Json);
         }

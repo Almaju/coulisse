@@ -3,9 +3,9 @@
 //! the process lifetime.
 //!
 //! Layer composition (outer → inner):
-//!   - EnvFilter (`RUST_LOG` overrides, falls back to `info,sqlx=warn`)
+//!   - `EnvFilter` (`RUST_LOG` overrides, falls back to `info,sqlx=warn`)
 //!   - fmt → stderr
-//!   - SqliteLayer → `events` / `tool_calls` (drives the studio UI)
+//!   - `SqliteLayer` → `events` / `tool_calls` (drives the studio UI)
 //!   - OpenTelemetry → OTLP exporter (optional, opt-in via YAML)
 
 use opentelemetry_sdk::trace::SdkTracerProvider;
@@ -17,11 +17,11 @@ use tracing_subscriber::{EnvFilter, fmt};
 use crate::config::{Config, OtlpConfig, OtlpProtocol};
 use crate::sqlite_layer::{SqliteLayer, SqliteLayerGuard};
 
-/// Held for the process lifetime. Drops the SqliteLayer writer guard
+/// Held for the process lifetime. Drops the `SqliteLayer` writer guard
 /// (best-effort drain) and shuts down the OTLP exporter so in-flight
 /// spans land before the process exits.
 pub struct TelemetryGuard {
-    /// `Some` when the SQLite layer is enabled; `None` otherwise.
+    /// `Some` when the `SQLite` layer is enabled; `None` otherwise.
     pub sqlite: Option<SqliteLayerGuard>,
     /// `Some` when OTLP is enabled; flushes the exporter on drop.
     #[allow(dead_code)]
@@ -44,6 +44,10 @@ impl Drop for OtlpGuard {
 /// Initialize the global tracing subscriber from `config`. Calls
 /// `tracing_subscriber::registry().init()` internally — must only be
 /// invoked once per process.
+///
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGuard, InitError> {
     use opentelemetry::trace::TracerProvider as _;
 
@@ -67,33 +71,30 @@ pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGua
     // call into two branches avoids the layer's type leaking into a
     // helper signature, which doesn't compose cleanly with the
     // already-stacked `Layered<...>` chain.
-    match config.otlp.as_ref() {
-        Some(cfg) => {
-            let provider = build_otlp_provider(cfg)?;
-            let tracer = provider.tracer("coulisse");
-            let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt_layer)
-                .with(sqlite_layer)
-                .with(otlp_layer)
-                .init();
-            Ok(TelemetryGuard {
-                sqlite: sqlite_guard,
-                otlp: Some(OtlpGuard { provider }),
-            })
-        }
-        None => {
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt_layer)
-                .with(sqlite_layer)
-                .init();
-            Ok(TelemetryGuard {
-                sqlite: sqlite_guard,
-                otlp: None,
-            })
-        }
+    if let Some(cfg) = config.otlp.as_ref() {
+        let provider = build_otlp_provider(cfg)?;
+        let tracer = provider.tracer("coulisse");
+        let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(sqlite_layer)
+            .with(otlp_layer)
+            .init();
+        Ok(TelemetryGuard {
+            sqlite: sqlite_guard,
+            otlp: Some(OtlpGuard { provider }),
+        })
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(sqlite_layer)
+            .init();
+        Ok(TelemetryGuard {
+            sqlite: sqlite_guard,
+            otlp: None,
+        })
     }
 }
 
@@ -154,7 +155,7 @@ pub enum InitError {
 }
 
 impl TelemetryGuard {
-    /// Round-trip the SqliteLayer writer (no-op when disabled). Used by
+    /// Round-trip the `SqliteLayer` writer (no-op when disabled). Used by
     /// tests that need rows on disk before reading them back.
     pub async fn flush(&self) {
         if let Some(g) = self.sqlite.as_ref() {

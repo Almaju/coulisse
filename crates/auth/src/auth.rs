@@ -102,6 +102,10 @@ impl Auth {
     /// Build runtime state from YAML. Validation is the caller's job — call
     /// `Config::validate()` first; OIDC discovery is the only network step
     /// performed here, and any failure surfaces as a fatal startup error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn from_config(config: Config) -> Result<Self, BuildError> {
         let admin = match config.admin {
             Some(scope) => Some(Scheme::from_config(scope).await?),
@@ -134,12 +138,14 @@ impl Auth {
 
     /// One-line description of the proxy-scope auth posture, for the
     /// startup banner.
+    #[must_use]
     pub fn proxy_summary(&self) -> &'static str {
         Self::summary(self.proxy.as_ref())
     }
 
     /// One-line description of the admin-scope auth posture, for the
     /// startup banner.
+    #[must_use]
     pub fn admin_summary(&self) -> &'static str {
         Self::summary(self.admin.as_ref())
     }
@@ -209,8 +215,7 @@ async fn basic_check(creds: Credentials, request: Request, next: Next) -> Respon
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .map(|h| creds.verify_header(h))
-        .unwrap_or(false);
+        .is_some_and(|h| creds.verify_header(h));
     if ok {
         next.run(request).await
     } else {

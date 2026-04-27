@@ -25,11 +25,36 @@ use uuid::Uuid;
 /// Seconds since the Unix epoch. Saturates to 0 if the system clock is
 /// before 1970 (impossible in normal operation, but the call is
 /// infallible to keep call sites readable).
+#[must_use]
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Convert a u64 timestamp/count to i64 for `SQLite` `INTEGER` binds.
+/// Saturates rather than panicking — the only inputs that would overflow
+/// are timestamps several billion years from now, or token counts that
+/// would never fit through any real provider.
+#[must_use]
+pub fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Convert a signed integer read from `SQLite` back to u64. Negative
+/// values (which should never appear because we only store from u64
+/// originals) are clamped to 0.
+#[must_use]
+pub fn i64_to_u64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+/// Saturating cast for counts read from `SQLite` as i64 but exposed
+/// to callers as u32 (judge sample counts, turn indices, etc.).
+/// Negatives clamp to 0; values above `u32::MAX` clamp to `u32::MAX`.
+#[must_use]
+pub fn i64_to_u32(value: i64) -> u32 {
+    u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
 
 /// Stable identity for a turn — the public-visible correlation id shared by
@@ -40,6 +65,7 @@ pub fn now_secs() -> u64 {
 pub struct TurnId(pub Uuid);
 
 impl TurnId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -56,6 +82,7 @@ impl Default for TurnId {
 pub struct MessageId(pub Uuid);
 
 impl MessageId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -72,12 +99,14 @@ impl Default for MessageId {
 pub struct UserId(pub Uuid);
 
 impl UserId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 
     /// Parse `s` as a UUID if well-formed; otherwise derive a stable UUID from it.
     /// Accepts arbitrary caller-supplied strings without losing partitioning guarantees.
+    #[must_use]
     pub fn from_string(s: &str) -> Self {
         match Uuid::parse_str(s) {
             Ok(uuid) => Self(uuid),
@@ -107,6 +136,7 @@ pub enum Role {
 }
 
 impl Role {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Assistant => "assistant",
@@ -148,6 +178,7 @@ pub enum ToolCallKind {
 }
 
 impl ToolCallKind {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Mcp => "mcp",

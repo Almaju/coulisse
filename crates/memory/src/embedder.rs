@@ -25,7 +25,11 @@ impl BundledEmbedder {
     /// Build an embedder from config. `fallback_api_key` is used when the
     /// embedder config doesn't carry its own key — typically the matching
     /// entry from the top-level `providers:` map (so users who already
-    /// configured OpenAI for completions don't need to repeat the key).
+    /// configured `OpenAI` for completions don't need to repeat the key).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn from_config(
         config: &EmbedderConfig,
         fallback_api_key: Option<&str>,
@@ -69,6 +73,7 @@ impl BundledEmbedder {
         }
     }
 
+    #[must_use]
     pub fn ndims(&self) -> usize {
         match self {
             Self::Hash(h) => h.ndims(),
@@ -76,6 +81,9 @@ impl BundledEmbedder {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
         match self {
             Self::Hash(h) => Ok(h.embed(text)),
@@ -99,20 +107,29 @@ pub struct HashEmbedder {
 }
 
 impl HashEmbedder {
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if invariants documented above are violated.
     pub fn new(dims: usize) -> Self {
         assert!(dims > 0, "dims must be positive");
         Self { dims }
     }
 
+    #[must_use]
     pub fn ndims(&self) -> usize {
         self.dims
     }
 
+    #[must_use]
     pub fn embed(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; self.dims];
         for word in text.to_lowercase().split_whitespace() {
             let mut hasher = DefaultHasher::new();
             word.hash(&mut hasher);
+            // Hash output is u64; usize is at least 32 bits everywhere we
+            // build, so truncating with `as` matches usize::MAX on the host.
+            #[allow(clippy::cast_possible_truncation)]
             let idx = (hasher.finish() as usize) % self.dims;
             v[idx] += 1.0;
         }
@@ -127,6 +144,9 @@ impl HashEmbedder {
 }
 
 fn to_f32(vec: Vec<f64>) -> Vec<f32> {
+    // Embeddings are bounded magnitudes; the f64 → f32 narrowing is
+    // intrinsic to storing them packed in SQLite.
+    #[allow(clippy::cast_possible_truncation)]
     vec.into_iter().map(|x| x as f32).collect()
 }
 

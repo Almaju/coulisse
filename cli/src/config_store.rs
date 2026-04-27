@@ -40,7 +40,7 @@ pub type OnReload =
 pub struct ConfigStore {
     /// Last validated `Config` snapshot. Updated on every successful
     /// admin write and every file-watcher reload. Admin handlers for
-    /// sections that don't have their own ArcSwap (providers, mcp,
+    /// sections that don't have their own `ArcSwap` (providers, mcp,
     /// memory, telemetry, auth) read straight off this — they're
     /// edited the same way as agents/judges/experiments but the
     /// runtime that consumes them only picks the change up on
@@ -84,6 +84,10 @@ impl ConfigStore {
     /// Spawn the filesystem watcher. Returns a guard that, when
     /// dropped, stops the watcher. Holding the guard for the lifetime
     /// of the process keeps reloads flowing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn spawn_watcher(self: &Arc<Self>) -> Result<WatcherGuard, ConfigPersistError> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
         let mut watcher = RecommendedWatcher::new(
@@ -102,8 +106,7 @@ impl ConfigStore {
         let watch_dir = self
             .path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         watcher
             .watch(&watch_dir, RecursiveMode::NonRecursive)
             .map_err(|err| ConfigPersistError::Io(err.to_string()))?;
@@ -250,8 +253,7 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
     fs::canonicalize(a)
         .ok()
         .zip(fs::canonicalize(b).ok())
-        .map(|(a, b)| a == b)
-        .unwrap_or_else(|| a == b)
+        .map_or_else(|| a == b, |(ca, cb)| ca == cb)
 }
 
 /// Atomic write: temp file in the same directory + rename. Same-
@@ -262,8 +264,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = path
         .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "config".into());
+        .map_or_else(|| "config".into(), |s| s.to_string_lossy().into_owned());
     let tmp = dir.join(format!(".{stem}.coulisse-{}.tmp", std::process::id()));
     {
         let mut f = fs::OpenOptions::new()

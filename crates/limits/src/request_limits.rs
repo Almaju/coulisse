@@ -14,6 +14,9 @@ pub struct RequestLimits {
 }
 
 impl RequestLimits {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn from_metadata(metadata: &HashMap<String, String>) -> Result<Self, LimitError> {
         let parse = |key: &str| -> Result<Option<u64>, LimitError> {
             metadata
@@ -33,6 +36,7 @@ impl RequestLimits {
         })
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tokens_per_day.is_none()
             && self.tokens_per_hour.is_none()

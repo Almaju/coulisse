@@ -138,8 +138,7 @@ impl JudgeListRow {
         let score_count_7d = volumes
             .iter()
             .find(|v| v.judge_name == row.name)
-            .map(|v| v.count)
-            .unwrap_or(0);
+            .map_or(0, |v| v.count);
         match &row.config {
             Some(cfg) => Self {
                 criteria_count: cfg.rubrics.len(),
@@ -193,10 +192,10 @@ impl ScoreRow {
     }
 }
 
-pub(super) fn build_matrix(cells: Vec<AgentCriterionCell>) -> AgentCriterionMatrix {
+pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix {
     let mut criteria_set = BTreeSet::new();
     let mut by_agent: BTreeMap<String, Vec<&AgentCriterionCell>> = BTreeMap::new();
-    for cell in &cells {
+    for cell in cells {
         criteria_set.insert(cell.criterion.clone());
         by_agent
             .entry(cell.agent_name.clone())
@@ -247,14 +246,14 @@ fn average_by_criterion(scores: &[Score]) -> Vec<CriterionAverageRow> {
         let entry = buckets
             .entry((s.judge_name.clone(), s.criterion.clone()))
             .or_insert((0.0, 0));
-        entry.0 += s.score as f64;
+        entry.0 += f64::from(s.score);
         entry.1 += 1;
     }
     let mut out: Vec<CriterionAverageRow> = buckets
         .into_iter()
         .map(
             |((judge_name, criterion), (sum, count))| CriterionAverageRow {
-                average: format!("{:.1}", sum / count as f64),
+                average: format!("{:.1}", sum / f64::from(count)),
                 count,
                 criterion,
                 judge_name,
@@ -272,8 +271,7 @@ fn average_by_criterion(scores: &[Score]) -> Vec<CriterionAverageRow> {
 fn relative_time(seconds: u64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(seconds);
+        .map_or(seconds, |d| d.as_secs());
     let diff = now.saturating_sub(seconds);
     if diff < 60 {
         return "just now".into();

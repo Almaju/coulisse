@@ -58,7 +58,7 @@ type BuiltTools = (Vec<Box<dyn ToolDyn>>, Arc<HashSet<String>>);
 /// Tool invocations and subagent calls are observed via the `tracing`
 /// crate: callers run the future inside a `turn` span carrying `user_id`
 /// and `turn_id`, and child `tool_call` spans nest automatically. The
-/// telemetry crate's SqliteLayer mirrors those spans to the studio.
+/// telemetry crate's `SqliteLayer` mirrors those spans to the studio.
 pub trait Agents: Send + Sync {
     /// Snapshot of the currently configured agents. Cheap clone of an
     /// `Arc`; safe to hold for the duration of a request even if a
@@ -121,6 +121,10 @@ impl RigAgents {
     /// subagent name resolver. Tool invocations are recorded as
     /// `tool_call` tracing spans on every MCP and subagent call regardless
     /// of depth — observability is the subscriber's job, not this crate's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn new(config: BootConfig) -> Result<Self, AgentsError> {
         let providers = Providers::new(config.providers).map_err(AgentsError::from)?;
         Ok(Self {

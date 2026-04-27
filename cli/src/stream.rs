@@ -44,6 +44,9 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     pub user_message: String,
 }
 
+/// # Panics
+///
+/// Panics if invariants documented above are violated.
 pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
     cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
@@ -172,7 +175,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                 record_llm_call(&state, &agent_name, usage, &llm_call_span);
                 let um = state.memory.for_user(user_id);
                 if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
-                    warn_memory_append_failed("user", err);
+                    warn_memory_append_failed("user", &err);
                 }
                 if accumulated.is_empty() {
                     return;
@@ -185,7 +188,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                     )
                     .await;
                 if let Err(err) = assistant_append {
-                    warn_memory_append_failed("assistant", err);
+                    warn_memory_append_failed("assistant", &err);
                     return;
                 }
                 if let Some(extractor) = state.extractor.as_ref() {
@@ -215,7 +218,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
     }
 }
 
-fn warn_memory_append_failed(role: &str, err: memory::MemoryError) {
+fn warn_memory_append_failed(role: &str, err: &memory::MemoryError) {
     tracing::warn!(role, error = %err, "memory append failed after streaming response");
 }
 
@@ -277,7 +280,7 @@ impl StreamMeta {
         self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
     }
 
-    /// Non-standard error envelope: OpenAI's stream chunks have no `error`
+    /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
     /// field, but clients commonly expect one when the upstream provider
     /// fails mid-stream. Built as raw JSON so the schema doesn't have to
     /// carry a field that's absent on success.

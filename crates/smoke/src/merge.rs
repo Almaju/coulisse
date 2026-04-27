@@ -24,6 +24,7 @@ pub struct MergeReport {
     pub yaml_count: usize,
 }
 
+#[must_use]
 pub fn merge(yaml: &[SmokeTestConfig], db: &[DynamicSmokeRow]) -> (Vec<MergedSmoke>, MergeReport) {
     let db_by_name: HashMap<&str, &DynamicSmokeRow> =
         db.iter().map(|r| (r.name.as_str(), r)).collect();
@@ -93,6 +94,7 @@ pub struct AdminSmoke {
     pub yaml_backed: bool,
 }
 
+#[must_use]
 pub fn admin_view(yaml: &[SmokeTestConfig], db: &[DynamicSmokeRow]) -> Vec<AdminSmoke> {
     let db_by_name: HashMap<&str, &DynamicSmokeRow> =
         db.iter().map(|r| (r.name.as_str(), r)).collect();

@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::str::FromStr;
 
-use coulisse_core::UnknownRole;
 use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::{UnknownRole, i64_to_u32, i64_to_u64, u64_to_i64};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -31,7 +31,7 @@ impl SchemaMigrator for Schema {
     }
 }
 
-/// Top-level memory infrastructure. Owns the embedder and the SQLite pool
+/// Top-level memory infrastructure. Owns the embedder and the `SQLite` pool
 /// where all per-user data lives.
 ///
 /// Callers can never touch user data except through `Store::for_user`, which
@@ -45,11 +45,15 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open a Store against an externally-provided SQLite pool. Cli
+    /// Open a Store against an externally-provided `SQLite` pool. Cli
     /// owns the pool (via `memory::open_pool`) and hands clones to
     /// every persistent crate. Memory runs its own schema migrations
     /// against the pool — it owns only the `messages` and `memories`
     /// tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     ///
     /// `fallback_api_key` is tried when the embedder config does not carry
     /// its own key — caller passes the matching entry from `providers:`.
@@ -67,16 +71,19 @@ impl Store {
         })
     }
 
+    #[must_use]
     pub fn config(&self) -> &MemoryConfig {
         &self.config
     }
 
+    #[must_use]
     pub fn embedder(&self) -> &BundledEmbedder {
         &self.embedder
     }
 
     /// Obtain a scoped handle for `user_id`. Does not create any rows until
     /// the caller writes something.
+    #[must_use]
     pub fn for_user(&self, user_id: UserId) -> UserMemory<'_> {
         UserMemory {
             store: self,
@@ -84,6 +91,9 @@ impl Store {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn conversation_summaries(&self) -> Result<Vec<ConversationSummary>, MemoryError> {
         let rows = sqlx::query(
             "SELECT user_id, \
@@ -105,10 +115,10 @@ impl Store {
             let first_message_at: i64 = row.try_get("first_message_at")?;
             let last_message_at: i64 = row.try_get("last_message_at")?;
             out.push(ConversationSummary {
-                first_message_at: first_message_at.max(0) as u64,
-                last_message_at: last_message_at.max(0) as u64,
+                first_message_at: first_message_at.try_into().unwrap_or(0u64),
+                last_message_at: last_message_at.try_into().unwrap_or(0u64),
                 message_count: clamp_u32(message_count),
-                total_tokens: total_tokens.max(0) as u64,
+                total_tokens: total_tokens.try_into().unwrap_or(0u64),
                 user_id: UserId(parse_uuid(&user_id, "user id")?),
             });
         }
@@ -120,6 +130,10 @@ impl Store {
     /// activity timestamps reflect only memory-owned tables (messages,
     /// memories); studio composes other per-feature counts (scores,
     /// tool calls) from the crates that own them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn list_user_summaries(&self) -> Result<Vec<UserSummary>, MemoryError> {
         let rows = sqlx::query(
             "SELECT u.user_id AS user_id, \
@@ -148,7 +162,7 @@ impl Store {
             let memory_count: i64 = row.try_get("memory_count")?;
             let last_activity_at: i64 = row.try_get("last_activity_at")?;
             out.push(UserSummary {
-                last_activity_at: last_activity_at as u64,
+                last_activity_at: i64_to_u64(last_activity_at),
                 memory_count: clamp_u32(memory_count),
                 message_count: clamp_u32(message_count),
                 user_id: UserId(parse_uuid(&user_id, "user id")?),
@@ -165,12 +179,17 @@ pub struct UserMemory<'a> {
     user_id: UserId,
 }
 
-impl<'a> UserMemory<'a> {
+impl UserMemory<'_> {
+    #[must_use]
     pub fn user_id(&self) -> UserId {
         self.user_id
     }
 
     /// Append a message to the user's conversation history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn append_message(
         &self,
         role: Role,
@@ -184,6 +203,10 @@ impl<'a> UserMemory<'a> {
     /// up front. Used by the chat handler so the assistant message's id can
     /// double as the telemetry turn correlation id — one value identifies
     /// both the stored message and the event tree that produced it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn append_message_with_id(
         &self,
         role: Role,
@@ -196,10 +219,10 @@ impl<'a> UserMemory<'a> {
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&stored.content)
-        .bind(stored.created_at as i64)
+        .bind(u64_to_i64(stored.created_at))
         .bind(stored.id.0.to_string())
         .bind(stored.role.as_str())
-        .bind(stored.token_count.0 as i64)
+        .bind(i64::from(stored.token_count.0))
         .bind(self.user_id.0.to_string())
         .execute(&self.store.pool)
         .await?;
@@ -208,6 +231,10 @@ impl<'a> UserMemory<'a> {
 
     /// Record a long-term memory (fact or preference) for this user. Always
     /// inserts — use `remember_if_novel` to skip near-duplicates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn remember(
         &self,
         kind: MemoryKind,
@@ -224,6 +251,10 @@ impl<'a> UserMemory<'a> {
     /// cosine similarity above `threshold`. Returns `Ok(None)` when a
     /// near-duplicate is already stored. Used by the auto-extractor to
     /// avoid writing the same fact on every turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn remember_if_novel(
         &self,
         kind: MemoryKind,
@@ -246,6 +277,10 @@ impl<'a> UserMemory<'a> {
     /// Return top-`k` memories most relevant to `query` by cosine similarity.
     /// Only memories embedded with the currently-configured embedder model
     /// are considered — stale rows are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<Memory>, MemoryError> {
         let query_embedding = self.store.embedder.embed(query).await?;
         check_dims(&query_embedding, self.store.embedder.ndims())?;
@@ -258,23 +293,33 @@ impl<'a> UserMemory<'a> {
         Ok(scored.into_iter().take(k).map(|(_, m)| m).collect())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn message_count(&self) -> Result<usize, MemoryError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE user_id = ?")
             .bind(self.user_id.0.to_string())
             .fetch_one(&self.store.pool)
             .await?;
-        Ok(row.0 as usize)
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn memory_count(&self) -> Result<usize, MemoryError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memories WHERE user_id = ?")
             .bind(self.user_id.0.to_string())
             .fetch_one(&self.store.pool)
             .await?;
-        Ok(row.0 as usize)
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
     }
 
     /// Full conversation history for this user, in chronological order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn messages(&self) -> Result<Vec<StoredMessage>, MemoryError> {
         let rows = sqlx::query(
             "SELECT content, created_at, id, role, token_count, user_id \
@@ -283,10 +328,14 @@ impl<'a> UserMemory<'a> {
         .bind(self.user_id.0.to_string())
         .fetch_all(&self.store.pool)
         .await?;
-        rows.into_iter().map(row_to_stored_message).collect()
+        rows.iter().map(row_to_stored_message).collect()
     }
 
     /// All long-term memories recorded for this user, in insertion order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn memories(&self) -> Result<Vec<Memory>, MemoryError> {
         self.load_memories().await
     }
@@ -296,6 +345,10 @@ impl<'a> UserMemory<'a> {
     /// recalled memories and the most-recent conversation messages that fit
     /// within the budget, in chronological order. The new message is *not*
     /// included — the caller appends it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn assemble_context(
         &self,
         new_user_message: &str,
@@ -305,8 +358,11 @@ impl<'a> UserMemory<'a> {
             .recall(new_user_message, self.store.config.recall_k)
             .await?;
 
-        let memory_budget =
-            TokenCount(((budget.0 as f32) * self.store.config.memory_budget_fraction) as u32);
+        let scaled = f64::from(budget.0) * f64::from(self.store.config.memory_budget_fraction);
+        // Clamped to [0, u32::MAX] just above; the truncating cast cannot
+        // overflow or sign-flip and only drops the fractional part.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let memory_budget = TokenCount(scaled.clamp(0.0, f64::from(u32::MAX)) as u32);
         let memories = fit_memories(recalled, memory_budget);
         let memories_used: TokenCount = memories
             .iter()
@@ -326,9 +382,9 @@ impl<'a> UserMemory<'a> {
              embedding_model, id, kind, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&memory.content)
-        .bind(memory.created_at as i64)
+        .bind(u64_to_i64(memory.created_at))
         .bind(vec_to_bytes(&memory.embedding))
-        .bind(memory.embedding.len() as i64)
+        .bind(i64::try_from(memory.embedding.len()).unwrap_or(i64::MAX))
         .bind(self.store.config.embedder.model_id())
         .bind(memory.id.0.to_string())
         .bind(memory.kind.as_str())
@@ -349,7 +405,7 @@ impl<'a> UserMemory<'a> {
         .bind(&model_id)
         .fetch_all(&self.store.pool)
         .await?;
-        rows.into_iter().map(row_to_memory).collect()
+        rows.iter().map(row_to_memory).collect()
     }
 }
 
@@ -381,11 +437,15 @@ pub struct UserSummary {
     pub user_id: UserId,
 }
 
-/// Open a SQLite pool from a `BackendConfig`. Public so cli can open
+/// Open a `SQLite` pool from a `BackendConfig`. Public so cli can open
 /// one pool and hand clones to every persistent crate (memory, judge,
 /// telemetry, limits) instead of borrowing memory's. Each crate runs
 /// its own `CREATE TABLE IF NOT EXISTS` against the shared pool, so
 /// table ownership stays clear even though the connection is shared.
+///
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub async fn open_pool(backend: &BackendConfig) -> Result<SqlitePool, ConfigError> {
     let options = match backend {
         BackendConfig::InMemory => SqliteConnectOptions::from_str("sqlite::memory:")
@@ -499,7 +559,7 @@ fn bytes_to_vec(bytes: &[u8]) -> Result<Vec<f32>, MemoryError> {
         .collect())
 }
 
-fn row_to_memory(row: SqliteRow) -> Result<Memory, MemoryError> {
+fn row_to_memory(row: &SqliteRow) -> Result<Memory, MemoryError> {
     let content: String = row.try_get("content")?;
     let created_at: i64 = row.try_get("created_at")?;
     let embedding_blob: Vec<u8> = row.try_get("embedding")?;
@@ -508,7 +568,7 @@ fn row_to_memory(row: SqliteRow) -> Result<Memory, MemoryError> {
     let user_id: String = row.try_get("user_id")?;
     Ok(Memory {
         content,
-        created_at: created_at as u64,
+        created_at: i64_to_u64(created_at),
         embedding: bytes_to_vec(&embedding_blob)?,
         id: MemoryId(parse_uuid(&id, "memory id")?),
         kind: kind
@@ -518,7 +578,7 @@ fn row_to_memory(row: SqliteRow) -> Result<Memory, MemoryError> {
     })
 }
 
-fn row_to_stored_message(row: SqliteRow) -> Result<StoredMessage, MemoryError> {
+fn row_to_stored_message(row: &SqliteRow) -> Result<StoredMessage, MemoryError> {
     let content: String = row.try_get("content")?;
     let created_at: i64 = row.try_get("created_at")?;
     let id: String = row.try_get("id")?;
@@ -527,12 +587,12 @@ fn row_to_stored_message(row: SqliteRow) -> Result<StoredMessage, MemoryError> {
     let user_id: String = row.try_get("user_id")?;
     Ok(StoredMessage {
         content,
-        created_at: created_at as u64,
+        created_at: i64_to_u64(created_at),
         id: MessageId(parse_uuid(&id, "message id")?),
         role: role
             .parse()
             .map_err(|e: UnknownRole| MemoryError::RowDecode(e.to_string()))?,
-        token_count: TokenCount(token_count as u32),
+        token_count: TokenCount(i64_to_u32(token_count)),
         user_id: UserId(parse_uuid(&user_id, "user id")?),
     })
 }
@@ -542,5 +602,5 @@ fn parse_uuid(s: &str, label: &str) -> Result<Uuid, MemoryError> {
 }
 
 fn clamp_u32(n: i64) -> u32 {
-    n.max(0).min(u32::MAX as i64) as u32
+    i64_to_u32(n)
 }

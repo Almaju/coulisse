@@ -24,6 +24,7 @@ pub struct MergeReport {
     pub yaml_count: usize,
 }
 
+#[must_use]
 pub fn merge(
     yaml: &[ExperimentConfig],
     db: &[DynamicExperimentRow],
@@ -96,6 +97,7 @@ pub struct AdminExperiment {
     pub yaml_backed: bool,
 }
 
+#[must_use]
 pub fn admin_view(yaml: &[ExperimentConfig], db: &[DynamicExperimentRow]) -> Vec<AdminExperiment> {
     let db_by_name: HashMap<&str, &DynamicExperimentRow> =
         db.iter().map(|r| (r.name.as_str(), r)).collect();

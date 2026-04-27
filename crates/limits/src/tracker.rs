@@ -1,5 +1,5 @@
 use coulisse_core::migrate::{self, SchemaMigrator};
-use coulisse_core::now_secs;
+use coulisse_core::{now_secs, u64_to_i64};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::error::WindowKind;
@@ -22,7 +22,7 @@ impl SchemaMigrator for Schema {
 }
 
 /// Persistent per-user token-usage tracker. Stores the current hour/day/month
-/// counter for each user in SQLite so limits survive restarts. Shares a pool
+/// counter for each user in `SQLite` so limits survive restarts. Shares a pool
 /// with [`memory::Store`] — there is one database per Coulisse process, with
 /// one table per crate that owns state.
 pub struct Tracker {
@@ -32,6 +32,10 @@ pub struct Tracker {
 impl Tracker {
     /// Apply the tracker schema to `pool` and return a tracker that reads and
     /// writes the `rate_limit_windows` table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn open(pool: SqlitePool) -> Result<Self, LimitError> {
         migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
@@ -40,6 +44,10 @@ impl Tracker {
     /// Reject the request if any of the caller-supplied caps have already been
     /// reached in the current window. Returns `Ok(())` when no limits apply or
     /// every relevant bucket is below its cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn check(&self, user: &str, limits: RequestLimits) -> Result<(), LimitError> {
         if limits.is_empty() {
             return Ok(());
@@ -53,12 +61,12 @@ impl Tracker {
             let Some(cap) = cap else { continue };
             let size = kind.size_secs();
             let start = now - (now % size);
-            let used = self.count(user, kind, start).await?;
-            if used >= cap {
+            let consumed = self.count(user, kind, start).await?;
+            if consumed >= cap {
                 return Err(LimitError::Exceeded {
                     limit: cap,
                     retry_after: (start + size).saturating_sub(now),
-                    used,
+                    used: consumed,
                     window: kind,
                 });
             }
@@ -70,6 +78,10 @@ impl Tracker {
     /// window for a kind has rolled over (new hour/day/month), the row is
     /// replaced with a fresh `(start, tokens)` pair instead of accumulating
     /// onto the stale value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn record(&self, user: &str, tokens: u64) -> Result<(), LimitError> {
         if tokens == 0 {
             return Ok(());
@@ -77,7 +89,7 @@ impl Tracker {
         let now = now_secs();
         for kind in [WindowKind::Hour, WindowKind::Day, WindowKind::Month] {
             let size = kind.size_secs();
-            let start = (now - (now % size)) as i64;
+            let start = u64_to_i64(now - (now % size));
             sqlx::query(
                 "INSERT INTO rate_limit_windows (count, kind, start, user_id) \
                  VALUES (?, ?, ?, ?) \
@@ -87,7 +99,7 @@ impl Tracker {
                                 ELSE excluded.count END, \
                    start = excluded.start",
             )
-            .bind(tokens as i64)
+            .bind(u64_to_i64(tokens))
             .bind(kind.as_db_str())
             .bind(start)
             .bind(user)
@@ -104,10 +116,10 @@ impl Tracker {
         )
         .bind(user)
         .bind(kind.as_db_str())
-        .bind(start as i64)
+        .bind(u64_to_i64(start))
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(c,)| c.max(0) as u64).unwrap_or(0))
+        Ok(row.map_or(0, |(c,)| c.try_into().unwrap_or(0u64)))
     }
 }
 

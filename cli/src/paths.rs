@@ -21,8 +21,7 @@ impl StatePaths {
         let parent = config
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let dir = parent.join(".coulisse");
         Self {
             log: dir.join("coulisse.log"),

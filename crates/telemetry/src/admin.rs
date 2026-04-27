@@ -96,8 +96,7 @@ fn render<T: Template>(tpl: T) -> Result<Html<String>, AdminError> {
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn parse_user_id(raw: &str) -> Result<UserId, AdminError> {

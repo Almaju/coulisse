@@ -27,6 +27,7 @@ pub struct MergeReport {
 
 /// Resolve YAML and DB into the effective judge list. DB row wins; tombstones
 /// drop the YAML entry. Sorted by name.
+#[must_use]
 pub fn merge(yaml: &[JudgeConfig], db: &[DynamicJudgeRow]) -> (Vec<MergedJudge>, MergeReport) {
     let db_by_name: HashMap<&str, &DynamicJudgeRow> =
         db.iter().map(|r| (r.name.as_str(), r)).collect();
@@ -97,6 +98,7 @@ pub struct AdminJudge {
 }
 
 /// Build the row list for the admin UI. Includes tombstones. Sorted by name.
+#[must_use]
 pub fn admin_view(yaml: &[JudgeConfig], db: &[DynamicJudgeRow]) -> Vec<AdminJudge> {
     let db_by_name: HashMap<&str, &DynamicJudgeRow> =
         db.iter().map(|r| (r.name.as_str(), r)).collect();

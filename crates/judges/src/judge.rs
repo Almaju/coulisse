@@ -28,6 +28,10 @@ impl Judge {
     /// Validate a `JudgeConfig` and produce a ready-to-run `Judge`. Provider
     /// name is checked by cli's cross-feature config validation, so this
     /// only handles judge-local invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn from_config(config: &JudgeConfig) -> Result<Self, JudgeBuildError> {
         if config.rubrics.is_empty() {
             return Err(JudgeBuildError::NoRubrics {
@@ -54,6 +58,7 @@ impl Judge {
     /// Draw once against the configured sampling rate. Called per scored
     /// turn so that across many turns the scored fraction converges on
     /// `sampling_rate`.
+    #[must_use]
     pub fn should_sample(&self) -> bool {
         if self.sampling_rate >= 1.0 {
             return true;
@@ -119,7 +124,7 @@ async fn run_score(
             );
             continue;
         };
-        let score = Score::new(
+        let record = Score::new(
             exchange.user_id,
             exchange.message_id,
             exchange.agent_name.clone(),
@@ -129,7 +134,7 @@ async fn run_score(
             clamp_score(raw_score.score),
             raw_score.reasoning.clone(),
         );
-        if let Err(err) = store.append_score(score).await {
+        if let Err(err) = store.append_score(record).await {
             tracing::warn!(
                 judge = %judge.name,
                 %criterion,
@@ -142,13 +147,14 @@ async fn run_score(
 }
 
 fn build_preamble(rubrics: &BTreeMap<String, String>) -> String {
+    use std::fmt::Write as _;
     let mut out = String::from(
         "You are an evaluation judge. Score the assistant's reply against each \
          criterion below on an integer scale from 0 (worst) to 10 (best), with a \
          concise one-sentence reasoning.\n\nCriteria:\n",
     );
     for (name, description) in rubrics {
-        out.push_str(&format!("- {name}: {description}\n"));
+        let _ = writeln!(out, "- {name}: {description}");
     }
     out.push_str(
         "\nRespond ONLY with a JSON object whose top-level keys are the exact \
@@ -237,7 +243,8 @@ mod tests {
         let cfg = config(&[("a", "b")], 1.5, "openai");
         assert!(matches!(
             Judge::from_config(&cfg),
-            Err(JudgeBuildError::InvalidSamplingRate { value, .. }) if value == 1.5,
+            Err(JudgeBuildError::InvalidSamplingRate { value, .. })
+                if (value - 1.5).abs() < f32::EPSILON,
         ));
     }
 
@@ -273,7 +280,7 @@ mod tests {
         let text = r#"{"clarity": {"score": 8, "reasoning": "clear"}}"#;
         let parsed = parse_scores(text).unwrap();
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed["clarity"].score as i32, 8);
+        assert!((parsed["clarity"].score - 8.0).abs() < f32::EPSILON);
         assert_eq!(parsed["clarity"].reasoning, "clear");
     }
 
@@ -297,9 +304,9 @@ mod tests {
 
     #[test]
     fn clamp_score_bounds_to_0_10() {
-        assert_eq!(clamp_score(-3.0), 0.0);
-        assert_eq!(clamp_score(15.0), 10.0);
-        assert_eq!(clamp_score(5.5), 5.5);
-        assert_eq!(clamp_score(f32::NAN), 0.0);
+        assert!((clamp_score(-3.0) - 0.0).abs() < f32::EPSILON);
+        assert!((clamp_score(15.0) - 10.0).abs() < f32::EPSILON);
+        assert!((clamp_score(5.5) - 5.5).abs() < f32::EPSILON);
+        assert!((clamp_score(f32::NAN) - 0.0).abs() < f32::EPSILON);
     }
 }

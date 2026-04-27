@@ -6,7 +6,7 @@ use crate::TokenCount;
 
 /// Runtime configuration for the memory subsystem. Every field is optional in
 /// YAML — omitting the whole `memory:` block yields in-process defaults
-/// suitable for development (hash embedder, SQLite file in the working dir,
+/// suitable for development (hash embedder, `SQLite` file in the working dir,
 /// no auto-extraction).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
@@ -37,7 +37,7 @@ impl Default for MemoryConfig {
     }
 }
 
-/// Where memory data is stored. `InMemory` is an ephemeral SQLite database
+/// Where memory data is stored. `InMemory` is an ephemeral `SQLite` database
 /// that evaporates with the process — useful for tests and short-lived demos.
 /// `Sqlite` is a file-backed database; for Docker deployments, point `path`
 /// at a volume-mounted directory so data survives container restarts.
@@ -94,6 +94,7 @@ impl Default for EmbedderConfig {
 impl EmbedderConfig {
     /// Stable identifier used in the `embedding_model` column so recall can
     /// refuse vectors written by a different embedder.
+    #[must_use]
     pub fn model_id(&self) -> String {
         match self {
             Self::Hash { dims } => format!("hash-{dims}"),

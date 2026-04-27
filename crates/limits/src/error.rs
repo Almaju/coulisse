@@ -25,7 +25,7 @@ pub enum WindowKind {
 }
 
 impl WindowKind {
-    /// Stable identifier used as the `kind` column value in SQLite. Distinct
+    /// Stable identifier used as the `kind` column value in `SQLite`. Distinct
     /// from `Display`, which produces the user-facing word ("daily"); this
     /// produces the noun ("day") so renaming the displayed form doesn't
     /// silently migrate stored rows into a new bucket.

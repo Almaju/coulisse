@@ -27,12 +27,12 @@ use crate::server::judges_for_agent;
 /// swallowed — shadow is best-effort.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
-    state: Arc<AppState<P>>,
+    state: &Arc<AppState<P>>,
     experiment: &ExperimentConfig,
     parent_turn: TurnId,
     user_id: UserId,
-    user_message: String,
-    messages: Vec<AgentMessage>,
+    user_message: &str,
+    messages: &[AgentMessage],
 ) {
     if !state.experiments.shadow_should_sample(experiment, user_id) {
         return;
@@ -43,9 +43,9 @@ pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
         .map(|v| v.agent.clone())
         .collect();
     for agent_name in variants {
-        let state = Arc::clone(&state);
-        let messages = messages.clone();
-        let user_message = user_message.clone();
+        let state = Arc::clone(state);
+        let messages = messages.to_vec();
+        let user_message = user_message.to_string();
         tokio::spawn(async move {
             run_shadow(
                 state,

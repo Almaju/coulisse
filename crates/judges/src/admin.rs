@@ -106,7 +106,7 @@ async fn judge_detail(
     Ok(Html(
         JudgeDetailPage {
             judge: JudgeDetailRow::from_admin(row),
-            matrix: build_matrix(matrix_cells),
+            matrix: build_matrix(&matrix_cells),
             recent_scores,
         }
         .render()?,

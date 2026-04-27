@@ -40,17 +40,16 @@ struct BaseShell<'a> {
 /// responses, and non-HTML content. Streamed responses are buffered;
 /// admin pages are small enough that buffering is fine.
 pub async fn shell(request: Request, next: Next) -> Response {
-    let is_htmx = request.headers().contains_key("hx-request");
+    let from_htmx = request.headers().contains_key("hx-request");
     let response = next.run(request).await;
-    if is_htmx || !response.status().is_success() {
+    if from_htmx || !response.status().is_success() {
         return response;
     }
     let is_html = response
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.starts_with("text/html"))
-        .unwrap_or(false);
+        .is_some_and(|v| v.starts_with("text/html"));
     if !is_html {
         return response;
     }
@@ -84,6 +83,9 @@ pub async fn shell(request: Request, next: Next) -> Response {
 #[template(path = "overview.html")]
 struct OverviewPage;
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub async fn overview() -> Result<Html<String>, StatusCode> {
     let html = OverviewPage
         .render()
@@ -115,9 +117,10 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
+    #[must_use]
     pub fn from_config(config: &Config) -> Self {
-        let auth_admin = auth_summary(&config.auth.admin);
-        let auth_proxy = auth_summary(&config.auth.proxy);
+        let auth_admin = auth_summary(config.auth.admin.as_ref());
+        let auth_proxy = auth_summary(config.auth.proxy.as_ref());
 
         let memory_backend = match &config.memory.backend {
             memory::BackendConfig::InMemory => "In-memory (ephemeral)".to_string(),
@@ -130,12 +133,10 @@ impl SettingsView {
             memory::EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
         };
 
-        let memory_extractor = config
-            .memory
-            .extractor
-            .as_ref()
-            .map(|e| format!("{} / {}", e.provider, e.model))
-            .unwrap_or_else(|| "Disabled".to_string());
+        let memory_extractor = config.memory.extractor.as_ref().map_or_else(
+            || "Disabled".to_string(),
+            |e| format!("{} / {}", e.provider, e.model),
+        );
 
         let mut providers: Vec<ProviderRow> = config
             .providers
@@ -171,8 +172,7 @@ impl SettingsView {
                 .telemetry
                 .otlp
                 .as_ref()
-                .map(|o| o.endpoint.clone())
-                .unwrap_or_else(|| "Disabled".to_string()),
+                .map_or_else(|| "Disabled".to_string(), |o| o.endpoint.clone()),
             telemetry_sqlite: config.telemetry.sqlite.enabled,
         }
     }
@@ -184,6 +184,9 @@ struct SettingsPage {
     settings: SettingsView,
 }
 
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
 pub async fn settings(State(view): State<SettingsHandle>) -> Result<Html<String>, StatusCode> {
     let snapshot = view.load_full();
     let html = SettingsPage {
@@ -268,7 +271,7 @@ impl IntoResponse for ConfigEndpointError {
     }
 }
 
-fn auth_summary(scope: &Option<auth::ScopeConfig>) -> String {
+fn auth_summary(scope: Option<&auth::ScopeConfig>) -> String {
     match scope {
         None => "Unauthenticated".to_string(),
         Some(s) => {

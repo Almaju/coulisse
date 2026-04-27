@@ -180,8 +180,7 @@ fn kind_display(kind: ToolCallKind) -> (&'static str, &'static str) {
 fn relative_time(seconds: u64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(seconds);
+        .map_or(seconds, |d| d.as_secs());
     let diff = now.saturating_sub(seconds);
     if diff < 60 {
         return "just now".into();
@@ -228,7 +227,7 @@ fn format_error_rate(error_count: u32, call_count: u32) -> String {
     if call_count == 0 {
         return "0%".into();
     }
-    let pct = (error_count as f64 / call_count as f64) * 100.0;
+    let pct = (f64::from(error_count) / f64::from(call_count)) * 100.0;
     if pct == 0.0 {
         "0%".into()
     } else if pct < 0.1 {
@@ -271,7 +270,7 @@ pub(super) fn tool_list_rows(stats: Vec<ToolCallStats>) -> Vec<ToolListRow> {
             let (kind_label, kind_class) = kind_display(s.kind);
             let error_rate = format_error_rate(s.error_count, s.call_count);
             let error_rate_high =
-                s.call_count > 0 && (s.error_count as f64 / s.call_count as f64) > 0.1;
+                s.call_count > 0 && (f64::from(s.error_count) / f64::from(s.call_count)) > 0.1;
             ToolListRow {
                 call_count: s.call_count,
                 error_count: s.error_count,

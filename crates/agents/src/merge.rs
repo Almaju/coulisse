@@ -35,6 +35,7 @@ pub struct MergeReport {
 /// Rule: for each name, a DB row wins over a YAML entry. Tombstones drop
 /// the YAML entry from the result. Pure YAML entries pass through. The
 /// returned list is sorted alphabetically by name.
+#[must_use]
 pub fn merge(yaml: &[AgentConfig], db: &[DynamicRow]) -> (Vec<MergedAgent>, MergeReport) {
     let db_by_name: HashMap<&str, &DynamicRow> = db.iter().map(|r| (r.name.as_str(), r)).collect();
 
@@ -122,6 +123,7 @@ pub struct AdminAgent {
 /// Build the row list for the admin UI. Includes tombstones. Sorted by
 /// name. The runtime still reads from `merge` — this is a separate, wider
 /// view for operators.
+#[must_use]
 pub fn admin_view(yaml: &[AgentConfig], db: &[DynamicRow]) -> Vec<AdminAgent> {
     let db_by_name: HashMap<&str, &DynamicRow> = db.iter().map(|r| (r.name.as_str(), r)).collect();
     let yaml_by_name: HashMap<&str, &AgentConfig> =

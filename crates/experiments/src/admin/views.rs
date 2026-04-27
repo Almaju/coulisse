@@ -78,8 +78,7 @@ impl ExperimentRow {
                     let window = exp.bandit_window_seconds.unwrap_or(7 * 24 * 60 * 60);
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                        .map_or(0, |d| d.as_secs());
                     let since = now.saturating_sub(window);
                     format!(
                         "/admin/scores/means?judge={}&criterion={}&since={}",
@@ -134,13 +133,16 @@ impl ExperimentRow {
 /// criteria are alphanumeric in practice but the encoder is robust to any
 /// future relaxation of the rules.
 fn urlencode(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

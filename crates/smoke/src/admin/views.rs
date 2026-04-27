@@ -159,8 +159,7 @@ fn status_pill(status: RunStatus) -> (&'static str, String) {
 fn relative_time(unix_seconds: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let diff = now.saturating_sub(unix_seconds);
     if diff < 60 {
         return format!("{diff}s ago");

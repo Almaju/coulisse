@@ -27,6 +27,10 @@ impl McpServers {
     /// Connect to every server in `configs` and list their tools. Each
     /// connection error fails fast so the operator finds out at boot, not
     /// on the first request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn connect(configs: HashMap<String, McpServerConfig>) -> Result<Self, McpError> {
         let mut servers = HashMap::with_capacity(configs.len());
         for (name, cfg) in configs {
@@ -39,6 +43,10 @@ impl McpServers {
     /// Build the rig-shaped tool list for one agent's `mcp_tools:` section.
     /// `agent` is the agent's name (used only in error messages so config
     /// pointers remain readable).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn tools_for(
         &self,
         agent: &str,
@@ -112,7 +120,7 @@ impl McpServer {
             }
         };
         let listed = service
-            .list_tools(Default::default())
+            .list_tools(Option::default())
             .await
             .map_err(|source| McpError::ListTools {
                 server: name.to_string(),

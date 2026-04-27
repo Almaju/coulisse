@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct EventId(pub Uuid);
 
 impl EventId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }

@@ -72,6 +72,7 @@ impl ScriptedReply {
         }
     }
 
+    #[must_use]
     pub fn with_usage(mut self, usage: Usage) -> Self {
         self.usage = usage;
         self
@@ -81,6 +82,7 @@ impl ScriptedReply {
     /// call event is emitted before the text deltas, followed by the paired
     /// result event (when `result` is `Some`). The non-streaming `complete`
     /// path ignores tool calls — capture is streaming-only for now.
+    #[must_use]
     pub fn with_tool_call(
         mut self,
         tool_name: impl Into<String>,
@@ -105,6 +107,7 @@ impl ScriptedReply {
 }
 
 impl ScriptedAgents {
+    #[must_use]
     pub fn new(agents: Vec<AgentConfig>, replies: Vec<ScriptedReply>) -> Self {
         Self {
             agents: Arc::new(agents),
@@ -118,6 +121,10 @@ impl ScriptedAgents {
     /// tests verify experiment routing — if the proxy resolved
     /// `model: alice` to variant `alice-v1`, this records `alice-v1`,
     /// not `alice`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if invariants documented above are violated.
     pub fn dispatched_to(&self) -> Vec<String> {
         self.dispatched_to.lock().unwrap().clone()
     }
@@ -125,6 +132,10 @@ impl ScriptedAgents {
     /// Messages received on each `complete`/`complete_streaming` call so far,
     /// in call order. Useful for asserting that the handler assembled the
     /// context correctly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if invariants documented above are violated.
     pub fn calls(&self) -> Vec<Vec<Message>> {
         self.calls.lock().unwrap().clone()
     }

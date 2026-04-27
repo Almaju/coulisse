@@ -1,5 +1,5 @@
 use coulisse_core::migrate::{self, SchemaMigrator};
-use coulisse_core::{ToolCallKind, TurnId, UserId};
+use coulisse_core::{ToolCallKind, TurnId, UserId, i64_to_u32, u64_to_i64};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{SqliteConnection, SqlitePool};
@@ -53,6 +53,10 @@ pub struct Sink {
 
 impl Sink {
     /// Apply the telemetry schema and return a ready-to-use sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn open(pool: SqlitePool) -> Result<Self, TelemetryError> {
         migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
@@ -60,6 +64,10 @@ impl Sink {
 
     /// Every event for one turn, oldest first. Used by the studio UI to
     /// rebuild the call tree rooted at the `TurnStart`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn fetch_turn(
         &self,
         user_id: UserId,
@@ -75,12 +83,16 @@ impl Sink {
         .bind(correlation_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_event).collect()
+        rows.iter().map(row_to_event).collect()
     }
 
     /// Turn ids for `user_id`, most recently active first, capped at `limit`.
     /// Used by the studio UI to list a user's recent turns without loading
     /// the full event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn recent_turns(
         &self,
         user_id: UserId,
@@ -94,7 +106,7 @@ impl Sink {
              LIMIT ?",
         )
         .bind(user_id.0.to_string())
-        .bind(limit as i64)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
@@ -112,6 +124,10 @@ impl Sink {
 
     /// All tool calls for one user, chronological. Studio uses this to
     /// render the per-message tool-call panel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn tool_calls_for_user(
         &self,
         user_id: UserId,
@@ -123,9 +139,12 @@ impl Sink {
         .bind(user_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_tool_call).collect()
+        rows.iter().map(row_to_tool_call).collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn recent_activity_counts(
         &self,
         since: u64,
@@ -136,17 +155,20 @@ impl Sink {
              FROM events \
              WHERE created_at >= ?",
         )
-        .bind(since as i64)
+        .bind(u64_to_i64(since))
         .fetch_one(&self.pool)
         .await?;
         let turn_count: i64 = row.try_get("turn_count")?;
         let user_count: i64 = row.try_get("user_count")?;
         Ok(ActivityCounts {
-            turn_count: turn_count.max(0) as u32,
-            user_count: user_count.max(0) as u32,
+            turn_count: i64_to_u32(turn_count),
+            user_count: i64_to_u32(user_count),
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn tool_call_stats(&self, since: u64) -> Result<Vec<ToolCallStats>, TelemetryError> {
         let rows = sqlx::query(
             "SELECT tool_name, kind, \
@@ -158,7 +180,7 @@ impl Sink {
              GROUP BY tool_name, kind \
              ORDER BY call_count DESC",
         )
-        .bind(since as i64)
+        .bind(u64_to_i64(since))
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -169,16 +191,19 @@ impl Sink {
             let tool_name: String = row.try_get("tool_name")?;
             let user_count: i64 = row.try_get("user_count")?;
             out.push(ToolCallStats {
-                call_count: call_count.max(0) as u32,
-                error_count: error_count.max(0) as u32,
+                call_count: i64_to_u32(call_count),
+                error_count: i64_to_u32(error_count),
                 kind: parse_tool_call_kind(&kind)?,
                 tool_name,
-                user_count: user_count.max(0) as u32,
+                user_count: i64_to_u32(user_count),
             });
         }
         Ok(out)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn tool_calls_for_tool(
         &self,
         tool_name: &str,
@@ -192,14 +217,18 @@ impl Sink {
              LIMIT ?",
         )
         .bind(tool_name)
-        .bind(limit as i64)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_tool_call).collect()
+        rows.iter().map(row_to_tool_call).collect()
     }
 
     /// Tool calls for one turn, in insertion order. Used by the studio
     /// UI for per-turn detail views.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn tool_calls_for_turn(
         &self,
         turn_id: TurnId,
@@ -211,19 +240,22 @@ impl Sink {
         .bind(turn_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(row_to_tool_call).collect()
+        rows.iter().map(row_to_tool_call).collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn tool_call_count(&self, user_id: UserId) -> Result<usize, TelemetryError> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tool_calls WHERE user_id = ?")
             .bind(user_id.0.to_string())
             .fetch_one(&self.pool)
             .await?;
-        Ok(row.0 as usize)
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
     }
 }
 
-fn row_to_tool_call(row: SqliteRow) -> Result<ToolCall, TelemetryError> {
+fn row_to_tool_call(row: &SqliteRow) -> Result<ToolCall, TelemetryError> {
     let args: String = row.try_get("args")?;
     let created_at: i64 = row.try_get("created_at")?;
     let error: Option<String> = row.try_get("error")?;
@@ -245,11 +277,11 @@ fn row_to_tool_call(row: SqliteRow) -> Result<ToolCall, TelemetryError> {
 
     Ok(ToolCall {
         args,
-        created_at: created_at.max(0) as u64,
+        created_at: created_at.try_into().unwrap_or(0u64),
         error,
         id: ToolCallId(parse_uuid("id", &id)?),
         kind: parse_tool_call_kind(&kind)?,
-        ordinal: ordinal.max(0) as u32,
+        ordinal: i64_to_u32(ordinal),
         result,
         tool_name,
         turn_id: TurnId(parse_uuid("turn_id", &turn_id)?),
@@ -267,7 +299,7 @@ fn parse_tool_call_kind(s: &str) -> Result<ToolCallKind, TelemetryError> {
     }
 }
 
-fn row_to_event(row: SqliteRow) -> Result<Event, TelemetryError> {
+fn row_to_event(row: &SqliteRow) -> Result<Event, TelemetryError> {
     let correlation_id: String = row.try_get("correlation_id")?;
     let created_at: i64 = row.try_get("created_at")?;
     let duration_ms: Option<i64> = row.try_get("duration_ms")?;
@@ -287,8 +319,8 @@ fn row_to_event(row: SqliteRow) -> Result<Event, TelemetryError> {
 
     Ok(Event {
         correlation_id: TurnId(parse_uuid("correlation_id", &correlation_id)?),
-        created_at: created_at.max(0) as u64,
-        duration_ms: duration_ms.map(|d| d.max(0) as u64),
+        created_at: created_at.try_into().unwrap_or(0u64),
+        duration_ms: duration_ms.map(|d| d.try_into().unwrap_or(0u64)),
         id: EventId(parse_uuid("id", &id)?),
         kind: kind_from_str(&kind)?,
         parent_id: parent_id

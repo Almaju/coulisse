@@ -95,6 +95,7 @@ fn default_variant_weight() -> f32 {
 /// keep their boot-time routing.
 pub type ExperimentList = Arc<ArcSwap<Vec<ExperimentConfig>>>;
 
+#[must_use]
 pub fn experiment_list(initial: Vec<ExperimentConfig>) -> ExperimentList {
     Arc::new(ArcSwap::from_pointee(initial))
 }

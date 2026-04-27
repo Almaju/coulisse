@@ -65,14 +65,17 @@ pub struct Config {
     #[serde(default)]
     pub smoke_tests: Vec<SmokeTestConfig>,
     /// Observability wiring: stderr fmt logs (always on by default),
-    /// SQLite mirror that drives the studio UI (on by default), and an
+    /// `SQLite` mirror that drives the studio UI (on by default), and an
     /// optional OpenTelemetry OTLP exporter for shipping traces to
-    /// Grafana / SigNoz / Jaeger / etc.
+    /// Grafana / `SigNoz` / Jaeger / etc.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
 }
 
 impl Config {
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| ConfigError::ReadConfig {
@@ -87,6 +90,10 @@ impl Config {
     /// Whole-graph schema validation. Run once on YAML load and again on
     /// every runtime mutation so cross-references (agent → provider, agent
     /// → judge, agent → mcp, agent → subagent) stay consistent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.agents.is_empty() {
             return Err(ConfigError::NoAgents);
@@ -296,140 +303,134 @@ fn validate_experiment_strategy_fields(
     experiment: &ExperimentConfig,
 ) -> Result<(), ConfigError> {
     match experiment.strategy {
-        Strategy::Split => {
-            reject_field(
-                experiment,
-                "primary",
-                experiment.primary.is_some(),
-                "shadow",
-            )?;
-            reject_field(
-                experiment,
-                "sampling_rate",
-                experiment.sampling_rate.is_some(),
-                "shadow",
-            )?;
-            reject_field(experiment, "metric", experiment.metric.is_some(), "bandit")?;
-            reject_field(
-                experiment,
-                "epsilon",
-                experiment.epsilon.is_some(),
-                "bandit",
-            )?;
-            reject_field(
-                experiment,
-                "min_samples",
-                experiment.min_samples.is_some(),
-                "bandit",
-            )?;
-            reject_field(
-                experiment,
-                "bandit_window_seconds",
-                experiment.bandit_window_seconds.is_some(),
-                "bandit",
-            )?;
-        }
-        Strategy::Shadow => {
-            reject_field(experiment, "metric", experiment.metric.is_some(), "bandit")?;
-            reject_field(
-                experiment,
-                "epsilon",
-                experiment.epsilon.is_some(),
-                "bandit",
-            )?;
-            reject_field(
-                experiment,
-                "min_samples",
-                experiment.min_samples.is_some(),
-                "bandit",
-            )?;
-            reject_field(
-                experiment,
-                "bandit_window_seconds",
-                experiment.bandit_window_seconds.is_some(),
-                "bandit",
-            )?;
-            let Some(primary) = experiment.primary.as_deref() else {
-                return Err(ConfigError::ShadowWithoutPrimary(experiment.name.clone()));
-            };
-            if !experiment.variants.iter().any(|v| v.agent == primary) {
-                return Err(ConfigError::ExperimentPrimaryNotVariant {
-                    experiment: experiment.name.clone(),
-                    primary: primary.to_string(),
-                });
-            }
-            if let Some(rate) = experiment.sampling_rate
-                && !(0.0..=1.0).contains(&rate)
-            {
-                return Err(ConfigError::ExperimentInvalidSamplingRate {
-                    experiment: experiment.name.clone(),
-                    value: rate,
-                });
-            }
-        }
-        Strategy::Bandit => {
-            reject_field(
-                experiment,
-                "primary",
-                experiment.primary.is_some(),
-                "shadow",
-            )?;
-            reject_field(
-                experiment,
-                "sampling_rate",
-                experiment.sampling_rate.is_some(),
-                "shadow",
-            )?;
-            let Some(metric) = experiment.metric.as_deref() else {
-                return Err(ConfigError::BanditWithoutMetric(experiment.name.clone()));
-            };
-            let (judge_name, criterion) =
-                metric
-                    .split_once('.')
-                    .ok_or_else(|| ConfigError::ExperimentMetricMalformed {
-                        experiment: experiment.name.clone(),
-                        metric: metric.to_string(),
-                    })?;
-            let judge = config
-                .judges
-                .iter()
-                .find(|j| j.name == judge_name)
-                .ok_or_else(|| ConfigError::ExperimentMetricUnknownJudge {
-                    experiment: experiment.name.clone(),
-                    judge: judge_name.to_string(),
-                })?;
-            if !judge.rubrics.contains_key(criterion) {
-                return Err(ConfigError::ExperimentMetricUnknownCriterion {
-                    criterion: criterion.to_string(),
-                    experiment: experiment.name.clone(),
-                    judge: judge_name.to_string(),
-                });
-            }
-            for variant in &experiment.variants {
-                let agent = config
-                    .agents
-                    .iter()
-                    .find(|a| a.name == variant.agent)
-                    .expect("variant agent existence is validated upstream");
-                if !agent.judges.iter().any(|j| j == judge_name) {
-                    return Err(ConfigError::ExperimentMetricVariantMissingJudge {
-                        agent: variant.agent.clone(),
-                        experiment: experiment.name.clone(),
-                        judge: judge_name.to_string(),
-                        metric: metric.to_string(),
-                    });
-                }
-            }
-            if let Some(epsilon) = experiment.epsilon
-                && !(0.0..=1.0).contains(&epsilon)
-            {
-                return Err(ConfigError::ExperimentInvalidEpsilon {
-                    experiment: experiment.name.clone(),
-                    value: epsilon,
-                });
-            }
+        Strategy::Split => validate_split_fields(experiment),
+        Strategy::Shadow => validate_shadow_fields(experiment),
+        Strategy::Bandit => validate_bandit_fields(config, experiment),
+    }
+}
+
+fn validate_split_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+    reject_shadow_fields(experiment)?;
+    reject_bandit_fields(experiment)?;
+    Ok(())
+}
+
+fn validate_shadow_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+    reject_bandit_fields(experiment)?;
+    let Some(primary) = experiment.primary.as_deref() else {
+        return Err(ConfigError::ShadowWithoutPrimary(experiment.name.clone()));
+    };
+    if !experiment.variants.iter().any(|v| v.agent == primary) {
+        return Err(ConfigError::ExperimentPrimaryNotVariant {
+            experiment: experiment.name.clone(),
+            primary: primary.to_string(),
+        });
+    }
+    if let Some(rate) = experiment.sampling_rate
+        && !(0.0..=1.0).contains(&rate)
+    {
+        return Err(ConfigError::ExperimentInvalidSamplingRate {
+            experiment: experiment.name.clone(),
+            value: rate,
+        });
+    }
+    Ok(())
+}
+
+fn validate_bandit_fields(
+    config: &Config,
+    experiment: &ExperimentConfig,
+) -> Result<(), ConfigError> {
+    reject_shadow_fields(experiment)?;
+    let Some(metric) = experiment.metric.as_deref() else {
+        return Err(ConfigError::BanditWithoutMetric(experiment.name.clone()));
+    };
+    let (judge_name, criterion) =
+        metric
+            .split_once('.')
+            .ok_or_else(|| ConfigError::ExperimentMetricMalformed {
+                experiment: experiment.name.clone(),
+                metric: metric.to_string(),
+            })?;
+    let judge = config
+        .judges
+        .iter()
+        .find(|j| j.name == judge_name)
+        .ok_or_else(|| ConfigError::ExperimentMetricUnknownJudge {
+            experiment: experiment.name.clone(),
+            judge: judge_name.to_string(),
+        })?;
+    if !judge.rubrics.contains_key(criterion) {
+        return Err(ConfigError::ExperimentMetricUnknownCriterion {
+            criterion: criterion.to_string(),
+            experiment: experiment.name.clone(),
+            judge: judge_name.to_string(),
+        });
+    }
+    for variant in &experiment.variants {
+        let agent = config
+            .agents
+            .iter()
+            .find(|a| a.name == variant.agent)
+            .expect("variant agent existence is validated upstream");
+        if !agent.judges.iter().any(|j| j == judge_name) {
+            return Err(ConfigError::ExperimentMetricVariantMissingJudge {
+                agent: variant.agent.clone(),
+                experiment: experiment.name.clone(),
+                judge: judge_name.to_string(),
+                metric: metric.to_string(),
+            });
         }
     }
+    if let Some(epsilon) = experiment.epsilon
+        && !(0.0..=1.0).contains(&epsilon)
+    {
+        return Err(ConfigError::ExperimentInvalidEpsilon {
+            experiment: experiment.name.clone(),
+            value: epsilon,
+        });
+    }
+    Ok(())
+}
+
+/// Reject fields that only apply to the `shadow` strategy.
+fn reject_shadow_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+    reject_field(
+        experiment,
+        "primary",
+        experiment.primary.is_some(),
+        "shadow",
+    )?;
+    reject_field(
+        experiment,
+        "sampling_rate",
+        experiment.sampling_rate.is_some(),
+        "shadow",
+    )?;
+    Ok(())
+}
+
+/// Reject fields that only apply to the `bandit` strategy.
+fn reject_bandit_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+    reject_field(experiment, "metric", experiment.metric.is_some(), "bandit")?;
+    reject_field(
+        experiment,
+        "epsilon",
+        experiment.epsilon.is_some(),
+        "bandit",
+    )?;
+    reject_field(
+        experiment,
+        "min_samples",
+        experiment.min_samples.is_some(),
+        "bandit",
+    )?;
+    reject_field(
+        experiment,
+        "bandit_window_seconds",
+        experiment.bandit_window_seconds.is_some(),
+        "bandit",
+    )?;
     Ok(())
 }
 
@@ -598,11 +599,11 @@ mod tests {
         Ok(config)
     }
 
-    const BASE_PROVIDERS: &str = r#"
+    const BASE_PROVIDERS: &str = r"
 providers:
   openai:
     api_key: test
-"#;
+";
 
     #[test]
     fn subagents_and_purpose_parse_and_validate() {
@@ -890,7 +891,7 @@ experiments:
         );
         match parse(&yaml) {
             Err(ConfigError::ExperimentPrimaryNotVariant { primary, .. }) => {
-                assert_eq!(primary, "alice-v2")
+                assert_eq!(primary, "alice-v2");
             }
             other => panic!("expected ExperimentPrimaryNotVariant, got {other:?}"),
         }
@@ -913,7 +914,7 @@ experiments:
         );
         match parse(&yaml) {
             Err(ConfigError::ExperimentFieldStrategyMismatch { field, .. }) => {
-                assert_eq!(field, "primary")
+                assert_eq!(field, "primary");
             }
             other => panic!("expected ExperimentFieldStrategyMismatch, got {other:?}"),
         }
@@ -982,7 +983,7 @@ experiments:
         );
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricUnknownJudge { judge, .. }) => {
-                assert_eq!(judge, "ghost")
+                assert_eq!(judge, "ghost");
             }
             other => panic!("expected ExperimentMetricUnknownJudge, got {other:?}"),
         }
@@ -1012,7 +1013,7 @@ experiments:
         );
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricUnknownCriterion { criterion, .. }) => {
-                assert_eq!(criterion, "tone")
+                assert_eq!(criterion, "tone");
             }
             other => panic!("expected ExperimentMetricUnknownCriterion, got {other:?}"),
         }
@@ -1046,7 +1047,7 @@ experiments:
         );
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricVariantMissingJudge { agent, .. }) => {
-                assert_eq!(agent, "alice-v2")
+                assert_eq!(agent, "alice-v2");
             }
             other => panic!("expected ExperimentMetricVariantMissingJudge, got {other:?}"),
         }
@@ -1118,7 +1119,7 @@ experiments:
         }
     }
 
-    const SMOKE_BASE: &str = r#"
+    const SMOKE_BASE: &str = r"
 providers:
   openai:
     api_key: test
@@ -1126,7 +1127,7 @@ agents:
   - name: assistant
     provider: openai
     model: gpt-4
-"#;
+";
 
     #[test]
     fn smoke_test_with_valid_target_parses() {

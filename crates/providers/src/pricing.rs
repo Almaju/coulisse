@@ -1,6 +1,6 @@
-//! Per-token cost lookup, sourced from a vendored LiteLLM snapshot.
+//! Per-token cost lookup, sourced from a vendored `LiteLLM` snapshot.
 //!
-//! The pricing table is a snapshot of LiteLLM's `model_prices_and_context_window.json`,
+//! The pricing table is a snapshot of `LiteLLM`'s `model_prices_and_context_window.json`,
 //! checked in under `data/model_prices.json` and refreshed via `just refresh-prices`.
 //! Lookups are by `(provider, model)`; misses return `None` (caller logs once
 //! and stores `null` in telemetry rather than failing the request).
@@ -20,8 +20,8 @@ use crate::{ProviderKind, Usage};
 const RAW_PRICES: &str = include_str!("../data/model_prices.json");
 
 /// One model's per-token pricing (USD). All fields are optional because the
-/// LiteLLM table is sparse — Groq entries have no cache pricing, older
-/// OpenAI models have no cache_read, etc. Multiplying a missing field by a
+/// `LiteLLM` table is sparse — Groq entries have no cache pricing, older
+/// `OpenAI` models have no `cache_read`, etc. Multiplying a missing field by a
 /// token count yields zero, which is the right behavior.
 #[derive(Clone, Debug, Default, Deserialize)]
 struct ModelPricing {
@@ -45,6 +45,7 @@ pub struct Cost {
 }
 
 impl Cost {
+    #[must_use]
     pub fn new(usd: f64) -> Self {
         Self { usd }
     }
@@ -53,6 +54,7 @@ impl Cost {
 /// Compute cost from token usage. Returns `None` when the model isn't in
 /// the pricing table — caller decides whether to log, default to zero, or
 /// surface the gap.
+#[must_use]
 pub fn cost_for(provider: ProviderKind, model: &str, usage: &Usage) -> Option<Cost> {
     let pricing = lookup(provider, model)?;
     let cache_create = pricing.cache_creation_input_token_cost.unwrap_or(0.0);
@@ -63,6 +65,9 @@ pub fn cost_for(provider: ProviderKind, model: &str, usage: &Usage) -> Option<Co
     // LiteLLM's `input_cost_per_token` is the price for *uncached* input
     // tokens. Anthropic's `Usage::input_tokens` already excludes cached
     // reads and cache writes, so summing them here doesn't double-count.
+    // Token counts in practice are well under 2^53 — f64 representation
+    // is exact for any value any provider would ever return.
+    #[allow(clippy::cast_precision_loss)]
     let usd = (usage.input_tokens as f64) * input
         + (usage.output_tokens as f64) * output
         + (usage.cache_creation_input_tokens as f64) * cache_create
@@ -70,7 +75,7 @@ pub fn cost_for(provider: ProviderKind, model: &str, usage: &Usage) -> Option<Co
     Some(Cost::new(usd))
 }
 
-/// Look up a model's pricing entry. LiteLLM keys some models bare
+/// Look up a model's pricing entry. `LiteLLM` keys some models bare
 /// (`gpt-4o-mini`, `claude-sonnet-4-5-20250929`) and some prefixed
 /// (`groq/llama-3.3-70b-versatile`). Try the bare key first, then prefixed.
 fn lookup(provider: ProviderKind, model: &str) -> Option<&'static ModelPricing> {
@@ -84,7 +89,7 @@ fn lookup(provider: ProviderKind, model: &str) -> Option<&'static ModelPricing> 
     table.get(prefixed.as_str())
 }
 
-/// LiteLLM uses `litellm_provider` strings that mostly match our `ProviderKind`
+/// `LiteLLM` uses `litellm_provider` strings that mostly match our `ProviderKind`
 /// names but don't always — e.g. `vertex_ai-...` for some Gemini variants.
 /// We accept a prefix match on the provider's own name to avoid pulling the
 /// wrong row when two providers ship a same-named model.
@@ -125,7 +130,7 @@ fn table() -> &'static std::collections::HashMap<String, ModelPricing> {
         let raw: serde_json::Value =
             serde_json::from_str(RAW_PRICES).expect("vendored model_prices.json is valid JSON");
         let serde_json::Value::Object(map) = raw else {
-            return Default::default();
+            return std::collections::HashMap::default();
         };
         map.into_iter()
             .filter_map(|(k, v)| {

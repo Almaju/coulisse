@@ -37,6 +37,7 @@ pub struct ExperimentRouter {
 }
 
 impl ExperimentRouter {
+    #[must_use]
     pub fn new(experiments: Vec<ExperimentConfig>) -> Self {
         let by_name = experiments
             .into_iter()
@@ -49,6 +50,7 @@ impl ExperimentRouter {
         self.by_name.values()
     }
 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&ExperimentConfig> {
         self.by_name.get(name)
     }
@@ -57,6 +59,7 @@ impl ExperimentRouter {
     /// caller needs to fetch from memory before resolving:
     /// `(judge, criterion, since_seconds)`. Returns `None` for
     /// non-bandit strategies, which don't read scores.
+    #[must_use]
     pub fn bandit_query(&self, name: &str) -> Option<(String, String, u64)> {
         let exp = self.by_name.get(name)?;
         if !matches!(exp.strategy, Strategy::Bandit) {
@@ -69,8 +72,7 @@ impl ExperimentRouter {
             .unwrap_or(BANDIT_DEFAULT_WINDOW_SECONDS);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         let since = now.saturating_sub(window);
         Some((judge.to_string(), criterion.to_string(), since))
     }
@@ -83,6 +85,7 @@ impl ExperimentRouter {
     /// Bandit experiments without scores fall back to a weighted hash
     /// pick (effectively `split`). Callers that have score data should
     /// use `resolve_with_scores` to get the bandit decision.
+    #[must_use]
     pub fn resolve<'a>(&'a self, name: &'a str, user_id: UserId) -> Resolved<'a> {
         self.resolve_with_scores(name, user_id, &[])
     }
@@ -91,6 +94,7 @@ impl ExperimentRouter {
     /// each entry is the recent mean for a candidate variant agent.
     /// For non-bandit strategies the slice is ignored, so callers may
     /// pass an empty slice when they don't have data on hand.
+    #[must_use]
     pub fn resolve_with_scores<'a>(
         &'a self,
         name: &'a str,
@@ -133,6 +137,7 @@ impl ExperimentRouter {
     /// variants for this turn. Always `true` for non-shadow strategies
     /// (callers gate that themselves) — shadow gates probabilistically
     /// based on `sampling_rate`.
+    #[must_use]
     pub fn shadow_should_sample(&self, experiment: &ExperimentConfig, user_id: UserId) -> bool {
         if !matches!(experiment.strategy, Strategy::Shadow) {
             return false;
@@ -148,9 +153,16 @@ impl ExperimentRouter {
         // compare against the rate. Avoids pulling in `rand` for what
         // is effectively a coin flip on the request hot path.
         let seed = per_request_seed(user_id, &experiment.name);
-        let bucket = (seed as f64 / u64::MAX as f64) as f32;
-        bucket < rate
+        seed_to_unit_f32(seed) < rate
     }
+}
+
+/// Map a u64 hash output to a uniform f32 in [0, 1). The precision and
+/// truncation losses are intrinsic to producing a ratio — bandit/shadow
+/// rollouts only need ~24 bits of randomness anyway.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn seed_to_unit_f32(seed: u64) -> f32 {
+    (seed as f64 / u64::MAX as f64) as f32
 }
 
 fn pick_variant<'a>(
@@ -197,8 +209,7 @@ fn bandit_pick<'a>(
             scores
                 .iter()
                 .find(|s| s.agent_name == v.agent)
-                .map(|s| s.samples < min_samples)
-                .unwrap_or(true)
+                .is_none_or(|s| s.samples < min_samples)
         })
         .collect();
     if !forced.is_empty() {
@@ -210,8 +221,7 @@ fn bandit_pick<'a>(
     } else {
         per_request_seed(user_id, &experiment.name)
     };
-    let bucket = (seed as f64 / u64::MAX as f64) as f32;
-    if bucket < epsilon {
+    if seed_to_unit_f32(seed) < epsilon {
         let arms: Vec<&Variant> = experiment.variants.iter().collect();
         return uniform_hash_pick(&arms, user_id, &experiment.name);
     }
@@ -222,13 +232,11 @@ fn bandit_pick<'a>(
             let mean_a = scores
                 .iter()
                 .find(|s| s.agent_name == a.agent)
-                .map(|s| s.mean)
-                .unwrap_or(f32::MIN);
+                .map_or(f32::MIN, |s| s.mean);
             let mean_b = scores
                 .iter()
                 .find(|s| s.agent_name == b.agent)
-                .map(|s| s.mean)
-                .unwrap_or(f32::MIN);
+                .map_or(f32::MIN, |s| s.mean);
             mean_a
                 .partial_cmp(&mean_b)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -238,6 +246,9 @@ fn bandit_pick<'a>(
 
 fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &'a Variant {
     let seed = sticky_seed(user_id, name);
+    // `seed % arms.len()` is bounded by `arms.len()` (a usize), so the
+    // narrowing is exact on every platform.
+    #[allow(clippy::cast_possible_truncation)]
     let idx = (seed % arms.len() as u64) as usize;
     arms[idx]
 }
@@ -252,7 +263,7 @@ fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
     } else {
         per_request_seed(user_id, &experiment.name)
     };
-    let target = (seed as f64 / u64::MAX as f64) as f32 * total;
+    let target = seed_to_unit_f32(seed) * total;
     let mut acc = 0.0;
     for variant in &experiment.variants {
         acc += variant.weight;
@@ -276,8 +287,7 @@ fn sticky_seed(user_id: UserId, experiment_name: &str) -> u64 {
 fn per_request_seed(user_id: UserId, experiment_name: &str) -> u64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     let mut hasher = Fnv64::new();
     hasher.write(user_id.0.as_bytes());
     hasher.write(experiment_name.as_bytes());
@@ -294,14 +304,14 @@ struct Fnv64 {
 impl Fnv64 {
     fn new() -> Self {
         Self {
-            state: 0xcbf29ce484222325,
+            state: 0xcbf2_9ce4_8422_2325,
         }
     }
 
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.state ^= b as u64;
-            self.state = self.state.wrapping_mul(0x100000001b3);
+            self.state ^= u64::from(b);
+            self.state = self.state.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
 

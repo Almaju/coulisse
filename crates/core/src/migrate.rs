@@ -1,7 +1,7 @@
 //! Schema migration runner shared by every persistent feature crate.
 //!
 //! Each crate declares a `SchemaMigrator` and calls [`run`] on startup against
-//! the shared pool. Versions are SemVer strings — the crate versions in which
+//! the shared pool. Versions are `SemVer` strings — the crate versions in which
 //! the schema actually changed, ascending. A fresh database receives
 //! `SCHEMA` and is recorded at the latest version. An older database walks
 //! `upgrade_from(v)` forward through the version list until it reaches the
@@ -30,7 +30,7 @@ pub trait SchemaMigrator {
     /// is the version this code targets. Versions whose releases didn't
     /// touch the schema are absent.
     ///
-    /// Must be non-empty, valid SemVer, and strictly ascending.
+    /// Must be non-empty, valid `SemVer`, and strictly ascending.
     const VERSIONS: &'static [&'static str];
 
     /// Full current schema. Applied verbatim on a fresh database; the runner
@@ -72,6 +72,14 @@ pub enum MigrateError {
 }
 
 /// Bring the slice of `pool` owned by `M` up to its latest version.
+///
+/// # Errors
+///
+/// Returns an error if the underlying operation fails.
+///
+/// # Panics
+///
+/// Panics if invariants documented above are violated.
 ///
 /// Idempotent: a process restart with an unchanged `M::VERSIONS` does
 /// nothing. Each upgrade step is its own transaction, so a crash mid-walk
