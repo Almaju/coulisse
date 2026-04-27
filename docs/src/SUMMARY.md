@@ -12,6 +12,7 @@
 
 - [Providers](./configuration/providers.md)
 - [Agents](./configuration/agents.md)
+- [Authentication](./configuration/auth.md)
 - [MCP tools](./configuration/mcp.md)
 - [Memory](./configuration/memory.md)
 - [Telemetry](./configuration/telemetry.md)

@@ -159,4 +159,4 @@ The studio UI is just one client of these endpoints — see [Studio UI](../featu
 
 ## Auth
 
-By default Coulisse leaves `/v1/*` open. Configure the `auth.proxy` scope in YAML to require Basic credentials or OIDC for SDK clients; configure `auth.admin` to gate the studio. See [Studio UI](../features/studio-ui.md) for the schema. Anything you don't gate is your responsibility to terminate at the infrastructure layer (reverse proxy, API gateway, VPN).
+By default Coulisse leaves `/v1/*` open. Configure the `auth.proxy` scope in YAML to require Basic credentials or OIDC for SDK clients; configure `auth.admin` to gate the studio. See [Authentication](../configuration/auth.md) for the full schema. Anything you don't gate is your responsibility to terminate at the infrastructure layer (reverse proxy, API gateway, VPN).
