@@ -8,7 +8,7 @@
 //!   - SqliteLayer → `events` / `tool_calls` (drives the studio UI)
 //!   - OpenTelemetry → OTLP exporter (optional, opt-in via YAML)
 
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use sqlx::SqlitePool;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -29,7 +29,7 @@ pub struct TelemetryGuard {
 }
 
 struct OtlpGuard {
-    provider: TracerProvider,
+    provider: SdkTracerProvider,
 }
 
 impl Drop for OtlpGuard {
@@ -97,15 +97,13 @@ pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGua
     }
 }
 
-fn build_otlp_provider(cfg: &OtlpConfig) -> Result<TracerProvider, InitError> {
-    use opentelemetry::KeyValue;
+fn build_otlp_provider(cfg: &OtlpConfig) -> Result<SdkTracerProvider, InitError> {
     use opentelemetry_otlp::{WithExportConfig, WithHttpConfig, WithTonicConfig};
     use opentelemetry_sdk::Resource;
 
-    let resource = Resource::new(vec![KeyValue::new(
-        "service.name",
-        cfg.service_name.clone(),
-    )]);
+    let resource = Resource::builder()
+        .with_service_name(cfg.service_name.clone())
+        .build();
 
     let exporter = match cfg.protocol {
         OtlpProtocol::Grpc => {
@@ -128,8 +126,8 @@ fn build_otlp_provider(cfg: &OtlpConfig) -> Result<TracerProvider, InitError> {
         }
     };
 
-    Ok(TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    Ok(SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build())
 }
@@ -152,7 +150,7 @@ pub enum InitError {
     #[error("invalid OTLP header: {0}")]
     InvalidHeader(String),
     #[error("OTLP pipeline init failed: {0}")]
-    Otlp(opentelemetry::trace::TraceError),
+    Otlp(opentelemetry_otlp::ExporterBuildError),
 }
 
 impl TelemetryGuard {
