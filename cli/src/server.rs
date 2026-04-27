@@ -103,16 +103,50 @@ pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(
     });
 }
 
-// Per CLAUDE.md: this handler is the request-flow spec — top-to-bottom
-// it documents what happens to a chat request. Splitting it would
-// scatter that order of operations across helpers.
-#[allow(clippy::too_many_lines)]
 async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     State(state): State<Arc<AppState<P>>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
-    let prepared = prepare_request(&state, &request).await?;
+    let mut prepared = prepare_request(&state, &request).await?;
+    let routing = resolve_routing(&state, &request, &prepared).await;
 
+    if request.is_streaming() {
+        return Ok(stream_response(state, request, prepared, routing)
+            .await?
+            .into_response());
+    }
+
+    let messages = std::mem::take(&mut prepared.messages);
+    let completion = state
+        .agents
+        .complete(&routing.agent_name, messages, prepared.user_id)
+        .instrument(routing.turn_span.clone())
+        .await?;
+    finalize_non_streaming(&state, &prepared, &routing, &completion).await?;
+
+    let usage = proxy::Usage::new(
+        completion.usage.input_tokens,
+        completion.usage.output_tokens,
+        completion.usage.total_tokens,
+    );
+    Ok(Json(request.response_with(completion.text, usage)).into_response())
+}
+
+/// Per-request derived state from experiment routing: which agent to call,
+/// the telemetry span, and (if applicable) shadow inputs to spawn.
+struct Routing {
+    agent_name: String,
+    assistant_message_id: MessageId,
+    shadow_inputs: Option<(experiments::ExperimentConfig, Vec<agents::Message>)>,
+    turn_id: TurnId,
+    turn_span: Span,
+}
+
+async fn resolve_routing<P: Agents + OneShotPrompt>(
+    state: &Arc<AppState<P>>,
+    request: &ChatCompletionRequest,
+    prepared: &PreparedRequest,
+) -> Routing {
     let bandit_scores = match state.experiments.bandit_query(&request.model) {
         Some((judge, criterion, since)) => state
             .judge_store
@@ -132,8 +166,32 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     // so the stored message and its event tree share one identifier.
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
+    let turn_span = build_turn_span(&agent_name, experiment_name.as_deref(), turn_id, prepared);
 
-    let turn_span = if let Some(experiment) = experiment_name.as_deref() {
+    // Clone inputs for shadow variants so they run against the same context
+    // the primary consumed. No-op for non-shadow strategies.
+    let shadow_inputs = state
+        .experiments
+        .get(&request.model)
+        .filter(|exp| matches!(exp.strategy, Strategy::Shadow))
+        .map(|exp| (exp.clone(), prepared.messages.clone()));
+
+    Routing {
+        agent_name,
+        assistant_message_id,
+        shadow_inputs,
+        turn_id,
+        turn_span,
+    }
+}
+
+fn build_turn_span(
+    agent_name: &str,
+    experiment_name: Option<&str>,
+    turn_id: TurnId,
+    prepared: &PreparedRequest,
+) -> Span {
+    if let Some(experiment) = experiment_name {
         info_span!(
             "turn",
             agent = %agent_name,
@@ -150,57 +208,60 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
             user_id = %prepared.user_id.0,
             user_message = %prepared.user_message,
         )
-    };
-
-    // Clone inputs for shadow variants so they run against the same context
-    // the primary consumed. No-op for non-shadow strategies.
-    let shadow_inputs = state
-        .experiments
-        .get(&request.model)
-        .filter(|exp| matches!(exp.strategy, Strategy::Shadow))
-        .map(|exp| (exp.clone(), prepared.messages.clone()));
-
-    if request.is_streaming() {
-        if let Some((experiment, messages)) = shadow_inputs {
-            spawn_shadow_runs(
-                Arc::clone(&state),
-                &experiment,
-                turn_id,
-                prepared.user_id,
-                prepared.user_message.clone(),
-                messages,
-            );
-        }
-        let inner = state
-            .agents
-            .complete_streaming(&agent_name, prepared.messages, prepared.user_id)
-            .instrument(turn_span.clone())
-            .await?;
-        let response = sse_response(StreamContext {
-            agent_name,
-            assistant_message_id,
-            include_usage: request.include_usage(),
-            inner,
-            model: request.model.clone(),
-            state: Arc::clone(&state),
-            tracker_key: prepared.tracker_key,
-            turn_span,
-            user_id: prepared.user_id,
-            user_message: prepared.user_message,
-        });
-        return Ok(response.into_response());
     }
+}
 
-    let completion = state
-        .agents
-        .complete(&agent_name, prepared.messages, prepared.user_id)
-        .instrument(turn_span.clone())
-        .await?;
-    if let Some((experiment, messages)) = shadow_inputs {
+async fn stream_response<P: Agents + OneShotPrompt + 'static>(
+    state: Arc<AppState<P>>,
+    request: ChatCompletionRequest,
+    prepared: PreparedRequest,
+    routing: Routing,
+) -> Result<
+    axum::response::sse::Sse<
+        impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    >,
+    ApiError,
+> {
+    if let Some((experiment, messages)) = routing.shadow_inputs {
         spawn_shadow_runs(
             Arc::clone(&state),
             &experiment,
-            turn_id,
+            routing.turn_id,
+            prepared.user_id,
+            prepared.user_message.clone(),
+            messages,
+        );
+    }
+    let inner = state
+        .agents
+        .complete_streaming(&routing.agent_name, prepared.messages, prepared.user_id)
+        .instrument(routing.turn_span.clone())
+        .await?;
+    Ok(sse_response(StreamContext {
+        agent_name: routing.agent_name,
+        assistant_message_id: routing.assistant_message_id,
+        include_usage: request.include_usage(),
+        inner,
+        model: request.model.clone(),
+        state: Arc::clone(&state),
+        tracker_key: prepared.tracker_key,
+        turn_span: routing.turn_span,
+        user_id: prepared.user_id,
+        user_message: prepared.user_message,
+    }))
+}
+
+async fn finalize_non_streaming<P: Agents + OneShotPrompt + 'static>(
+    state: &Arc<AppState<P>>,
+    prepared: &PreparedRequest,
+    routing: &Routing,
+    completion: &agents::Completion,
+) -> Result<(), ApiError> {
+    if let Some((experiment, messages)) = routing.shadow_inputs.clone() {
+        spawn_shadow_runs(
+            Arc::clone(state),
+            &experiment,
+            routing.turn_id,
             prepared.user_id,
             prepared.user_message.clone(),
             messages,
@@ -213,7 +274,12 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     {
         eprintln!("rate limit record failed: {err}");
     }
-    record_llm_call(&state, &agent_name, completion.usage, &turn_span);
+    record_llm_call(
+        state,
+        &routing.agent_name,
+        completion.usage,
+        &routing.turn_span,
+    );
 
     let um = state.memory.for_user(prepared.user_id);
     um.append_message(MemRole::User, prepared.user_message.clone())
@@ -221,7 +287,7 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     um.append_message_with_id(
         MemRole::Assistant,
         completion.text.clone(),
-        assistant_message_id,
+        routing.assistant_message_id,
     )
     .await?;
 
@@ -234,26 +300,20 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         );
     }
 
-    let judges = judges_for_agent(&state, &agent_name);
+    let judges = judges_for_agent(state, &routing.agent_name);
     spawn_score(
         judges,
         Arc::clone(&state.judge_store),
         Arc::clone(&state.agents),
         judges::ScoredExchange {
-            agent_name: agent_name.clone(),
+            agent_name: routing.agent_name.clone(),
             assistant_message: completion.text.clone(),
-            message_id: assistant_message_id,
+            message_id: routing.assistant_message_id,
             user_id: prepared.user_id,
-            user_message: prepared.user_message,
+            user_message: prepared.user_message.clone(),
         },
     );
-
-    let usage = proxy::Usage::new(
-        completion.usage.input_tokens,
-        completion.usage.output_tokens,
-        completion.usage.total_tokens,
-    );
-    Ok(Json(request.response_with(completion.text, usage)).into_response())
+    Ok(())
 }
 
 async fn models<P: Agents + OneShotPrompt>(

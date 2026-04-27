@@ -399,124 +399,161 @@ fn body_of(schema_name: &str) -> Value {
     })
 }
 
-// One big literal: the OpenAPI components/schemas tree. Splitting it
-// scatters a single declarative document across helpers.
-#[allow(clippy::too_many_lines)]
 fn schemas() -> Value {
     json!({
-        "AgentConfig": {
-            "type": "object",
-            "required": ["name", "model", "provider"],
-            "properties": {
-                "name": { "type": "string" },
-                "provider": { "$ref": "#/components/schemas/ProviderKind" },
-                "model": { "type": "string" },
-                "preamble": { "type": "string" },
-                "purpose": { "type": "string", "nullable": true },
-                "judges": { "type": "array", "items": { "type": "string" } },
-                "subagents": { "type": "array", "items": { "type": "string" } },
-                "mcp_tools": { "type": "array", "items": { "$ref": "#/components/schemas/McpToolAccess" } },
-            },
+        "AgentConfig": agent_config_schema(),
+        "JudgeConfig": judge_config_schema(),
+        "ExperimentConfig": experiment_config_schema(),
+        "Variant": variant_schema(),
+        "ProviderKind": provider_kind_schema(),
+        "ProviderConfig": provider_config_schema(),
+        "ProviderCreateBody": provider_create_body_schema(),
+        "McpServerConfig": mcp_server_config_schema(),
+        "McpCreateBody": mcp_create_body_schema(),
+        "McpToolAccess": mcp_tool_access_schema(),
+    })
+}
+
+fn agent_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["name", "model", "provider"],
+        "properties": {
+            "name": { "type": "string" },
+            "provider": { "$ref": "#/components/schemas/ProviderKind" },
+            "model": { "type": "string" },
+            "preamble": { "type": "string" },
+            "purpose": { "type": "string", "nullable": true },
+            "judges": { "type": "array", "items": { "type": "string" } },
+            "subagents": { "type": "array", "items": { "type": "string" } },
+            "mcp_tools": { "type": "array", "items": { "$ref": "#/components/schemas/McpToolAccess" } },
         },
-        "JudgeConfig": {
-            "type": "object",
-            "required": ["name", "model", "provider"],
-            "properties": {
-                "name": { "type": "string" },
-                "provider": { "type": "string", "description": "Provider name (anthropic|cohere|deepseek|gemini|groq|openai)" },
-                "model": { "type": "string" },
-                "rubrics": {
-                    "type": "object",
-                    "additionalProperties": { "type": "string" },
-                    "description": "Map of criterion name → short description of what to assess",
+    })
+}
+
+fn judge_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["name", "model", "provider"],
+        "properties": {
+            "name": { "type": "string" },
+            "provider": { "type": "string", "description": "Provider name (anthropic|cohere|deepseek|gemini|groq|openai)" },
+            "model": { "type": "string" },
+            "rubrics": {
+                "type": "object",
+                "additionalProperties": { "type": "string" },
+                "description": "Map of criterion name → short description of what to assess",
+            },
+            "sampling_rate": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
+        },
+    })
+}
+
+fn experiment_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["name", "strategy", "variants"],
+        "properties": {
+            "name": { "type": "string" },
+            "strategy": { "type": "string", "enum": ["split", "shadow", "bandit"] },
+            "variants": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/Variant" },
+                "minItems": 1,
+            },
+            "sticky_by_user": { "type": "boolean", "default": true },
+            "purpose": { "type": "string", "nullable": true },
+            "primary": { "type": "string", "nullable": true, "description": "Shadow only: primary variant agent." },
+            "sampling_rate": { "type": "number", "minimum": 0, "maximum": 1, "nullable": true, "description": "Shadow only." },
+            "metric": { "type": "string", "nullable": true, "description": "Bandit only: 'judge.criterion'." },
+            "epsilon": { "type": "number", "minimum": 0, "maximum": 1, "nullable": true, "description": "Bandit only: exploration probability." },
+            "min_samples": { "type": "integer", "minimum": 0, "nullable": true, "description": "Bandit only: per-arm sample threshold." },
+            "bandit_window_seconds": { "type": "integer", "minimum": 0, "nullable": true, "description": "Bandit only: lookback window." },
+        },
+    })
+}
+
+fn variant_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["agent"],
+        "properties": {
+            "agent": { "type": "string" },
+            "weight": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+        },
+    })
+}
+
+fn provider_kind_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["anthropic", "cohere", "deepseek", "gemini", "groq", "openai"],
+    })
+}
+
+fn provider_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["api_key"],
+        "properties": {
+            "api_key": { "type": "string" },
+        },
+    })
+}
+
+fn provider_create_body_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["kind", "api_key"],
+        "properties": {
+            "kind": { "$ref": "#/components/schemas/ProviderKind" },
+            "api_key": { "type": "string" },
+        },
+    })
+}
+
+fn mcp_server_config_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "required": ["transport", "url"],
+                "properties": {
+                    "transport": { "type": "string", "enum": ["http"] },
+                    "url": { "type": "string", "format": "uri" },
                 },
-                "sampling_rate": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
             },
-        },
-        "ExperimentConfig": {
-            "type": "object",
-            "required": ["name", "strategy", "variants"],
-            "properties": {
-                "name": { "type": "string" },
-                "strategy": { "type": "string", "enum": ["split", "shadow", "bandit"] },
-                "variants": {
-                    "type": "array",
-                    "items": { "$ref": "#/components/schemas/Variant" },
-                    "minItems": 1,
+            {
+                "type": "object",
+                "required": ["transport", "command"],
+                "properties": {
+                    "transport": { "type": "string", "enum": ["stdio"] },
+                    "command": { "type": "string" },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "env": { "type": "object", "additionalProperties": { "type": "string" } },
                 },
-                "sticky_by_user": { "type": "boolean", "default": true },
-                "purpose": { "type": "string", "nullable": true },
-                "primary": { "type": "string", "nullable": true, "description": "Shadow only: primary variant agent." },
-                "sampling_rate": { "type": "number", "minimum": 0, "maximum": 1, "nullable": true, "description": "Shadow only." },
-                "metric": { "type": "string", "nullable": true, "description": "Bandit only: 'judge.criterion'." },
-                "epsilon": { "type": "number", "minimum": 0, "maximum": 1, "nullable": true, "description": "Bandit only: exploration probability." },
-                "min_samples": { "type": "integer", "minimum": 0, "nullable": true, "description": "Bandit only: per-arm sample threshold." },
-                "bandit_window_seconds": { "type": "integer", "minimum": 0, "nullable": true, "description": "Bandit only: lookback window." },
             },
-        },
-        "Variant": {
-            "type": "object",
-            "required": ["agent"],
-            "properties": {
-                "agent": { "type": "string" },
-                "weight": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
-            },
-        },
-        "ProviderKind": {
-            "type": "string",
-            "enum": ["anthropic", "cohere", "deepseek", "gemini", "groq", "openai"],
-        },
-        "ProviderConfig": {
-            "type": "object",
-            "required": ["api_key"],
-            "properties": {
-                "api_key": { "type": "string" },
-            },
-        },
-        "ProviderCreateBody": {
-            "type": "object",
-            "required": ["kind", "api_key"],
-            "properties": {
-                "kind": { "$ref": "#/components/schemas/ProviderKind" },
-                "api_key": { "type": "string" },
-            },
-        },
-        "McpServerConfig": {
-            "oneOf": [
-                {
-                    "type": "object",
-                    "required": ["transport", "url"],
-                    "properties": {
-                        "transport": { "type": "string", "enum": ["http"] },
-                        "url": { "type": "string", "format": "uri" },
-                    },
-                },
-                {
-                    "type": "object",
-                    "required": ["transport", "command"],
-                    "properties": {
-                        "transport": { "type": "string", "enum": ["stdio"] },
-                        "command": { "type": "string" },
-                        "args": { "type": "array", "items": { "type": "string" } },
-                        "env": { "type": "object", "additionalProperties": { "type": "string" } },
-                    },
-                },
-            ],
-            "discriminator": { "propertyName": "transport" },
-        },
-        "McpCreateBody": {
-            "allOf": [
-                { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } },
-                { "$ref": "#/components/schemas/McpServerConfig" },
-            ],
-        },
-        "McpToolAccess": {
-            "type": "object",
-            "required": ["server"],
-            "properties": {
-                "server": { "type": "string" },
-                "only": { "type": "array", "nullable": true, "items": { "type": "string" } },
-            },
+        ],
+        "discriminator": { "propertyName": "transport" },
+    })
+}
+
+fn mcp_create_body_schema() -> Value {
+    json!({
+        "allOf": [
+            { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } },
+            { "$ref": "#/components/schemas/McpServerConfig" },
+        ],
+    })
+}
+
+fn mcp_tool_access_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["server"],
+        "properties": {
+            "server": { "type": "string" },
+            "only": { "type": "array", "nullable": true, "items": { "type": "string" } },
         },
     })
 }
