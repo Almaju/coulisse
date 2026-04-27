@@ -14,12 +14,23 @@ mod web;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use config_store::{ConfigPersistError, ConfigPersister};
-pub use web::{BodyRejection, EitherFormOrJson, ResponseFormat};
+pub use web::{BodyRejection, EitherFormOrJson, ResponseFormat, redirect_to};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Seconds since the Unix epoch. Saturates to 0 if the system clock is
+/// before 1970 (impossible in normal operation, but the call is
+/// infallible to keep call sites readable).
+pub fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// Stable identity for a turn — the public-visible correlation id shared by
 /// every event emitted while processing one user-facing request, including
@@ -95,6 +106,33 @@ pub enum Role {
     User,
 }
 
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Assistant => "assistant",
+            Self::System => "system",
+            Self::User => "user",
+        }
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = UnknownRole;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "assistant" => Ok(Self::Assistant),
+            "system" => Ok(Self::System),
+            "user" => Ok(Self::User),
+            other => Err(UnknownRole(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown role '{0}'")]
+pub struct UnknownRole(pub String);
+
 /// Whether a tool invocation was serviced by an MCP server or by another
 /// agent acting as a tool (subagent). The distinction matters in the
 /// studio UI where subagent calls carry different semantics (nested
@@ -108,6 +146,31 @@ pub enum ToolCallKind {
     Mcp,
     Subagent,
 }
+
+impl ToolCallKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mcp => "mcp",
+            Self::Subagent => "subagent",
+        }
+    }
+}
+
+impl std::str::FromStr for ToolCallKind {
+    type Err = UnknownToolCallKind;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "mcp" => Ok(Self::Mcp),
+            "subagent" => Ok(Self::Subagent),
+            other => Err(UnknownToolCallKind(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown tool call kind '{0}'")]
+pub struct UnknownToolCallKind(pub String);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {

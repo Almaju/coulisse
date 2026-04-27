@@ -97,9 +97,18 @@ impl Config {
             return Err(ConfigError::BlankDefaultUserId);
         }
         self.auth.validate().map_err(ConfigError::Auth)?;
+        let judge_names = self.validate_judges()?;
+        let agent_names = self.validate_agents(&judge_names)?;
+        let experiment_names = self.validate_experiments(&agent_names)?;
+        self.validate_smoke_tests(&agent_names, &experiment_names)?;
+        self.validate_subagents(&agent_names, &experiment_names)?;
+        Ok(())
+    }
+
+    fn validate_judges(&self) -> Result<HashSet<&str>, ConfigError> {
         let mut judge_names = HashSet::new();
         for judge in &self.judges {
-            if !judge_names.insert(&judge.name) {
+            if !judge_names.insert(judge.name.as_str()) {
                 return Err(ConfigError::DuplicateJudge(judge.name.clone()));
             }
             if judge.rubrics.is_empty() {
@@ -124,9 +133,13 @@ impl Config {
                 });
             }
         }
-        let mut seen = HashSet::new();
+        Ok(judge_names)
+    }
+
+    fn validate_agents(&self, judge_names: &HashSet<&str>) -> Result<HashSet<&str>, ConfigError> {
+        let mut agent_names = HashSet::new();
         for agent in &self.agents {
-            if !seen.insert(&agent.name) {
+            if !agent_names.insert(agent.name.as_str()) {
                 return Err(ConfigError::DuplicateAgent(agent.name.clone()));
             }
             if !self.providers.contains_key(&agent.provider) {
@@ -144,7 +157,7 @@ impl Config {
                 }
             }
             for judge_name in &agent.judges {
-                if !judge_names.contains(judge_name) {
+                if !judge_names.contains(judge_name.as_str()) {
                     return Err(ConfigError::JudgeNotConfigured {
                         agent: agent.name.clone(),
                         judge: judge_name.clone(),
@@ -152,8 +165,13 @@ impl Config {
                 }
             }
         }
-        let agent_names: HashSet<&str> = self.agents.iter().map(|a| a.name.as_str()).collect();
+        Ok(agent_names)
+    }
 
+    fn validate_experiments(
+        &self,
+        agent_names: &HashSet<&str>,
+    ) -> Result<HashSet<&str>, ConfigError> {
         let mut experiment_names: HashSet<&str> = HashSet::new();
         for experiment in &self.experiments {
             if agent_names.contains(experiment.name.as_str()) {
@@ -195,7 +213,14 @@ impl Config {
             }
             validate_experiment_strategy_fields(self, experiment)?;
         }
+        Ok(experiment_names)
+    }
 
+    fn validate_smoke_tests(
+        &self,
+        agent_names: &HashSet<&str>,
+        experiment_names: &HashSet<&str>,
+    ) -> Result<(), ConfigError> {
         let mut smoke_names: HashSet<&str> = HashSet::new();
         for test in &self.smoke_tests {
             if !smoke_names.insert(test.name.as_str()) {
@@ -228,11 +253,17 @@ impl Config {
                 });
             }
         }
+        Ok(())
+    }
 
-        // Subagent references resolve against the *combined* namespace of
-        // agents + experiments so an agent can list an experiment as a
-        // subagent. Self-reference and duplicate detection still apply
-        // exactly as before.
+    /// Subagent references resolve against the *combined* namespace of
+    /// agents + experiments so an agent can list an experiment as a
+    /// subagent.
+    fn validate_subagents(
+        &self,
+        agent_names: &HashSet<&str>,
+        experiment_names: &HashSet<&str>,
+    ) -> Result<(), ConfigError> {
         for agent in &self.agents {
             let mut sub_seen = HashSet::new();
             for sub in &agent.subagents {

@@ -1,49 +1,42 @@
 //! Admin/studio HTTP surface for the judges crate. Exposes per-user score
-//! panels (loaded into the conversation sidebar via htmx) and per-(judge,
-//! criterion) bandit summaries (queried by the experiments page for any
-//! bandit-strategy experiment).
+//! panels (loaded into the conversation sidebar via htmx), per-(judge,
+//! criterion) bandit summaries, and CRUD over the judge configs.
 //!
-//! No coupling to memory or experiments: the conversation panel is keyed
-//! by `user_id`, and the bandit summary is keyed by query parameters
-//! (`judge`, `criterion`, `since`). Callers pass IDs in URLs/query strings
-//! and the judges crate looks them up in its own table.
+//! Judge writes go to the `dynamic_judges` table, never to `coulisse.yaml`.
+//! Resolution is "DB wins, YAML fallback" — see `merge` for the full rule.
 
 mod templates;
 mod views;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use askama::Template;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::get;
-use coulisse_core::{
-    ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat, UserId,
-};
+use axum::routing::{get, post};
+use coulisse_core::{EitherFormOrJson, ResponseFormat, UserId, now_secs, redirect_to};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::merge::{AdminJudge, admin_view};
 use crate::{JudgeConfig, JudgeList, JudgeStoreError, Judges};
 use templates::{JudgeDetailPage, JudgeEditPage, JudgesPage, ScoresFragment, ScoresMeansFragment};
 use views::{JudgeDetailRow, JudgeListRow, ScoreRow, ScoreRowMean, ScoresPanel, build_matrix};
 
 #[derive(Clone)]
 struct JudgesAdminState {
-    configs: JudgeList,
-    persister: Arc<dyn ConfigPersister>,
+    /// Effective merged list (DB shadows + YAML). Updated atomically by
+    /// `Judges::rebuild_judges` after every write.
+    runtime_configs: JudgeList,
     store: Arc<Judges>,
+    /// Raw YAML view. Used to compute admin row source labels and to
+    /// decide tombstone-vs-delete on the smart `DELETE` endpoint.
+    yaml_configs: JudgeList,
 }
 
-/// Build the admin router for judges. Cli merges this into the combined
-/// `/admin` router.
-pub fn router(
-    judges: Arc<Judges>,
-    configs: JudgeList,
-    persister: Arc<dyn ConfigPersister>,
-) -> Router {
+pub fn router(judges: Arc<Judges>, runtime_configs: JudgeList, yaml_configs: JudgeList) -> Router {
     Router::new()
         .route("/agents/{name}/scores", get(agent_scores))
         .route("/judges", get(judges_page).post(create_judge))
@@ -53,12 +46,13 @@ pub fn router(
             get(judge_detail).put(update_judge).delete(remove_judge),
         )
         .route("/judges/{name}/edit", get(edit_form))
+        .route("/judges/{name}/reset", post(reset_judge))
         .route("/scores/means", get(scores_means))
         .route("/users/{user_id}/scores", get(user_scores))
         .with_state(JudgesAdminState {
-            configs,
-            persister,
+            runtime_configs,
             store: judges,
+            yaml_configs,
         })
 }
 
@@ -71,18 +65,39 @@ async fn agent_scores(
     render(ScoresFragment { scores: panel })
 }
 
+async fn judges_page(
+    State(state): State<JudgesAdminState>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let rows = current_admin_view(&state).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        let configs: Vec<&JudgeConfig> = rows.iter().filter_map(|r| r.config.as_ref()).collect();
+        return Ok(Json(configs).into_response());
+    }
+    let since = now_secs().saturating_sub(7 * 86_400);
+    let volumes = state.store.score_volume(since).await?;
+    let view: Vec<JudgeListRow> = rows
+        .iter()
+        .map(|r| JudgeListRow::from_admin(r, &volumes))
+        .collect();
+    Ok(Html(JudgesPage { judges: view }.render()?).into_response())
+}
+
 async fn judge_detail(
     State(state): State<JudgesAdminState>,
     Path(name): Path<String>,
     fmt: ResponseFormat,
 ) -> Result<Response, AdminError> {
-    let snapshot = state.configs.load();
-    let config = snapshot
+    let rows = current_admin_view(&state).await?;
+    let row = rows
         .iter()
-        .find(|c| c.name == name)
+        .find(|r| r.name == name)
         .ok_or(AdminError::NotFound)?;
     if matches!(fmt, ResponseFormat::Json) {
-        return Ok(Json(config.clone()).into_response());
+        return match &row.config {
+            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
+            None => Err(AdminError::NotFound),
+        };
     }
     let since = now_secs().saturating_sub(7 * 86_400);
     let matrix_cells = state.store.agent_criterion_matrix(&name, since).await?;
@@ -90,7 +105,7 @@ async fn judge_detail(
     let recent_scores: Vec<ScoreRow> = recent.into_iter().map(ScoreRow::from_score).collect();
     Ok(Html(
         JudgeDetailPage {
-            judge: JudgeDetailRow::from_config(config),
+            judge: JudgeDetailRow::from_admin(row),
             matrix: build_matrix(matrix_cells),
             recent_scores,
         }
@@ -99,58 +114,17 @@ async fn judge_detail(
     .into_response())
 }
 
-async fn judges_page(
-    State(state): State<JudgesAdminState>,
-    fmt: ResponseFormat,
-) -> Result<Response, AdminError> {
-    let snapshot = state.configs.load();
-    if matches!(fmt, ResponseFormat::Json) {
-        return Ok(Json(&*snapshot.clone()).into_response());
-    }
-    let since = now_secs().saturating_sub(7 * 86_400);
-    let volumes = state.store.score_volume(since).await?;
-    let judges: Vec<JudgeListRow> = snapshot
-        .iter()
-        .map(|c| {
-            let score_count_7d = volumes
-                .iter()
-                .find(|v| v.judge_name == c.name)
-                .map(|v| v.count)
-                .unwrap_or(0);
-            JudgeListRow {
-                criteria_count: c.rubrics.len(),
-                model: c.model.clone(),
-                name: c.name.clone(),
-                provider: c.provider.clone(),
-                sampling_rate: format!("{:.0}%", c.sampling_rate * 100.0),
-                score_count_7d,
-            }
-        })
-        .collect();
-    Ok(Html(JudgesPage { judges }.render()?).into_response())
-}
-
 async fn create_judge(
     State(state): State<JudgesAdminState>,
     fmt: ResponseFormat,
     EitherFormOrJson(judge): EitherFormOrJson<JudgeConfig>,
 ) -> Result<Response, AdminError> {
-    {
-        let snapshot = state.configs.load();
-        if snapshot.iter().any(|j| j.name == judge.name) {
-            return Err(AdminError::Conflict(format!(
-                "judge '{}' already exists",
-                judge.name
-            )));
-        }
-    }
-    let mut updated: Vec<JudgeConfig> = state.configs.load().as_ref().clone();
-    updated.push(judge.clone());
-    persist(&state, updated).await?;
+    state.store.put_active_dynamic(&judge.name, &judge).await?;
+    rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(judge)).into_response());
     }
-    redirect(&format!("/admin/judges/{}", judge.name))
+    Ok(redirect_to(&format!("/admin/judges/{}", judge.name)))
 }
 
 async fn update_judge(
@@ -165,17 +139,12 @@ async fn update_judge(
             judge.name
         )));
     }
-    let mut updated: Vec<JudgeConfig> = state.configs.load().as_ref().clone();
-    let slot = updated
-        .iter_mut()
-        .find(|j| j.name == name)
-        .ok_or(AdminError::NotFound)?;
-    *slot = judge.clone();
-    persist(&state, updated).await?;
+    state.store.put_active_dynamic(&name, &judge).await?;
+    rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(judge).into_response());
     }
-    redirect(&format!("/admin/judges/{}", judge.name))
+    Ok(redirect_to(&format!("/admin/judges/{name}")))
 }
 
 async fn remove_judge(
@@ -183,28 +152,56 @@ async fn remove_judge(
     Path(name): Path<String>,
     fmt: ResponseFormat,
 ) -> Result<Response, AdminError> {
-    let mut updated: Vec<JudgeConfig> = state.configs.load().as_ref().clone();
-    let before = updated.len();
-    updated.retain(|j| j.name != name);
-    if updated.len() == before {
+    let yaml_backed = state.yaml_configs.load().iter().any(|c| c.name == name);
+    let exists_in_db = state
+        .store
+        .list_dynamic()
+        .await?
+        .iter()
+        .any(|r| r.name == name);
+    if !yaml_backed && !exists_in_db {
         return Err(AdminError::NotFound);
     }
-    persist(&state, updated).await?;
+    if yaml_backed {
+        state.store.put_tombstone_dynamic(&name).await?;
+    } else {
+        state.store.delete_dynamic(&name).await?;
+    }
+    rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    redirect("/admin/judges")
+    Ok(redirect_to("/admin/judges"))
+}
+
+async fn reset_judge(
+    State(state): State<JudgesAdminState>,
+    Path(name): Path<String>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let removed = state.store.delete_dynamic(&name).await?;
+    if !removed {
+        return Err(AdminError::NotFound);
+    }
+    rebuild(&state).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    Ok(redirect_to(&format!("/admin/judges/{name}")))
 }
 
 async fn edit_form(
     State(state): State<JudgesAdminState>,
     Path(name): Path<String>,
 ) -> Result<Response, AdminError> {
-    let snapshot = state.configs.load();
-    let config = snapshot
+    let rows = current_admin_view(&state).await?;
+    let row = rows
         .iter()
-        .find(|c| c.name == name)
+        .find(|r| r.name == name)
         .ok_or(AdminError::NotFound)?;
+    let config = row.config.as_ref().ok_or_else(|| {
+        AdminError::BadRequest("cannot edit a tombstoned judge — re-enable it first".into())
+    })?;
     let yaml =
         serde_yaml::to_string(config).map_err(|err| AdminError::Internal(err.to_string()))?;
     Ok(Html(
@@ -235,23 +232,19 @@ async fn new_form() -> Result<Response, AdminError> {
     .into_response())
 }
 
-async fn persist(state: &JudgesAdminState, judges: Vec<JudgeConfig>) -> Result<(), AdminError> {
-    let value =
-        serde_yaml::to_value(&judges).map_err(|err| AdminError::Internal(err.to_string()))?;
-    state
-        .persister
-        .write_section("judges", value)
-        .await
-        .map_err(AdminError::from)
+async fn current_admin_view(state: &JudgesAdminState) -> Result<Vec<AdminJudge>, AdminError> {
+    let db = state.store.list_dynamic().await?;
+    let yaml = state.yaml_configs.load();
+    Ok(admin_view(&yaml, &db))
 }
 
-fn redirect(to: &str) -> Result<Response, AdminError> {
-    let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        axum::http::HeaderValue::from_str(to).expect("valid header value"),
-    );
-    Ok(resp)
+async fn rebuild(state: &JudgesAdminState) -> Result<(), AdminError> {
+    let yaml = state.yaml_configs.load_full();
+    state
+        .store
+        .rebuild_judges(&state.runtime_configs, &yaml)
+        .await?;
+    Ok(())
 }
 
 async fn user_scores(
@@ -304,19 +297,10 @@ fn parse_user_id(raw: &str) -> Result<UserId, AdminError> {
         .map_err(|_| AdminError::InvalidUserId)
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 #[derive(Debug)]
 enum AdminError {
     BadRequest(String),
-    Conflict(String),
     Internal(String),
-    InvalidConfig(String),
     InvalidUserId,
     Judge(JudgeStoreError),
     NotFound,
@@ -335,22 +319,11 @@ impl From<askama::Error> for AdminError {
     }
 }
 
-impl From<ConfigPersistError> for AdminError {
-    fn from(err: ConfigPersistError) -> Self {
-        match err {
-            ConfigPersistError::Invalid(m) | ConfigPersistError::Parse(m) => Self::InvalidConfig(m),
-            ConfigPersistError::Io(m) => Self::Internal(m),
-        }
-    }
-}
-
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            Self::Conflict(m) => (StatusCode::CONFLICT, m),
             Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
-            Self::InvalidConfig(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
             Self::InvalidUserId => (
                 StatusCode::BAD_REQUEST,
                 "user_id must be a valid UUID".to_string(),

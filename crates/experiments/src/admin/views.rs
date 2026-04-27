@@ -1,8 +1,26 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::merge::{AdminExperiment, AdminSource};
 use crate::{ExperimentConfig, Strategy};
 
-pub struct ExperimentRow {
+pub(super) struct SourceLabel(pub &'static str);
+
+impl SourceLabel {
+    pub(super) fn from_admin(source: AdminSource) -> Self {
+        Self(match source {
+            AdminSource::Dynamic => "dynamic",
+            AdminSource::Override => "override",
+            AdminSource::Tombstoned => "tombstoned",
+            AdminSource::Yaml => "yaml",
+        })
+    }
+
+    pub(super) fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
+
+pub(super) struct ExperimentRow {
     pub epsilon: Option<f32>,
     pub means_url: Option<String>,
     pub metric: Option<String>,
@@ -10,12 +28,15 @@ pub struct ExperimentRow {
     pub name: String,
     pub purpose: Option<String>,
     pub sampling_rate: Option<f32>,
+    pub source: SourceLabel,
     pub sticky_by_user: bool,
     pub strategy: &'static str,
+    pub tombstoned: bool,
     pub variants: Vec<VariantRow>,
+    pub yaml_backed: bool,
 }
 
-pub struct VariantRow {
+pub(super) struct VariantRow {
     pub agent: String,
     pub is_primary: bool,
     pub share: String,
@@ -23,10 +44,32 @@ pub struct VariantRow {
 }
 
 impl ExperimentRow {
-    /// Build the display row from a config. Bandit experiments embed an
-    /// htmx URL pointing at the judges admin router for live mean scores;
-    /// non-bandit experiments leave that slot empty.
-    pub fn build(exp: &ExperimentConfig) -> Self {
+    /// Build the display row from an admin merge entry. Bandit experiments
+    /// embed an htmx URL pointing at the judges admin router for live mean
+    /// scores; tombstones get a stripped-down view.
+    pub(super) fn from_admin(row: &AdminExperiment) -> Self {
+        let label = SourceLabel::from_admin(row.source);
+        match &row.config {
+            Some(exp) => Self::from_config(exp, label, row.yaml_backed),
+            None => Self {
+                epsilon: None,
+                means_url: None,
+                metric: None,
+                min_samples: None,
+                name: row.name.clone(),
+                purpose: None,
+                sampling_rate: None,
+                source: label,
+                sticky_by_user: false,
+                strategy: "",
+                tombstoned: true,
+                variants: Vec::new(),
+                yaml_backed: row.yaml_backed,
+            },
+        }
+    }
+
+    fn from_config(exp: &ExperimentConfig, source: SourceLabel, yaml_backed: bool) -> Self {
         let total: f32 = exp.variants.iter().map(|v| v.weight).sum();
         let primary = exp.primary.as_deref();
         let means_url = match exp.strategy {
@@ -73,13 +116,16 @@ impl ExperimentRow {
             name: exp.name.clone(),
             purpose: exp.purpose.clone(),
             sampling_rate: exp.sampling_rate,
+            source,
             sticky_by_user: exp.sticky_by_user,
             strategy: match exp.strategy {
                 Strategy::Bandit => "bandit",
                 Strategy::Shadow => "shadow",
                 Strategy::Split => "split",
             },
+            tombstoned: false,
             variants,
+            yaml_backed,
         }
     }
 }

@@ -14,4 +14,6 @@ thiserror.workspace = true
 time = "0.3"
 tower = { version = "0.5", features = ["util"] }
 tower-sessions = "0.15"
-tracing.workspace = true
+
+[lints]
+workspace = true

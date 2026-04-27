@@ -26,10 +26,12 @@ use tokio::sync::Mutex;
 use crate::config::Config;
 
 /// Callback invoked with a freshly validated [`Config`] every time the
-/// file changes (admin save or external hand-edit). The closure should
-/// be cheap — it runs on the watcher task and typically does a few
-/// `ArcSwap::store` calls and nothing else.
-pub type OnReload = Arc<dyn Fn(&Config) + Send + Sync>;
+/// file changes (admin save or external hand-edit). Async so feature
+/// crates that need to read from the database (e.g. `agents` merging
+/// YAML with `dynamic_agents` overrides) can do so before publishing
+/// the new in-memory state.
+pub type OnReload =
+    Arc<dyn Fn(Config) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Persists edits to the on-disk YAML and propagates reloads to
 /// in-memory feature state. Held behind `Arc` so it can be passed to
@@ -149,7 +151,7 @@ impl ConfigStore {
             .map_err(|err| ConfigPersistError::Io(err.to_string()))?
             .map_err(|err| ConfigPersistError::Invalid(err.to_string()))?;
         self.snapshot.store(Arc::new(config.clone()));
-        (self.on_reload)(&config);
+        (self.on_reload)(config).await;
         tracing::info!(path = %self.path.display(), "config reloaded");
         Ok(())
     }
@@ -202,7 +204,7 @@ impl ConfigPersister for ConfigStore {
             let mut root = self.read_root()?;
             root.insert(serde_yaml::Value::String(section.to_string()), value);
             let config = self.validate_and_write(root)?;
-            (self.on_reload)(&config);
+            (self.on_reload)(config).await;
             Ok(())
         })
     }
@@ -214,16 +216,13 @@ impl ConfigPersister for ConfigStore {
     {
         Box::pin(async move {
             let _guard = self.write_lock.lock().await;
-            let root = match value {
-                serde_yaml::Value::Mapping(m) => m,
-                _ => {
-                    return Err(ConfigPersistError::Parse(
-                        "config root must be a YAML mapping".into(),
-                    ));
-                }
+            let serde_yaml::Value::Mapping(root) = value else {
+                return Err(ConfigPersistError::Parse(
+                    "config root must be a YAML mapping".into(),
+                ));
             };
             let config = self.validate_and_write(root)?;
-            (self.on_reload)(&config);
+            (self.on_reload)(config).await;
             Ok(())
         })
     }

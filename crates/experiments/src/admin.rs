@@ -2,10 +2,10 @@
 //! bandit metrics load via htmx from the judges admin router
 //! (`/admin/scores/means`), so this module never depends on `judges`.
 //!
-//! Edits write back to `coulisse.yaml` through the cli's
-//! `ConfigPersister`. The admin display reflects the file in real
-//! time; the in-memory `ExperimentRouter` that consumes these configs
-//! still requires a process restart to swap (documented limitation).
+//! Edits write to `dynamic_experiments` in the database; the YAML file
+//! is never modified. Resolution at runtime is "DB wins, YAML fallback."
+//! The in-memory `ExperimentRouter` that consumes these configs still
+//! requires a process restart to swap (documented limitation).
 
 mod templates;
 mod views;
@@ -17,25 +17,31 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::get;
-use coulisse_core::{ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat};
+use axum::routing::{get, post};
+use coulisse_core::{EitherFormOrJson, ResponseFormat, redirect_to};
 
+use crate::merge::{AdminExperiment, admin_view};
+use crate::store::{Experiments, ExperimentsError};
 use crate::{ExperimentConfig, ExperimentList};
 use templates::{ExperimentEditPage, ExperimentsPage};
 use views::ExperimentRow;
 
 #[derive(Clone)]
 struct AdminState {
-    experiments: ExperimentList,
-    persister: Arc<dyn ConfigPersister>,
+    runtime_experiments: ExperimentList,
+    store: Arc<Experiments>,
+    yaml_experiments: ExperimentList,
 }
 
-/// Build the admin router for experiments. Cli merges this into the
-/// combined `/admin` router.
-pub fn router(experiments: ExperimentList, persister: Arc<dyn ConfigPersister>) -> Router {
+pub fn router(
+    runtime_experiments: ExperimentList,
+    store: Arc<Experiments>,
+    yaml_experiments: ExperimentList,
+) -> Router {
     let state = AdminState {
-        experiments,
-        persister,
+        runtime_experiments,
+        store,
+        yaml_experiments,
     };
     Router::new()
         .route("/experiments", get(list).post(create))
@@ -45,6 +51,7 @@ pub fn router(experiments: ExperimentList, persister: Arc<dyn ConfigPersister>) 
             get(detail).put(update).delete(remove),
         )
         .route("/experiments/{name}/edit", get(edit_form))
+        .route("/experiments/{name}/reset", post(reset))
         .with_state(state)
 }
 
@@ -52,13 +59,14 @@ async fn list(
     State(state): State<AdminState>,
     fmt: ResponseFormat,
 ) -> Result<Response, AdminError> {
-    let snapshot = state.experiments.load();
+    let rows = current_admin_view(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
-        return Ok(Json(&*snapshot.clone()).into_response());
+        let configs: Vec<&ExperimentConfig> =
+            rows.iter().filter_map(|r| r.config.as_ref()).collect();
+        return Ok(Json(configs).into_response());
     }
-    let mut rows: Vec<ExperimentRow> = snapshot.iter().map(ExperimentRow::build).collect();
-    rows.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Html(ExperimentsPage { experiments: rows }.render()?).into_response())
+    let view: Vec<ExperimentRow> = rows.iter().map(ExperimentRow::from_admin).collect();
+    Ok(Html(ExperimentsPage { experiments: view }.render()?).into_response())
 }
 
 async fn detail(
@@ -66,13 +74,16 @@ async fn detail(
     Path(name): Path<String>,
     fmt: ResponseFormat,
 ) -> Result<Response, AdminError> {
-    let snapshot = state.experiments.load();
-    let config = snapshot
+    let rows = current_admin_view(&state).await?;
+    let row = rows
         .iter()
-        .find(|e| e.name == name)
+        .find(|r| r.name == name)
         .ok_or(AdminError::NotFound)?;
     if matches!(fmt, ResponseFormat::Json) {
-        return Ok(Json(config.clone()).into_response());
+        return match &row.config {
+            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
+            None => Err(AdminError::NotFound),
+        };
     }
     // No bespoke detail page; the list page already renders everything
     // compactly. For HTML we redirect into the list anchored at the
@@ -95,22 +106,15 @@ async fn create(
     fmt: ResponseFormat,
     EitherFormOrJson(experiment): EitherFormOrJson<ExperimentConfig>,
 ) -> Result<Response, AdminError> {
-    {
-        let snapshot = state.experiments.load();
-        if snapshot.iter().any(|e| e.name == experiment.name) {
-            return Err(AdminError::Conflict(format!(
-                "experiment '{}' already exists",
-                experiment.name
-            )));
-        }
-    }
-    let mut updated: Vec<ExperimentConfig> = state.experiments.load().as_ref().clone();
-    updated.push(experiment.clone());
-    persist(&state, updated).await?;
+    state
+        .store
+        .put_active_dynamic(&experiment.name, &experiment)
+        .await?;
+    rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(experiment)).into_response());
     }
-    redirect("/admin/experiments")
+    Ok(redirect_to("/admin/experiments"))
 }
 
 async fn update(
@@ -125,17 +129,12 @@ async fn update(
             experiment.name
         )));
     }
-    let mut updated: Vec<ExperimentConfig> = state.experiments.load().as_ref().clone();
-    let slot = updated
-        .iter_mut()
-        .find(|e| e.name == name)
-        .ok_or(AdminError::NotFound)?;
-    *slot = experiment.clone();
-    persist(&state, updated).await?;
+    state.store.put_active_dynamic(&name, &experiment).await?;
+    rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(experiment).into_response());
     }
-    redirect("/admin/experiments")
+    Ok(redirect_to("/admin/experiments"))
 }
 
 async fn remove(
@@ -143,28 +142,56 @@ async fn remove(
     Path(name): Path<String>,
     fmt: ResponseFormat,
 ) -> Result<Response, AdminError> {
-    let mut updated: Vec<ExperimentConfig> = state.experiments.load().as_ref().clone();
-    let before = updated.len();
-    updated.retain(|e| e.name != name);
-    if updated.len() == before {
+    let yaml_backed = state.yaml_experiments.load().iter().any(|c| c.name == name);
+    let exists_in_db = state
+        .store
+        .list_dynamic()
+        .await?
+        .iter()
+        .any(|r| r.name == name);
+    if !yaml_backed && !exists_in_db {
         return Err(AdminError::NotFound);
     }
-    persist(&state, updated).await?;
+    if yaml_backed {
+        state.store.put_tombstone_dynamic(&name).await?;
+    } else {
+        state.store.delete_dynamic(&name).await?;
+    }
+    rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    redirect("/admin/experiments")
+    Ok(redirect_to("/admin/experiments"))
+}
+
+async fn reset(
+    State(state): State<AdminState>,
+    Path(name): Path<String>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let removed = state.store.delete_dynamic(&name).await?;
+    if !removed {
+        return Err(AdminError::NotFound);
+    }
+    rebuild(&state).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    Ok(redirect_to("/admin/experiments"))
 }
 
 async fn edit_form(
     State(state): State<AdminState>,
     Path(name): Path<String>,
 ) -> Result<Response, AdminError> {
-    let snapshot = state.experiments.load();
-    let config = snapshot
+    let rows = current_admin_view(&state).await?;
+    let row = rows
         .iter()
-        .find(|e| e.name == name)
+        .find(|r| r.name == name)
         .ok_or(AdminError::NotFound)?;
+    let config = row.config.as_ref().ok_or_else(|| {
+        AdminError::BadRequest("cannot edit a tombstoned experiment — re-enable it first".into())
+    })?;
     let yaml =
         serde_yaml::to_string(config).map_err(|err| AdminError::Internal(err.to_string()))?;
     Ok(Html(
@@ -195,31 +222,26 @@ async fn new_form() -> Result<Response, AdminError> {
     .into_response())
 }
 
-async fn persist(state: &AdminState, experiments: Vec<ExperimentConfig>) -> Result<(), AdminError> {
-    let value =
-        serde_yaml::to_value(&experiments).map_err(|err| AdminError::Internal(err.to_string()))?;
-    state
-        .persister
-        .write_section("experiments", value)
-        .await
-        .map_err(AdminError::from)
+async fn current_admin_view(state: &AdminState) -> Result<Vec<AdminExperiment>, AdminError> {
+    let db = state.store.list_dynamic().await?;
+    let yaml = state.yaml_experiments.load();
+    Ok(admin_view(&yaml, &db))
 }
 
-fn redirect(to: &str) -> Result<Response, AdminError> {
-    let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        axum::http::HeaderValue::from_str(to).expect("valid header value"),
-    );
-    Ok(resp)
+async fn rebuild(state: &AdminState) -> Result<(), AdminError> {
+    let yaml = state.yaml_experiments.load_full();
+    state
+        .store
+        .rebuild(&state.runtime_experiments, &yaml)
+        .await?;
+    Ok(())
 }
 
 #[derive(Debug)]
 enum AdminError {
     BadRequest(String),
-    Conflict(String),
+    Experiments(ExperimentsError),
     Internal(String),
-    InvalidConfig(String),
     NotFound,
     Render(askama::Error),
 }
@@ -230,12 +252,9 @@ impl From<askama::Error> for AdminError {
     }
 }
 
-impl From<ConfigPersistError> for AdminError {
-    fn from(err: ConfigPersistError) -> Self {
-        match err {
-            ConfigPersistError::Invalid(m) | ConfigPersistError::Parse(m) => Self::InvalidConfig(m),
-            ConfigPersistError::Io(m) => Self::Internal(m),
-        }
+impl From<ExperimentsError> for AdminError {
+    fn from(err: ExperimentsError) -> Self {
+        Self::Experiments(err)
     }
 }
 
@@ -243,9 +262,8 @@ impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
             Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            Self::Conflict(m) => (StatusCode::CONFLICT, m),
+            Self::Experiments(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
-            Self::InvalidConfig(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
             Self::NotFound => (StatusCode::NOT_FOUND, "experiment not found".to_string()),
             Self::Render(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };

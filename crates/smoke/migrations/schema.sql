@@ -27,3 +27,16 @@ CREATE TABLE IF NOT EXISTS smoke_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_smoke_messages_message ON smoke_messages(message_id);
+
+-- Runtime-mutable smoke-test configs. Mirrors `dynamic_agents` /
+-- `dynamic_judges`: each row either overrides a YAML-declared smoke test
+-- of the same name, stands alone as a DB-only test, or tombstones a YAML
+-- test (`disabled = 1`).
+CREATE TABLE IF NOT EXISTS dynamic_smoke_tests (
+    config_json TEXT,
+    created_at  INTEGER NOT NULL,
+    disabled    INTEGER NOT NULL DEFAULT 0,
+    name        TEXT    NOT NULL PRIMARY KEY,
+    updated_at  INTEGER NOT NULL
+);
+

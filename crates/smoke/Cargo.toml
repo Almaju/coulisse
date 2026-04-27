@@ -10,9 +10,11 @@ askama.workspace = true
 axum.workspace = true
 coulisse-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 serde_yaml.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
-tracing.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"] }
+
+[lints]
+workspace = true

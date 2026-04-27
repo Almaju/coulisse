@@ -7,10 +7,22 @@
 //! [`EitherFormOrJson`] does the symmetric job for request bodies.
 
 use axum::extract::{FromRequest, FromRequestParts, Request};
-use axum::http::{StatusCode, header, request::Parts};
+use axum::http::{HeaderValue, StatusCode, header, request::Parts};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use serde::de::DeserializeOwned;
+
+/// Build a response that redirects browser navigations (`303 See Other`)
+/// and htmx requests (`HX-Redirect` header) to the same target. Every
+/// admin handler that mutates state and falls back to HTML uses this.
+pub fn redirect_to(to: &str) -> Response {
+    let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
+    resp.headers_mut().insert(
+        "hx-redirect",
+        HeaderValue::from_str(to).expect("valid header value"),
+    );
+    resp
+}
 
 /// Which representation the caller wants. Set from the request headers:
 /// `HX-Request` → [`Self::Htmx`]; `Accept: application/json` →

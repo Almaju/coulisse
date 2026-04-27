@@ -1,6 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::now_secs;
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::error::WindowKind;
@@ -110,13 +109,6 @@ impl Tracker {
         .await?;
         Ok(row.map(|(c,)| c.max(0) as u64).unwrap_or(0))
     }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

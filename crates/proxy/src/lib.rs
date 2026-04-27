@@ -8,7 +8,7 @@ mod tool;
 
 pub use chat::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
-    ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage, now_secs, response_id,
+    ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage, response_id,
 };
 pub use language::{LanguageTag, LanguageTagError};
 pub use tool::{

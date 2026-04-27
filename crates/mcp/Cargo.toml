@@ -10,4 +10,6 @@ rmcp.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process"] }
-tracing.workspace = true
+
+[lints]
+workspace = true

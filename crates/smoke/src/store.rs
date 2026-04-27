@@ -1,13 +1,16 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
-use coulisse_core::MessageId;
 use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::{MessageId, now_secs};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{Executor, SqliteConnection, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::SmokeTestConfig;
+use crate::config::SmokeList;
+use crate::merge::{MergeReport, merge};
 use crate::types::{RunId, RunStatus, StoredMessage, StoredRun, TurnRole};
 
 struct Schema;
@@ -15,15 +18,41 @@ struct Schema;
 impl SchemaMigrator for Schema {
     const NAME: &'static str = "smoke";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
-    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+    const VERSIONS: &'static [&'static str] = &["0.1.0", "0.2.0"];
 
     async fn upgrade_from(
         &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
+        from_version: &str,
+        conn: &mut SqliteConnection,
     ) -> sqlx::Result<()> {
-        unreachable!("smoke has only one schema version")
+        match from_version {
+            "0.1.0" => {
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS dynamic_smoke_tests (\
+                        config_json TEXT,\
+                        created_at  INTEGER NOT NULL,\
+                        disabled    INTEGER NOT NULL DEFAULT 0,\
+                        name        TEXT    NOT NULL PRIMARY KEY,\
+                        updated_at  INTEGER NOT NULL\
+                    )",
+                )
+                .await?;
+                Ok(())
+            }
+            _ => unreachable!("unknown smoke schema version: {from_version}"),
+        }
     }
+}
+
+/// One row in `dynamic_smoke_tests`. `config` is `Some` for active rows
+/// and `None` for tombstones, paired with `disabled = true`.
+#[derive(Clone, Debug)]
+pub struct DynamicSmokeRow {
+    pub config: Option<SmokeTestConfig>,
+    pub created_at: i64,
+    pub disabled: bool,
+    pub name: String,
+    pub updated_at: i64,
 }
 
 /// Persistent storage for smoke-test runs. One row per run in
@@ -195,13 +224,79 @@ impl SmokeStore {
         .await?;
         rows.into_iter().map(row_to_message).collect()
     }
-}
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    pub async fn list_dynamic(&self) -> Result<Vec<DynamicSmokeRow>, SmokeStoreError> {
+        let rows = sqlx::query(
+            "SELECT config_json, created_at, disabled, name, updated_at \
+             FROM dynamic_smoke_tests ORDER BY name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_dynamic_smoke).collect()
+    }
+
+    pub async fn put_active_dynamic(
+        &self,
+        name: &str,
+        config: &SmokeTestConfig,
+    ) -> Result<(), SmokeStoreError> {
+        let now = now_secs() as i64;
+        let json = serde_json::to_string(config)
+            .map_err(|e| SmokeStoreError::RowDecode(format!("serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO dynamic_smoke_tests (config_json, created_at, disabled, name, updated_at) \
+             VALUES (?, ?, 0, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET \
+                 config_json = excluded.config_json, \
+                 disabled    = 0, \
+                 updated_at  = excluded.updated_at",
+        )
+        .bind(json)
+        .bind(now)
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), SmokeStoreError> {
+        let now = now_secs() as i64;
+        sqlx::query(
+            "INSERT INTO dynamic_smoke_tests (config_json, created_at, disabled, name, updated_at) \
+             VALUES (NULL, ?, 1, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET \
+                 config_json = NULL, \
+                 disabled    = 1, \
+                 updated_at  = excluded.updated_at",
+        )
+        .bind(now)
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, SmokeStoreError> {
+        let result = sqlx::query("DELETE FROM dynamic_smoke_tests WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn rebuild_smoke(
+        &self,
+        list: &SmokeList,
+        yaml: &[SmokeTestConfig],
+    ) -> Result<MergeReport, SmokeStoreError> {
+        let db = self.list_dynamic().await?;
+        let (merged, report) = merge(yaml, &db);
+        let configs: Vec<SmokeTestConfig> = merged.into_iter().map(|m| m.config).collect();
+        list.store(Arc::new(configs));
+        Ok(report)
+    }
 }
 
 fn row_to_run(row: SqliteRow) -> Result<StoredRun, SmokeStoreError> {
@@ -252,6 +347,28 @@ fn row_to_message(row: SqliteRow) -> Result<StoredMessage, SmokeStoreError> {
 
 fn parse_uuid(s: &str, label: &str) -> Result<Uuid, SmokeStoreError> {
     Uuid::parse_str(s).map_err(|e| SmokeStoreError::RowDecode(format!("invalid {label}: {e}")))
+}
+
+fn row_to_dynamic_smoke(row: SqliteRow) -> Result<DynamicSmokeRow, SmokeStoreError> {
+    let config_json: Option<String> = row.try_get("config_json")?;
+    let created_at: i64 = row.try_get("created_at")?;
+    let disabled: i64 = row.try_get("disabled")?;
+    let name: String = row.try_get("name")?;
+    let updated_at: i64 = row.try_get("updated_at")?;
+    let config = match config_json {
+        Some(s) => Some(
+            serde_json::from_str::<SmokeTestConfig>(&s)
+                .map_err(|e| SmokeStoreError::RowDecode(format!("config_json: {e}")))?,
+        ),
+        None => None,
+    };
+    Ok(DynamicSmokeRow {
+        config,
+        created_at,
+        disabled: disabled != 0,
+        name,
+        updated_at,
+    })
 }
 
 #[derive(Debug, Error)]

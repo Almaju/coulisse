@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 //! `coulisse start` — run the server, detached by default.
 //!
 //! Detach is implemented by self-respawn: spawn `coulisse start

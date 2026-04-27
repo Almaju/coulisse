@@ -1,8 +1,19 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use coulisse_core::{MessageId, UserId};
+use coulisse_core::{MessageId, UserId, now_secs};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// One scored exchange — the user/assistant pair plus the identifiers needed
+/// to attribute and persist scores. Kept as a single value so `spawn_score`
+/// and `run_score` don't drift into 8-arg signatures whenever a new field
+/// (turn id, language, etc.) needs to ride along.
+#[derive(Clone, Debug)]
+pub struct ScoredExchange {
+    pub agent_name: String,
+    pub assistant_message: String,
+    pub message_id: MessageId,
+    pub user_id: UserId,
+    pub user_message: String,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -66,11 +77,4 @@ impl Score {
             user_id,
         }
     }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }

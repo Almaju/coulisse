@@ -92,11 +92,13 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
                 judges,
                 Arc::clone(&state.judge_store),
                 Arc::clone(&state.agents),
-                user_id,
-                shadow_message_id,
-                agent_name,
-                user_message,
-                completion.text,
+                judges::ScoredExchange {
+                    agent_name,
+                    assistant_message: completion.text,
+                    message_id: shadow_message_id,
+                    user_id,
+                    user_message,
+                },
             );
         }
         Err(err) => {

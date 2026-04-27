@@ -2,11 +2,11 @@
 //! render these directly; they're a thin layer that pre-formats anything
 //! askama can't easily do (relative timestamps, role classes).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use coulisse_core::now_secs;
 
 use crate::{ConversationSummary, Memory, MemoryKind, Role, StoredMessage};
 
-pub struct AgentConversationRow {
+pub(super) struct AgentConversationRow {
     pub last_activity_at: String,
     pub message_count: u32,
     pub user_id: String,
@@ -30,7 +30,7 @@ impl From<ConversationSummary> for AgentConversationRow {
     }
 }
 
-pub struct ConversationRow {
+pub(super) struct ConversationRow {
     pub duration: String,
     pub last_activity_at: String,
     pub message_count: u32,
@@ -61,18 +61,18 @@ fn format_duration(first: u64, last: u64) -> String {
     if days > 0 {
         let remaining_hours = hours % 24;
         if remaining_hours > 0 {
-            return format!("{}d {}h", days, remaining_hours);
+            return format!("{days}d {remaining_hours}h");
         }
-        return format!("{}d", days);
+        return format!("{days}d");
     }
     if hours > 0 {
         let remaining_minutes = minutes % 60;
         if remaining_minutes > 0 {
-            return format!("{}h {}m", hours, remaining_minutes);
+            return format!("{hours}h {remaining_minutes}m");
         }
-        return format!("{}h", hours);
+        return format!("{hours}h");
     }
-    format!("{}m", minutes)
+    format!("{minutes}m")
 }
 
 fn format_tokens(n: u64) -> String {
@@ -90,7 +90,7 @@ fn format_tokens(n: u64) -> String {
     result
 }
 
-pub struct MessageRow {
+pub(super) struct MessageRow {
     pub content: String,
     pub created_at: String,
     pub id: String,
@@ -100,7 +100,7 @@ pub struct MessageRow {
     pub token_count: u32,
 }
 
-pub fn message_rows(messages: Vec<StoredMessage>) -> Vec<MessageRow> {
+pub(super) fn message_rows(messages: Vec<StoredMessage>) -> Vec<MessageRow> {
     messages
         .into_iter()
         .map(|m| {
@@ -122,7 +122,7 @@ pub fn message_rows(messages: Vec<StoredMessage>) -> Vec<MessageRow> {
         .collect()
 }
 
-pub struct MemoryRow {
+pub(super) struct MemoryRow {
     pub content: String,
     pub created_at: String,
     pub kind_label: &'static str,
@@ -145,11 +145,7 @@ impl From<Memory> for MemoryRow {
 /// Format a unix timestamp (seconds) as a coarse "5m ago" / "2h ago"
 /// string. Server-side because the page is reloaded on navigation.
 fn relative_time(seconds: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(seconds);
-    let diff = now.saturating_sub(seconds);
+    let diff = now_secs().saturating_sub(seconds);
     if diff < 60 {
         return "just now".into();
     }

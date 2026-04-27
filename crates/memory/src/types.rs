@@ -1,7 +1,6 @@
 use std::ops::{Add, AddAssign};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use coulisse_core::{Message, MessageId, Role, UserId};
+use coulisse_core::{Message, MessageId, Role, UserId, now_secs};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -96,6 +95,31 @@ pub enum MemoryKind {
     Preference,
 }
 
+impl MemoryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Preference => "preference",
+        }
+    }
+}
+
+impl std::str::FromStr for MemoryKind {
+    type Err = UnknownMemoryKind;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "fact" => Ok(Self::Fact),
+            "preference" => Ok(Self::Preference),
+            other => Err(UnknownMemoryKind(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown memory kind '{0}'")]
+pub struct UnknownMemoryKind(pub String);
+
 #[derive(Clone, Debug)]
 pub struct Memory {
     pub content: String,
@@ -117,11 +141,4 @@ impl Memory {
             content,
         }
     }
-}
-
-pub(crate) fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }

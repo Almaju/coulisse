@@ -38,12 +38,13 @@ telemetry.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
 tracing.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 coulisse-core.workspace = true
 http-body-util = "0.1"
-sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

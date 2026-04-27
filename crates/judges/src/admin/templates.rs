@@ -6,19 +6,19 @@ use super::views::{
 
 #[derive(Template)]
 #[template(path = "scores.html")]
-pub struct ScoresFragment {
+pub(super) struct ScoresFragment {
     pub scores: ScoresPanel,
 }
 
 #[derive(Template)]
 #[template(path = "scores_means.html")]
-pub struct ScoresMeansFragment {
+pub(super) struct ScoresMeansFragment {
     pub rows: Vec<ScoreRowMean>,
 }
 
 #[derive(Template)]
 #[template(path = "judge_detail.html")]
-pub struct JudgeDetailPage {
+pub(super) struct JudgeDetailPage {
     pub judge: JudgeDetailRow,
     pub matrix: AgentCriterionMatrix,
     pub recent_scores: Vec<ScoreRow>,
@@ -26,13 +26,13 @@ pub struct JudgeDetailPage {
 
 #[derive(Template)]
 #[template(path = "judges.html")]
-pub struct JudgesPage {
+pub(super) struct JudgesPage {
     pub judges: Vec<JudgeListRow>,
 }
 
 #[derive(Template)]
 #[template(path = "judge_edit.html")]
-pub struct JudgeEditPage {
+pub(super) struct JudgeEditPage {
     pub action: String,
     pub is_new: bool,
     pub method: &'static str,

@@ -4,13 +4,13 @@ use super::views::ExperimentRow;
 
 #[derive(Template)]
 #[template(path = "experiments.html")]
-pub struct ExperimentsPage {
+pub(super) struct ExperimentsPage {
     pub experiments: Vec<ExperimentRow>,
 }
 
 #[derive(Template)]
 #[template(path = "experiment_edit.html")]
-pub struct ExperimentEditPage {
+pub(super) struct ExperimentEditPage {
     pub action: String,
     pub is_new: bool,
     pub method: &'static str,

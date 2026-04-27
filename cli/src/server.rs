@@ -234,11 +234,13 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         judges,
         Arc::clone(&state.judge_store),
         Arc::clone(&state.agents),
-        prepared.user_id,
-        assistant_message_id,
-        agent_name.clone(),
-        prepared.user_message,
-        completion.text.clone(),
+        judges::ScoredExchange {
+            agent_name: agent_name.clone(),
+            assistant_message: completion.text.clone(),
+            message_id: assistant_message_id,
+            user_id: prepared.user_id,
+            user_message: prepared.user_message,
+        },
     );
 
     let usage = proxy::Usage::new(

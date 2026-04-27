@@ -31,12 +31,9 @@ pub struct Options {
 
 pub fn run(config_path: &Path, opts: Options) -> Result<(), StopError> {
     let paths = StatePaths::for_config(config_path);
-    let pid = match read_pid(&paths.pid) {
-        Some(pid) => pid,
-        None => {
-            println!("not running");
-            return Ok(());
-        }
+    let Some(pid) = read_pid(&paths.pid) else {
+        println!("not running");
+        return Ok(());
     };
     if !pid_alive(pid) {
         let _ = fs::remove_file(&paths.pid);

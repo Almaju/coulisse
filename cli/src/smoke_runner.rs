@@ -148,11 +148,13 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
             judges,
             Arc::clone(&state.judge_store),
             Arc::clone(&state.agents),
-            synthetic_user,
-            assistant_message_id,
-            resolved.agent.clone(),
-            persona_text.clone(),
-            completion.text.clone(),
+            judges::ScoredExchange {
+                agent_name: resolved.agent.clone(),
+                assistant_message: completion.text.clone(),
+                message_id: assistant_message_id,
+                user_id: synthetic_user,
+                user_message: persona_text.clone(),
+            },
         );
 
         if matches_marker(&completion.text, config.stop_marker.as_deref()) {
@@ -190,7 +192,7 @@ async fn resolve_target<P: Agents + OneShotPrompt>(
         .resolve_with_scores(target, user_id, &bandit_scores);
     ResolvedTarget {
         agent: resolved.agent.into_owned(),
-        experiment: resolved.experiment.map(|s| s.to_owned()),
+        experiment: resolved.experiment.map(std::borrow::ToOwned::to_owned),
     }
 }
 

@@ -9,6 +9,19 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ## [Unreleased]
 
+### Added
+
+- Runtime overrides for agents, judges, experiments, and smoke tests. Each
+  can now be created, edited, and disabled via the admin UI or HTTP without
+  modifying `coulisse.yaml`. Runtime entries live in new `dynamic_agents`,
+  `dynamic_judges`, `dynamic_experiments`, and `dynamic_smoke_tests` SQLite
+  tables; resolution checks the database first and falls back to YAML, with
+  tombstone rows able to disable a YAML-declared name. Admin list pages
+  label each row as `yaml`, `dynamic`, `override`, or `tombstoned`, and
+  expose a "Reset to YAML" action that drops the database row so the YAML
+  version reasserts. The YAML file is never written by the server through
+  these paths.
+
 ### Changed
 
 - Database migrations replaced the prior two-file `schema.sql` + `migrate.sql`
@@ -18,6 +31,15 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
   reach the latest. Versions are stored in a shared
   `coulisse_schema_versions` table, with arbitrary Rust available per upgrade
   step.
+- `agents` schema bumped to 0.1.0 (initial: adds the `dynamic_agents` table).
+- `judges` schema bumped to 0.2.0 (adds the `dynamic_judges` table).
+- `experiments` becomes a persistent crate at schema version 0.1.0 (initial:
+  adds the `dynamic_experiments` table).
+- `smoke` schema bumped to 0.2.0 (adds the `dynamic_smoke_tests` table).
+- Admin endpoints for `/admin/judges`, `/admin/experiments`, and
+  `/admin/smoke` no longer write to `coulisse.yaml` — they write to the
+  database. Each gains a `POST /admin/<crate>/{name}/reset` route that
+  drops the database row.
 
 ## [0.1.0] - 2026-04-26
 

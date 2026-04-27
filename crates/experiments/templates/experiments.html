@@ -2,7 +2,7 @@
   <div class="flex items-start justify-between gap-4">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Experiments</h1>
-      <p class="mt-1 text-sm text-slate-400">A/B groups declared in <code class="font-mono text-xs">coulisse.yaml</code>. Clients address them as <code class="font-mono text-xs">model</code>; each request resolves to one of the variant agents. Edits rewrite the file; routing tables rebuild on restart.</p>
+      <p class="mt-1 text-sm text-slate-400">A/B groups: <code class="font-mono text-xs">coulisse.yaml</code> entries plus runtime overrides in the database. Clients address them as <code class="font-mono text-xs">model</code>; each request resolves to one of the variant agents. Edits via this UI write to the database; routing tables rebuild on restart.</p>
     </div>
     <a
       href="/admin/experiments/new"
@@ -15,23 +15,61 @@
     </div>
   {% else %}
     {% for exp in experiments %}
+    {% let label = exp.source.as_str() %}
     <div id="{{ exp.name }}" class="rounded-lg border border-slate-800 bg-slate-900">
       <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
         <div class="flex items-center gap-3">
-          <h2 class="font-mono text-sm font-semibold text-slate-100">{{ exp.name }}</h2>
-          <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-300">{{ exp.strategy }}</span>
-          {% if exp.sticky_by_user %}
-            <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-400">sticky-by-user</span>
+          <h2 class="font-mono text-sm font-semibold {% if exp.tombstoned %}text-slate-500 line-through{% else %}text-slate-100{% endif %}">{{ exp.name }}</h2>
+          {% if label == "yaml" %}
+            <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
+          {% else if label == "override" %}
+            <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
+          {% else if label == "dynamic" %}
+            <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
+          {% else %}
+            <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
+          {% endif %}
+          {% if !exp.tombstoned %}
+            <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-300">{{ exp.strategy }}</span>
+            {% if exp.sticky_by_user %}
+              <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-400">sticky-by-user</span>
+            {% endif %}
           {% endif %}
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2">
+          {% if !exp.tombstoned %}
           <span class="text-xs text-slate-500">{{ exp.variants.len() }} variant{% if exp.variants.len() != 1 %}s{% endif %}</span>
           <a
             href="/admin/experiments/{{ exp.name }}/edit"
             class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
           >Edit</a>
+          {% endif %}
+          {% if label == "override" %}
+          <button
+            hx-post="/admin/experiments/{{ exp.name }}/reset"
+            class="rounded-md border border-amber-800 bg-amber-950/60 px-2 py-1 text-xs font-medium text-amber-200 hover:bg-amber-900/40"
+          >Reset to YAML</button>
+          {% endif %}
+          {% if label == "tombstoned" %}
+          <button
+            hx-post="/admin/experiments/{{ exp.name }}/reset"
+            class="rounded-md border border-emerald-800 bg-emerald-950/60 px-2 py-1 text-xs font-medium text-emerald-200 hover:bg-emerald-900/40"
+          >{% if exp.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
+          {% else %}
+          <button
+            hx-delete="/admin/experiments/{{ exp.name }}"
+            hx-confirm="{% if exp.yaml_backed %}Tombstone this experiment?{% else %}Delete permanently?{% endif %}"
+            class="rounded-md border border-rose-800 bg-rose-950/60 px-2 py-1 text-xs font-medium text-rose-200 hover:bg-rose-900/40"
+          >{% if exp.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+          {% endif %}
         </div>
       </div>
+      {% if exp.tombstoned %}
+      <div class="border-b border-slate-800 px-4 py-3 text-sm text-rose-300">
+        {% if exp.yaml_backed %}Declared in YAML but tombstoned at runtime.{% else %}Tombstoned. No YAML backing.{% endif %}
+      </div>
+      {% endif %}
+      {% if !exp.tombstoned %}
       {% match exp.purpose %}
         {% when Some with (text) %}
         <div class="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">{{ text }}</div>
@@ -84,6 +122,7 @@
           </div>
         {% when None %}
       {% endmatch %}
+      {% endif %}
     </div>
     {% endfor %}
   {% endif %}

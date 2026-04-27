@@ -1,16 +1,36 @@
-use crate::config::SmokeTestConfig;
+use crate::merge::{AdminSmoke, AdminSource};
 use crate::types::{RunStatus, StoredMessage, StoredRun, TurnRole};
 
-pub struct SmokeTestRow {
+pub(super) struct SourceLabel(pub &'static str);
+
+impl SourceLabel {
+    pub(super) fn from_admin(source: AdminSource) -> Self {
+        Self(match source {
+            AdminSource::Dynamic => "dynamic",
+            AdminSource::Override => "override",
+            AdminSource::Tombstoned => "tombstoned",
+            AdminSource::Yaml => "yaml",
+        })
+    }
+
+    pub(super) fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
+
+pub(super) struct SmokeTestRow {
     pub last_run: Option<RunRow>,
     pub max_turns: u32,
     pub name: String,
     pub persona_model: String,
     pub repetitions: u32,
+    pub source: SourceLabel,
     pub target: String,
+    pub tombstoned: bool,
+    pub yaml_backed: bool,
 }
 
-pub struct RunRow {
+pub(super) struct RunRow {
     pub agent_resolved: String,
     pub experiment: Option<String>,
     pub id: String,
@@ -20,14 +40,14 @@ pub struct RunRow {
     pub total_turns: u32,
 }
 
-pub struct TurnView {
+pub(super) struct TurnView {
     pub content: String,
     pub is_persona: bool,
     pub label: &'static str,
     pub turn_index: u32,
 }
 
-pub struct RunDetailView {
+pub(super) struct RunDetailView {
     pub agent_resolved: String,
     pub error: Option<String>,
     pub experiment: Option<String>,
@@ -42,20 +62,37 @@ pub struct RunDetailView {
 }
 
 impl SmokeTestRow {
-    pub fn build(config: &SmokeTestConfig, last_run: Option<&StoredRun>) -> Self {
-        Self {
-            last_run: last_run.map(RunRow::build),
-            max_turns: config.max_turns,
-            name: config.name.clone(),
-            persona_model: format!("{} / {}", config.persona.provider, config.persona.model),
-            repetitions: config.repetitions,
-            target: config.target.clone(),
+    pub(super) fn from_admin(row: &AdminSmoke, last_run: Option<&StoredRun>) -> Self {
+        let label = SourceLabel::from_admin(row.source);
+        match &row.config {
+            Some(cfg) => Self {
+                last_run: last_run.map(RunRow::build),
+                max_turns: cfg.max_turns,
+                name: cfg.name.clone(),
+                persona_model: format!("{} / {}", cfg.persona.provider, cfg.persona.model),
+                repetitions: cfg.repetitions,
+                source: label,
+                target: cfg.target.clone(),
+                tombstoned: false,
+                yaml_backed: row.yaml_backed,
+            },
+            None => Self {
+                last_run: None,
+                max_turns: 0,
+                name: row.name.clone(),
+                persona_model: String::new(),
+                repetitions: 0,
+                source: label,
+                target: String::new(),
+                tombstoned: true,
+                yaml_backed: row.yaml_backed,
+            },
         }
     }
 }
 
 impl RunRow {
-    pub fn build(run: &StoredRun) -> Self {
+    pub(super) fn build(run: &StoredRun) -> Self {
         let (status_class, status) = status_pill(run.status);
         Self {
             agent_resolved: run.agent_resolved.clone().unwrap_or_else(|| "—".into()),
@@ -70,7 +107,7 @@ impl RunRow {
 }
 
 impl RunDetailView {
-    pub fn build(run: &StoredRun, messages: Vec<StoredMessage>) -> Self {
+    pub(super) fn build(run: &StoredRun, messages: Vec<StoredMessage>) -> Self {
         let (status_class, status) = status_pill(run.status);
         let mut turns: Vec<TurnView> = messages
             .into_iter()

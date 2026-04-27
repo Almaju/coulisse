@@ -3,16 +3,63 @@
     <span>←</span>
     <span>Back to agents</span>
   </a>
+  {% let label = agent.source.as_str() %}
   <div class="flex items-start justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">{{ agent.name }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-semibold tracking-tight {% if label == "tombstoned" %}text-slate-400 line-through{% else %}text-slate-100{% endif %}">{{ agent.name }}</h1>
+        {% if label == "yaml" %}
+          <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
+        {% else if label == "override" %}
+          <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
+        {% else if label == "dynamic" %}
+          <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
+        {% else %}
+          <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
+        {% endif %}
+      </div>
+      {% if label != "tombstoned" %}
       <p class="mt-1 text-sm text-slate-400">{{ agent.provider }} / {{ agent.model }}</p>
+      {% endif %}
     </div>
-    <a
-      href="/admin/agents/{{ agent.name }}/edit"
-      class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
-    >Edit</a>
+    <div class="flex items-center gap-2">
+      {% if label != "tombstoned" %}
+      <a
+        href="/admin/agents/{{ agent.name }}/edit"
+        class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
+      >Edit</a>
+      {% endif %}
+      {% if label == "override" %}
+      <button
+        hx-post="/admin/agents/{{ agent.name }}/reset"
+        class="rounded-md border border-amber-800 bg-amber-950/60 px-3 py-1.5 text-sm font-medium text-amber-200 hover:bg-amber-900/40"
+      >Reset to YAML</button>
+      {% endif %}
+      {% if label == "tombstoned" %}
+      <button
+        hx-post="/admin/agents/{{ agent.name }}/reset"
+        class="rounded-md border border-emerald-800 bg-emerald-950/60 px-3 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-900/40"
+      >{% if agent.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
+      {% else %}
+      <button
+        hx-delete="/admin/agents/{{ agent.name }}"
+        hx-confirm="{% if agent.yaml_backed %}Tombstone this agent? It will be hidden until you re-enable it.{% else %}Delete this agent permanently?{% endif %}"
+        class="rounded-md border border-rose-800 bg-rose-950/60 px-3 py-1.5 text-sm font-medium text-rose-200 hover:bg-rose-900/40"
+      >{% if agent.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+      {% endif %}
+    </div>
   </div>
+  {% if label == "tombstoned" %}
+  <div class="rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3">
+    <p class="text-sm text-rose-200">
+      {% if agent.yaml_backed %}
+        This agent is declared in YAML but tombstoned at runtime. Re-enable to restore the YAML version.
+      {% else %}
+        This agent is tombstoned and has no YAML backing. Remove the row to clean it up.
+      {% endif %}
+    </p>
+  </div>
+  {% else %}
   <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
     <div class="space-y-6 lg:col-span-2">
       {% match agent.purpose %}
@@ -104,4 +151,5 @@
       </div>
     </div>
   </div>
+  {% endif %}
 </div>

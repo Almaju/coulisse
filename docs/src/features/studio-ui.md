@@ -14,28 +14,31 @@ Point a browser at `http://localhost:8421/admin/` while the server is running.
 - See the LLM-as-judge scores for that user, including mean score per `(judge, criterion)` and the most recent individual scores with reasoning.
 - Browse configured experiments at `/admin/experiments` — strategy, sticky-by-user flag, per-variant weights, and bandit-strategy mean scores live-loaded from judges.
 - Run **smoke tests** at `/admin/smoke` — a synthetic-user persona drives a real conversation against any agent or experiment, scores fan out through the same judge pipeline, and the run viewer shows the full transcript with persona/assistant turns side by side. Useful for iterating on agent prompts without writing test scaffolding.
-- **Edit agents** at `/admin/agents/{name}/edit` — the form is a YAML textarea over the same `AgentConfig` shape used in `coulisse.yaml`. Save rewrites `coulisse.yaml` atomically, runs the validator, and hot-reloads the in-memory state. Add new agents at `/admin/agents/new`; delete from the edit page.
+- **Edit, add, or disable agents, judges, experiments, and smoke tests** at `/admin/agents`, `/admin/judges`, `/admin/experiments`, and `/admin/smoke`. Each form is a YAML textarea over the same config shape used in `coulisse.yaml`. Edits and creations write to the database, never to `coulisse.yaml`; runtime resolution checks the database first, then falls back to YAML. List views label each row as `yaml`, `dynamic` (database-only), `override` (database shadows YAML), or `tombstoned` (disabled). Override rows expose a "Reset to YAML" action that drops the database row so the YAML version reasserts. See [Agents → Runtime overrides](../configuration/agents.md#runtime-overrides) for the full semantics — judges, experiments, and smoke tests follow the same model.
 
 ## Editing config: admin UI = API
 
 Every admin route is content-negotiated. The same URL serves an HTML page in a browser, an HTML fragment to htmx, and JSON to a script — whichever the client's `Accept`/`HX-Request` headers ask for. The UI is a thin representation of the API; nothing the UI can do is unavailable to a `curl` call.
 
 ```bash
-# List agents as JSON
+# List agents as JSON (effective merged view: database overrides + YAML)
 curl -H 'Accept: application/json' http://localhost:8421/admin/agents
 
-# Update an agent (any of: JSON body, YAML body, or form encoding work)
+# Update an agent (writes to the database, not to coulisse.yaml)
 curl -X PUT http://localhost:8421/admin/agents/bob \
      -H 'Content-Type: application/yaml' \
      --data-binary $'name: bob\nprovider: openai\nmodel: gpt-4o\n'
 
-# Replace the whole config file in one shot
+# Reset an override or tombstone — drops the database row, YAML reasserts
+curl -X POST http://localhost:8421/admin/agents/bob/reset
+
+# Replace the whole config file in one shot (this writes to coulisse.yaml)
 curl -X PUT http://localhost:8421/admin/config \
      -H 'Content-Type: application/yaml' \
      --data-binary @coulisse.yaml
 ```
 
-Any successful write ends in the same place: a validated YAML file, atomically replaced on disk, with the new state hot-reloaded into the running process. **`coulisse.yaml` is the source of truth** — admin saves are not stored separately, they edit the file you committed to git.
+Agent writes through `/admin/agents` go to the database, never to `coulisse.yaml`. Other sections (`/admin/config`, providers, judges, experiments, smoke tests, etc.) still write to YAML. The two write paths are independent: editing an agent in the database has no effect on the file you committed to git.
 
 ## File watcher: hand-edits hot-reload
 

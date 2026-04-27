@@ -5,15 +5,13 @@ use agents::{Agents, CompletionStream, StreamEvent, Usage as ProviderUsage};
 use async_stream::stream;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
-use coulisse_core::OneShotPrompt;
+use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
 use judges::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
-use proxy::{
-    ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, now_secs, response_id,
-};
+use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
 
 use crate::server::{AppState, judges_for_agent, record_llm_call};
 
@@ -62,7 +60,11 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         user_message,
     } = cx;
     let created = now_secs();
-    let id = response_id(created);
+    let meta = StreamMeta {
+        created,
+        id: response_id(created),
+        model,
+    };
     let accumulated: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let final_usage: Arc<Mutex<ProviderUsage>> = Arc::new(Mutex::new(ProviderUsage::default()));
 
@@ -84,7 +86,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         // normal completion or client disconnect.
         let _flush = flush;
 
-        yield Ok::<_, Infallible>(role_chunk(&id, &model, created));
+        yield Ok::<_, Infallible>(meta.role_event());
 
         let mut inner = inner;
         let mut errored = false;
@@ -101,7 +103,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                 Ok(StreamEvent::Delta(text)) => {
                     if !text.is_empty() {
                         accumulated.lock().unwrap().push_str(&text);
-                        yield Ok(content_chunk(&id, &model, created, &text));
+                        yield Ok(meta.content_event(&text));
                     }
                 }
                 Ok(StreamEvent::Done { usage }) => {
@@ -109,7 +111,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                 }
                 Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
                 Err(err) => {
-                    yield Ok(error_chunk(&id, &model, created, &err.to_string()));
+                    yield Ok(meta.error_event(&err.to_string()));
                     errored = true;
                     break;
                 }
@@ -123,7 +125,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
             } else {
                 None
             };
-            yield Ok(stop_chunk(&id, &model, created, usage));
+            yield Ok(meta.stop_event(usage));
         }
         yield Ok(Event::default().data("[DONE]"));
     };
@@ -199,11 +201,13 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                     judges,
                     Arc::clone(&state.judge_store),
                     Arc::clone(&state.agents),
-                    user_id,
-                    assistant_message_id,
-                    agent_name.clone(),
-                    user_message,
-                    accumulated,
+                    judges::ScoredExchange {
+                        agent_name: agent_name.clone(),
+                        assistant_message: accumulated,
+                        message_id: assistant_message_id,
+                        user_id,
+                        user_message,
+                    },
                 );
             }
             .instrument(turn_span),
@@ -215,76 +219,84 @@ fn warn_memory_append_failed(role: &str, err: memory::MemoryError) {
     tracing::warn!(role, error = %err, "memory append failed after streaming response");
 }
 
-fn chunk_event(chunk: &ChatCompletionChunk) -> Event {
-    Event::default().json_data(chunk).expect("chunk serializes")
+/// Per-response SSE metadata. `id`, `model`, and `created` are fixed across
+/// every chunk we emit for one streaming response, so they ride on the
+/// builder rather than every chunk-fn signature.
+struct StreamMeta {
+    created: u64,
+    id: String,
+    model: String,
 }
 
-fn role_chunk(id: &str, model: &str, created: u64) -> Event {
-    chunk_event(&ChatCompletionChunk {
-        choices: vec![ChunkChoice {
-            delta: ChunkDelta {
+impl StreamMeta {
+    fn chunk(
+        &self,
+        delta: ChunkDelta,
+        finish_reason: Option<FinishReason>,
+        usage: Option<Usage>,
+    ) -> Event {
+        Event::default()
+            .json_data(&ChatCompletionChunk {
+                choices: vec![ChunkChoice {
+                    delta,
+                    finish_reason,
+                    index: 0,
+                }],
+                created: self.created,
+                id: self.id.clone(),
+                model: self.model.clone(),
+                object: "chat.completion.chunk".into(),
+                usage,
+            })
+            .expect("chunk serializes")
+    }
+
+    fn role_event(&self) -> Event {
+        self.chunk(
+            ChunkDelta {
                 content: None,
                 role: Some(Role::Assistant),
             },
-            finish_reason: None,
-            index: 0,
-        }],
-        created,
-        id: id.to_string(),
-        model: model.to_string(),
-        object: "chat.completion.chunk".into(),
-        usage: None,
-    })
-}
+            None,
+            None,
+        )
+    }
 
-fn content_chunk(id: &str, model: &str, created: u64, text: &str) -> Event {
-    chunk_event(&ChatCompletionChunk {
-        choices: vec![ChunkChoice {
-            delta: ChunkDelta {
+    fn content_event(&self, text: &str) -> Event {
+        self.chunk(
+            ChunkDelta {
                 content: Some(text.to_string()),
                 role: None,
             },
-            finish_reason: None,
-            index: 0,
-        }],
-        created,
-        id: id.to_string(),
-        model: model.to_string(),
-        object: "chat.completion.chunk".into(),
-        usage: None,
-    })
-}
+            None,
+            None,
+        )
+    }
 
-fn stop_chunk(id: &str, model: &str, created: u64, usage: Option<Usage>) -> Event {
-    chunk_event(&ChatCompletionChunk {
-        choices: vec![ChunkChoice {
-            delta: ChunkDelta::default(),
-            finish_reason: Some(FinishReason::Stop),
-            index: 0,
-        }],
-        created,
-        id: id.to_string(),
-        model: model.to_string(),
-        object: "chat.completion.chunk".into(),
-        usage,
-    })
-}
+    fn stop_event(&self, usage: Option<Usage>) -> Event {
+        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
+    }
 
-fn error_chunk(id: &str, model: &str, created: u64, message: &str) -> Event {
-    Event::default()
-        .json_data(serde_json::json!({
-            "choices": [{
-                "delta": {},
-                "finish_reason": "stop",
-                "index": 0,
-            }],
-            "created": created,
-            "error": { "message": message, "type": "upstream_error" },
-            "id": id,
-            "model": model,
-            "object": "chat.completion.chunk",
-        }))
-        .expect("error chunk serializes")
+    /// Non-standard error envelope: OpenAI's stream chunks have no `error`
+    /// field, but clients commonly expect one when the upstream provider
+    /// fails mid-stream. Built as raw JSON so the schema doesn't have to
+    /// carry a field that's absent on success.
+    fn error_event(&self, message: &str) -> Event {
+        Event::default()
+            .json_data(serde_json::json!({
+                "choices": [{
+                    "delta": {},
+                    "finish_reason": "stop",
+                    "index": 0,
+                }],
+                "created": self.created,
+                "error": { "message": message, "type": "upstream_error" },
+                "id": self.id,
+                "model": self.model,
+                "object": "chat.completion.chunk",
+            }))
+            .expect("error chunk serializes")
+    }
 }
 
 #[cfg(test)]

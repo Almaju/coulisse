@@ -2,7 +2,7 @@
   <div class="flex items-start justify-between gap-4">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Agents</h1>
-      <p class="mt-1 text-sm text-slate-400">All agents configured in <code class="font-mono text-xs">coulisse.yaml</code>. Edits write back to the file and hot-reload.</p>
+      <p class="mt-1 text-sm text-slate-400">Effective agent set: <code class="font-mono text-xs">coulisse.yaml</code> entries plus runtime overrides stored in the database. Edits via this UI write to the database; the YAML file is never modified.</p>
     </div>
     <a
       href="/admin/agents/new"
@@ -11,7 +11,7 @@
   </div>
   <div class="rounded-lg border border-slate-800 bg-slate-900">
     <div class="border-b border-slate-800 px-4 py-3">
-      <h2 class="text-sm font-semibold text-slate-100">{{ agents.len() }} agent{% if agents.len() != 1 %}s{% endif %}</h2>
+      <h2 class="text-sm font-semibold text-slate-100">{{ agents.len() }} row{% if agents.len() != 1 %}s{% endif %}</h2>
     </div>
     <div class="px-4 py-3">
       {% if agents.is_empty() %}
@@ -24,6 +24,7 @@
           <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th class="px-4 py-2 font-medium">Name</th>
+              <th class="px-4 py-2 font-medium">Source</th>
               <th class="px-4 py-2 font-medium">Provider / Model</th>
               <th class="px-4 py-2 text-right font-medium">Tools</th>
               <th class="px-4 py-2 text-right font-medium">Subagents</th>
@@ -38,17 +39,35 @@
               hx-push-url="true"
             >
               <td class="px-4 py-3">
-                <div class="font-mono text-sm text-slate-200">{{ a.name }}</div>
+                <div class="font-mono text-sm {% if a.tombstoned %}text-slate-500 line-through{% else %}text-slate-200{% endif %}">{{ a.name }}</div>
                 {% match a.purpose %}
                   {% when Some with (p) %}
                   <div class="mt-0.5 text-xs text-slate-500">{{ p }}</div>
                   {% when None %}
                 {% endmatch %}
               </td>
-              <td class="px-4 py-3 text-sm text-slate-300">{{ a.provider }} / {{ a.model }}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ a.tool_count }}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ a.subagent_count }}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ a.judge_count }}</td>
+              <td class="px-4 py-3">
+                {% let label = a.source.as_str() %}
+                {% if label == "yaml" %}
+                  <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
+                {% else if label == "override" %}
+                  <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
+                {% else if label == "dynamic" %}
+                  <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
+                {% else %}
+                  <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-sm text-slate-300">
+                {% if a.tombstoned %}
+                  <span class="text-xs italic text-slate-500">disabled</span>
+                {% else %}
+                  {{ a.provider }} / {{ a.model }}
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if a.tombstoned %}—{% else %}{{ a.tool_count }}{% endif %}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if a.tombstoned %}—{% else %}{{ a.subagent_count }}{% endif %}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if a.tombstoned %}—{% else %}{{ a.judge_count }}{% endif %}</td>
             </tr>
           {% endfor %}
           </tbody>

@@ -87,6 +87,21 @@ A short tool description shown to other agents when this one is listed under the
 purpose: Critique and rewrite a resume for a target role.
 ```
 
+## Runtime overrides
+
+Agents can also be created, edited, and disabled at runtime through the admin UI or HTTP without touching `coulisse.yaml`. These runtime entries live in the SQLite database alongside conversation memory and judge scores; the YAML file is never modified by the server.
+
+The resolution rule is simple: when a name is requested, the database is checked first. If a row exists there, it wins. Otherwise the YAML entry (if any) is used. A row can also be a tombstone — a marker that disables a YAML-declared name without removing it from the file.
+
+Each runtime row carries a label visible in the admin UI:
+
+- **yaml** — the agent comes from `coulisse.yaml`, no database row exists.
+- **dynamic** — created via the admin UI or HTTP; no YAML entry of this name.
+- **override** — both YAML and the database define this name; the database version is what runs.
+- **tombstoned** — a database row disables this name; the agent is hidden from clients even if YAML still declares it.
+
+A "Reset to YAML" action on an `override` deletes the database row, letting the YAML version reassert. The same action on a `tombstoned` row re-enables the agent. Database edits never modify the YAML file: if you want a change to survive a database wipe, edit the YAML.
+
 ## Several agents, one config
 
 Define as many agents as you want. A common pattern is having variants of the same model with different preambles:

@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use coulisse_core::UnknownRole;
 use coulisse_core::migrate::{self, SchemaMigrator};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -8,6 +9,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{SqliteConnection, SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
+use crate::types::UnknownMemoryKind;
 use crate::{
     BackendConfig, BundledEmbedder, ConfigError, Memory, MemoryConfig, MemoryError, MemoryId,
     MemoryKind, Message, MessageId, Role, StoredMessage, TokenCount, UserId,
@@ -196,7 +198,7 @@ impl<'a> UserMemory<'a> {
         .bind(&stored.content)
         .bind(stored.created_at as i64)
         .bind(stored.id.0.to_string())
-        .bind(role_as_str(stored.role))
+        .bind(stored.role.as_str())
         .bind(stored.token_count.0 as i64)
         .bind(self.user_id.0.to_string())
         .execute(&self.store.pool)
@@ -329,7 +331,7 @@ impl<'a> UserMemory<'a> {
         .bind(memory.embedding.len() as i64)
         .bind(self.store.config.embedder.model_id())
         .bind(memory.id.0.to_string())
-        .bind(kind_as_str(memory.kind))
+        .bind(memory.kind.as_str())
         .bind(self.user_id.0.to_string())
         .execute(&self.store.pool)
         .await?;
@@ -509,7 +511,9 @@ fn row_to_memory(row: SqliteRow) -> Result<Memory, MemoryError> {
         created_at: created_at as u64,
         embedding: bytes_to_vec(&embedding_blob)?,
         id: MemoryId(parse_uuid(&id, "memory id")?),
-        kind: parse_kind(&kind)?,
+        kind: kind
+            .parse()
+            .map_err(|e: UnknownMemoryKind| MemoryError::RowDecode(e.to_string()))?,
         user_id: UserId(parse_uuid(&user_id, "user id")?),
     })
 }
@@ -525,7 +529,9 @@ fn row_to_stored_message(row: SqliteRow) -> Result<StoredMessage, MemoryError> {
         content,
         created_at: created_at as u64,
         id: MessageId(parse_uuid(&id, "message id")?),
-        role: parse_role(&role)?,
+        role: role
+            .parse()
+            .map_err(|e: UnknownRole| MemoryError::RowDecode(e.to_string()))?,
         token_count: TokenCount(token_count as u32),
         user_id: UserId(parse_uuid(&user_id, "user id")?),
     })
@@ -533,40 +539,6 @@ fn row_to_stored_message(row: SqliteRow) -> Result<StoredMessage, MemoryError> {
 
 fn parse_uuid(s: &str, label: &str) -> Result<Uuid, MemoryError> {
     Uuid::parse_str(s).map_err(|e| MemoryError::RowDecode(format!("invalid {label}: {e}")))
-}
-
-fn parse_kind(s: &str) -> Result<MemoryKind, MemoryError> {
-    match s {
-        "fact" => Ok(MemoryKind::Fact),
-        "preference" => Ok(MemoryKind::Preference),
-        other => Err(MemoryError::RowDecode(format!(
-            "unknown memory kind '{other}'"
-        ))),
-    }
-}
-
-fn parse_role(s: &str) -> Result<Role, MemoryError> {
-    match s {
-        "assistant" => Ok(Role::Assistant),
-        "system" => Ok(Role::System),
-        "user" => Ok(Role::User),
-        other => Err(MemoryError::RowDecode(format!("unknown role '{other}'"))),
-    }
-}
-
-fn kind_as_str(kind: MemoryKind) -> &'static str {
-    match kind {
-        MemoryKind::Fact => "fact",
-        MemoryKind::Preference => "preference",
-    }
-}
-
-fn role_as_str(role: Role) -> &'static str {
-    match role {
-        Role::Assistant => "assistant",
-        Role::System => "system",
-        Role::User => "user",
-    }
 }
 
 fn clamp_u32(n: i64) -> u32 {

@@ -1,10 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::merge::{AdminJudge, AdminSource};
 use crate::store::AgentCriterionCell;
-use crate::{JudgeConfig, Score};
+use crate::{JudgeVolume, Score};
 
-pub struct ScoreRow {
+pub(super) struct SourceLabel(pub &'static str);
+
+impl SourceLabel {
+    pub(super) fn from_admin(source: AdminSource) -> Self {
+        Self(match source {
+            AdminSource::Dynamic => "dynamic",
+            AdminSource::Override => "override",
+            AdminSource::Tombstoned => "tombstoned",
+            AdminSource::Yaml => "yaml",
+        })
+    }
+
+    pub(super) fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
+
+pub(super) struct ScoreRow {
     pub created_at: String,
     pub criterion: String,
     pub judge_name: String,
@@ -12,20 +30,20 @@ pub struct ScoreRow {
     pub score: String,
 }
 
-pub struct CriterionAverageRow {
+pub(super) struct CriterionAverageRow {
     pub average: String,
     pub count: u32,
     pub criterion: String,
     pub judge_name: String,
 }
 
-pub struct ScoresPanel {
+pub(super) struct ScoresPanel {
     pub averages: Vec<CriterionAverageRow>,
     pub recent: Vec<ScoreRow>,
 }
 
 impl ScoresPanel {
-    pub fn build(scores: Vec<Score>) -> Self {
+    pub(super) fn build(scores: Vec<Score>) -> Self {
         let averages = average_by_criterion(&scores);
         // Most recent first, top 5 — same posture as the legacy SPA so
         // operators recognize the surface.
@@ -46,72 +64,125 @@ impl ScoresPanel {
     }
 }
 
-pub struct ScoreRowMean {
+pub(super) struct ScoreRowMean {
     pub agent: String,
     pub mean: String,
     pub samples: u32,
 }
 
-pub struct AgentCriterionMatrix {
+pub(super) struct AgentCriterionMatrix {
     pub criteria: Vec<String>,
     pub rows: Vec<MatrixRow>,
 }
 
-pub struct JudgeDetailRow {
+pub(super) struct JudgeDetailRow {
     pub model: String,
     pub name: String,
     pub provider: String,
     pub rubrics: Vec<RubricRow>,
     pub sampling_rate: String,
+    pub source: SourceLabel,
+    pub yaml_backed: bool,
 }
 
 impl JudgeDetailRow {
-    pub fn from_config(config: &JudgeConfig) -> Self {
-        let rubrics = config
-            .rubrics
-            .iter()
-            .map(|(name, desc)| RubricRow {
-                description: desc.clone(),
-                name: name.clone(),
-            })
-            .collect();
-        Self {
-            model: config.model.clone(),
-            name: config.name.clone(),
-            provider: config.provider.clone(),
-            rubrics,
-            sampling_rate: format!("{:.0}%", config.sampling_rate * 100.0),
+    pub(super) fn from_admin(row: &AdminJudge) -> Self {
+        let label = SourceLabel::from_admin(row.source);
+        match &row.config {
+            Some(cfg) => {
+                let rubrics = cfg
+                    .rubrics
+                    .iter()
+                    .map(|(name, desc)| RubricRow {
+                        description: desc.clone(),
+                        name: name.clone(),
+                    })
+                    .collect();
+                Self {
+                    model: cfg.model.clone(),
+                    name: cfg.name.clone(),
+                    provider: cfg.provider.clone(),
+                    rubrics,
+                    sampling_rate: format!("{:.0}%", cfg.sampling_rate * 100.0),
+                    source: label,
+                    yaml_backed: row.yaml_backed,
+                }
+            }
+            None => Self {
+                model: String::new(),
+                name: row.name.clone(),
+                provider: String::new(),
+                rubrics: Vec::new(),
+                sampling_rate: String::new(),
+                source: label,
+                yaml_backed: row.yaml_backed,
+            },
         }
     }
 }
 
-pub struct JudgeListRow {
+pub(super) struct JudgeListRow {
     pub criteria_count: usize,
     pub model: String,
     pub name: String,
     pub provider: String,
     pub sampling_rate: String,
     pub score_count_7d: u32,
+    pub source: SourceLabel,
+    pub tombstoned: bool,
 }
 
-pub struct MatrixCell {
+impl JudgeListRow {
+    pub(super) fn from_admin(row: &AdminJudge, volumes: &[JudgeVolume]) -> Self {
+        let label = SourceLabel::from_admin(row.source);
+        let score_count_7d = volumes
+            .iter()
+            .find(|v| v.judge_name == row.name)
+            .map(|v| v.count)
+            .unwrap_or(0);
+        match &row.config {
+            Some(cfg) => Self {
+                criteria_count: cfg.rubrics.len(),
+                model: cfg.model.clone(),
+                name: cfg.name.clone(),
+                provider: cfg.provider.clone(),
+                sampling_rate: format!("{:.0}%", cfg.sampling_rate * 100.0),
+                score_count_7d,
+                source: label,
+                tombstoned: false,
+            },
+            None => Self {
+                criteria_count: 0,
+                model: String::new(),
+                name: row.name.clone(),
+                provider: String::new(),
+                sampling_rate: String::new(),
+                score_count_7d,
+                source: label,
+                tombstoned: true,
+            },
+        }
+    }
+}
+
+pub(super) struct MatrixCell {
     pub color_class: &'static str,
     pub mean: String,
     pub samples: u32,
 }
 
-pub struct MatrixRow {
+pub(super) struct MatrixRow {
     pub agent_name: String,
     pub cells: Vec<MatrixCell>,
 }
 
-pub struct RubricRow {
+pub(super) struct RubricRow {
     pub description: String,
     pub name: String,
 }
 
 impl ScoreRow {
-    pub fn from_score(s: Score) -> Self {
+    pub(super) fn from_score(s: Score) -> Self {
         Self {
             created_at: relative_time(s.created_at),
             criterion: s.criterion,
@@ -122,7 +193,7 @@ impl ScoreRow {
     }
 }
 
-pub fn build_matrix(cells: Vec<AgentCriterionCell>) -> AgentCriterionMatrix {
+pub(super) fn build_matrix(cells: Vec<AgentCriterionCell>) -> AgentCriterionMatrix {
     let mut criteria_set = BTreeSet::new();
     let mut by_agent: BTreeMap<String, Vec<&AgentCriterionCell>> = BTreeMap::new();
     for cell in &cells {

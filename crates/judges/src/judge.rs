@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use coulisse_core::{MessageId, OneShotPrompt, UserId};
+use coulisse_core::OneShotPrompt;
 use serde::Deserialize;
 
 use crate::JudgeConfig;
 use crate::store::Judges;
-use crate::types::Score;
+use crate::types::{Score, ScoredExchange};
 
 /// Runtime judge built from YAML and validated at startup. Holds the
 /// prebuilt preamble so the hot path does zero string construction before
@@ -69,16 +69,11 @@ impl Judge {
 /// exchange and persists scores. Sampling decisions happen per-judge inside
 /// the task. Failures are logged and swallowed so the response path is
 /// never affected.
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_score<C: OneShotPrompt + 'static>(
     judges: Vec<Arc<Judge>>,
     store: Arc<Judges>,
     completer: Arc<C>,
-    user_id: UserId,
-    message_id: MessageId,
-    agent_name: String,
-    user_message: String,
-    assistant_message: String,
+    exchange: ScoredExchange,
 ) {
     if judges.is_empty() {
         return;
@@ -88,20 +83,9 @@ pub fn spawn_score<C: OneShotPrompt + 'static>(
             if !judge.should_sample() {
                 continue;
             }
-            if let Err(err) = run_score(
-                &judge,
-                &store,
-                completer.as_ref(),
-                user_id,
-                message_id,
-                &agent_name,
-                &user_message,
-                &assistant_message,
-            )
-            .await
-            {
+            if let Err(err) = run_score(&judge, &store, completer.as_ref(), &exchange).await {
                 tracing::warn!(
-                    user = %user_id.0,
+                    user = %exchange.user_id.0,
                     judge = %judge.name,
                     error = %err,
                     "judge scoring failed",
@@ -111,19 +95,15 @@ pub fn spawn_score<C: OneShotPrompt + 'static>(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_score(
     judge: &Judge,
     store: &Judges,
     completer: &dyn OneShotPrompt,
-    user_id: UserId,
-    message_id: MessageId,
-    agent_name: &str,
-    user_message: &str,
-    assistant_message: &str,
+    exchange: &ScoredExchange,
 ) -> Result<(), JudgeRunError> {
     let user_text = format!(
-        "User message:\n{user_message}\n\nAssistant reply:\n{assistant_message}\n\nReturn the JSON object now."
+        "User message:\n{}\n\nAssistant reply:\n{}\n\nReturn the JSON object now.",
+        exchange.user_message, exchange.assistant_message,
     );
     let raw_text = completer
         .one_shot(&judge.provider, &judge.model, &judge.preamble, &user_text)
@@ -140,9 +120,9 @@ async fn run_score(
             continue;
         };
         let score = Score::new(
-            user_id,
-            message_id,
-            agent_name.to_string(),
+            exchange.user_id,
+            exchange.message_id,
+            exchange.agent_name.clone(),
             judge.name.clone(),
             judge.model.clone(),
             criterion.clone(),

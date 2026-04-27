@@ -7,7 +7,7 @@ use coulisse_core::ToolCallKind;
 
 use crate::{Event, EventId, EventKind, ToolCall, ToolCallStats};
 
-pub struct ToolCallRow {
+pub(super) struct ToolCallRow {
     pub args: String,
     pub error: Option<String>,
     pub kind_class: &'static str,
@@ -45,11 +45,11 @@ impl From<ToolCall> for ToolCallRow {
     }
 }
 
-pub fn tool_call_rows(calls: Vec<ToolCall>) -> Vec<ToolCallRow> {
+pub(super) fn tool_call_rows(calls: Vec<ToolCall>) -> Vec<ToolCallRow> {
     calls.into_iter().map(Into::into).collect()
 }
 
-pub struct EventRow {
+pub(super) struct EventRow {
     /// Pre-formatted "$0.0123" string for `llm_call` events whose payload
     /// carries a `cost_usd` field. Empty for other kinds and for misses
     /// in the pricing table — the template shows the badge only when
@@ -66,7 +66,7 @@ pub struct EventRow {
 /// Flatten the causal tree into depth-tagged rows in DFS order. Events
 /// whose parent isn't in the current set attach to the root so we don't
 /// silently swallow orphans.
-pub fn event_rows(events: Vec<Event>) -> Vec<EventRow> {
+pub(super) fn event_rows(events: Vec<Event>) -> Vec<EventRow> {
     let ids: std::collections::HashSet<_> = events.iter().map(|e| e.id).collect();
     let mut children_of: HashMap<Option<EventId>, Vec<Event>> = HashMap::new();
     for e in events {
@@ -141,7 +141,7 @@ fn label_for(kind: &str, payload: &serde_json::Value) -> String {
         _ => payload
             .get("tool_name")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_default(),
     }
 }
@@ -150,7 +150,7 @@ fn label_for(kind: &str, payload: &serde_json::Value) -> String {
 /// stay readable as `$0.0001` rather than rounding to `$0.00`. Empty
 /// when the field is missing or non-numeric.
 fn format_cost(payload: &serde_json::Value) -> String {
-    let usd = payload.get("cost_usd").and_then(|v| v.as_f64());
+    let usd = payload.get("cost_usd").and_then(serde_json::Value::as_f64);
     match usd {
         Some(v) if v >= 0.01 => format!("${v:.4}"),
         Some(v) if v > 0.0 => format!("${v:.6}"),
@@ -195,7 +195,7 @@ fn relative_time(seconds: u64) -> String {
     format!("{}d ago", diff / 86_400)
 }
 
-pub struct RecentToolCallRow {
+pub(super) struct RecentToolCallRow {
     pub args: String,
     pub created_at: String,
     pub error: Option<String>,
@@ -203,7 +203,7 @@ pub struct RecentToolCallRow {
     pub user_id: String,
 }
 
-pub struct ToolDetailRow {
+pub(super) struct ToolDetailRow {
     pub call_count: u32,
     pub error_count: u32,
     pub error_rate: String,
@@ -213,7 +213,7 @@ pub struct ToolDetailRow {
     pub user_count: u32,
 }
 
-pub struct ToolListRow {
+pub(super) struct ToolListRow {
     pub call_count: u32,
     pub error_count: u32,
     pub error_rate: String,
@@ -234,11 +234,11 @@ fn format_error_rate(error_count: u32, call_count: u32) -> String {
     } else if pct < 0.1 {
         "<0.1%".into()
     } else {
-        format!("{:.1}%", pct)
+        format!("{pct:.1}%")
     }
 }
 
-pub fn recent_tool_call_rows(calls: Vec<ToolCall>) -> Vec<RecentToolCallRow> {
+pub(super) fn recent_tool_call_rows(calls: Vec<ToolCall>) -> Vec<RecentToolCallRow> {
     calls
         .into_iter()
         .map(|c| RecentToolCallRow {
@@ -251,7 +251,7 @@ pub fn recent_tool_call_rows(calls: Vec<ToolCall>) -> Vec<RecentToolCallRow> {
         .collect()
 }
 
-pub fn tool_detail_row(stats: &ToolCallStats) -> ToolDetailRow {
+pub(super) fn tool_detail_row(stats: &ToolCallStats) -> ToolDetailRow {
     let (kind_label, kind_class) = kind_display(stats.kind);
     ToolDetailRow {
         call_count: stats.call_count,
@@ -264,7 +264,7 @@ pub fn tool_detail_row(stats: &ToolCallStats) -> ToolDetailRow {
     }
 }
 
-pub fn tool_list_rows(stats: Vec<ToolCallStats>) -> Vec<ToolListRow> {
+pub(super) fn tool_list_rows(stats: Vec<ToolCallStats>) -> Vec<ToolListRow> {
     stats
         .into_iter()
         .map(|s| {

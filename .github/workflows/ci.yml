@@ -19,8 +19,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+
+      - name: Install cargo-sort-derives
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-sort-derives
+
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
+
+      - name: cargo sort-derives --check
+        run: cargo sort-derives --check
+
+      - name: cargo machete
+        run: cargo machete --with-metadata
 
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings

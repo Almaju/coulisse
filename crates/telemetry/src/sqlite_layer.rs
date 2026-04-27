@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 //! `tracing_subscriber::Layer` that captures `turn`, `tool_call`, and
 //! `llm_call` spans and persists them to the same `events` and `tool_calls`
 //! tables that the studio UI reads. The bridge is the only thing that knows
@@ -148,9 +150,8 @@ where
         if !is_recorded_span(attrs.metadata().name()) {
             return;
         }
-        let span = match ctx.span(id) {
-            Some(s) => s,
-            None => return,
+        let Some(span) = ctx.span(id) else {
+            return;
         };
         let mut visitor = FieldVisitor::default();
         attrs.record(&mut visitor);
@@ -163,9 +164,8 @@ where
 
         if span.name() == "turn" {
             let extensions = span.extensions();
-            let span_ext = match extensions.get::<SpanExt>() {
-                Some(e) => e,
-                None => return,
+            let Some(span_ext) = extensions.get::<SpanExt>() else {
+                return;
             };
             let user_id = span_ext
                 .fields
@@ -187,14 +187,12 @@ where
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
-        let span = match ctx.span(id) {
-            Some(s) => s,
-            None => return,
+        let Some(span) = ctx.span(id) else {
+            return;
         };
         let mut extensions = span.extensions_mut();
-        let span_ext = match extensions.get_mut::<SpanExt>() {
-            Some(e) => e,
-            None => return,
+        let Some(span_ext) = extensions.get_mut::<SpanExt>() else {
+            return;
         };
         let mut visitor = FieldVisitor {
             fields: std::mem::take(&mut span_ext.fields),
@@ -204,18 +202,16 @@ where
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
-        let span = match ctx.span(&id) {
-            Some(s) => s,
-            None => return,
+        let Some(span) = ctx.span(&id) else {
+            return;
         };
         let name = span.name();
         if !is_recorded_span(name) {
             return;
         }
         let extensions = span.extensions();
-        let span_ext = match extensions.get::<SpanExt>() {
-            Some(e) => e,
-            None => return,
+        let Some(span_ext) = extensions.get::<SpanExt>() else {
+            return;
         };
         let duration_ms = span_ext.started_at.elapsed().as_millis() as u64;
         let event_id = span_ext.event_id;
@@ -283,13 +279,16 @@ where
             // child still holds a strong ref via `scope()`. The pointer is
             // valid for the remainder of this function.
             let ordinal = unsafe { (*counter_ptr).fetch_add(1, Ordering::Relaxed) };
-            let kind = parse_tool_kind(fields.get("kind").map(String::as_str));
+            let kind = fields
+                .get("kind")
+                .and_then(|s| s.parse::<ToolCallKind>().ok())
+                .unwrap_or(ToolCallKind::Mcp);
             let row = ToolCallRow {
                 args: fields.get("args").cloned().unwrap_or_default(),
                 created_at_secs: started_at_ms / 1000,
                 error: fields.get("error").cloned().filter(|s| !s.is_empty()),
                 id: Uuid::new_v4().to_string(),
-                kind: tool_kind_str(kind),
+                kind: kind.as_str(),
                 ordinal,
                 result: fields.get("result").cloned().filter(|s| !s.is_empty()),
                 tool_name: fields.get("tool_name").cloned().unwrap_or_default(),
@@ -303,22 +302,6 @@ where
 
 fn is_recorded_span(name: &str) -> bool {
     matches!(name, "turn" | "tool_call" | "llm_call")
-}
-
-fn parse_tool_kind(s: Option<&str>) -> ToolCallKind {
-    match s {
-        Some("subagent") => ToolCallKind::Subagent,
-        // Default to Mcp for unknown / missing — the agents wrapper always
-        // sets this, so the only way to land here is a hand-written span.
-        _ => ToolCallKind::Mcp,
-    }
-}
-
-fn tool_kind_str(kind: ToolCallKind) -> &'static str {
-    match kind {
-        ToolCallKind::Mcp => "mcp",
-        ToolCallKind::Subagent => "subagent",
-    }
 }
 
 /// Build the JSON payload stored in `events.payload`. Shape mirrors the

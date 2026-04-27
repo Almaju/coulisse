@@ -9,12 +9,18 @@
 
 pub mod admin;
 mod config;
+mod merge;
 mod resolver;
 mod router;
+mod store;
 
 pub use config::{ExperimentConfig, ExperimentList, Strategy, Variant, experiment_list};
+pub use merge::{
+    AdminExperiment, AdminSource, MergeReport, MergedExperiment, Source, admin_view, merge,
+};
 pub use resolver::ExperimentResolver;
 pub use router::{
     BANDIT_DEFAULT_EPSILON, BANDIT_DEFAULT_MIN_SAMPLES, BANDIT_DEFAULT_WINDOW_SECONDS,
     ExperimentRouter, Resolved,
 };
+pub use store::{DynamicExperimentRow, Experiments, ExperimentsError};

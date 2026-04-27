@@ -78,7 +78,7 @@ fn main() -> ExitCode {
                 from_example,
             },
         )
-        .map_err(|e| e.into()),
+        .map_err(std::convert::Into::into),
         Some(Command::Start {
             foreground,
             detached_child,
@@ -89,14 +89,14 @@ fn main() -> ExitCode {
                 foreground,
             },
         )
-        .map_err(|e| e.into()),
+        .map_err(std::convert::Into::into),
         Some(Command::Stop { force }) => {
-            stop::run(&config, stop::Options { force }).map_err(|e| e.into())
+            stop::run(&config, stop::Options { force }).map_err(std::convert::Into::into)
         }
         Some(Command::Restart) => restart::run(&config),
         Some(Command::Status) => status::run(&config),
         Some(Command::Check) => check::run(&config),
-        Some(Command::Update) => update::run().map_err(|e| e.into()),
+        Some(Command::Update) => update::run().map_err(std::convert::Into::into),
     };
 
     match result {

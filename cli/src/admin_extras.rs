@@ -16,7 +16,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
-use coulisse_core::{ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat};
+use coulisse_core::{
+    ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat, redirect_to,
+};
 use mcp::McpServerConfig;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
@@ -137,7 +139,7 @@ async fn providers_create(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(body.config)).into_response());
     }
-    redirect("/admin/providers")
+    Ok(redirect_to("/admin/providers"))
 }
 
 async fn providers_update(
@@ -157,7 +159,7 @@ async fn providers_update(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(body).into_response());
     }
-    redirect("/admin/providers")
+    Ok(redirect_to("/admin/providers"))
 }
 
 async fn providers_remove(
@@ -175,7 +177,7 @@ async fn providers_remove(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    redirect("/admin/providers")
+    Ok(redirect_to("/admin/providers"))
 }
 
 async fn providers_edit_form(
@@ -329,7 +331,7 @@ async fn mcp_create(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(body.server)).into_response());
     }
-    redirect("/admin/mcp")
+    Ok(redirect_to("/admin/mcp"))
 }
 
 async fn mcp_update(
@@ -348,7 +350,7 @@ async fn mcp_update(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(body).into_response());
     }
-    redirect("/admin/mcp")
+    Ok(redirect_to("/admin/mcp"))
 }
 
 async fn mcp_remove(
@@ -365,7 +367,7 @@ async fn mcp_remove(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    redirect("/admin/mcp")
+    Ok(redirect_to("/admin/mcp"))
 }
 
 async fn mcp_edit_form(
@@ -427,17 +429,6 @@ fn mcp_summary(server: &McpServerConfig) -> String {
             }
         }
     }
-}
-
-// ---- shared error / redirect ----------------------------------------
-
-fn redirect(to: &str) -> Result<Response, AdminError> {
-    let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        axum::http::HeaderValue::from_str(to).expect("valid header value"),
-    );
-    Ok(resp)
 }
 
 #[derive(Debug)]

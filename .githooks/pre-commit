@@ -7,6 +7,12 @@ set -e
 echo "==> cargo fmt --check"
 cargo fmt --all -- --check
 
+echo "==> cargo sort-derives --check"
+cargo sort-derives --check
+
+echo "==> cargo machete"
+cargo machete --with-metadata
+
 echo "==> cargo clippy"
 cargo clippy --all-targets --all-features --locked -- -D warnings
 

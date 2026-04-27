@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::UserId;
 use serde::{Deserialize, Serialize};
@@ -7,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::language::{LanguageTag, LanguageTagError};
 use crate::{Tool, ToolCall, ToolChoice};
 
-pub const METADATA_LANGUAGE: &str = "language";
+pub(crate) const METADATA_LANGUAGE: &str = "language";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
@@ -73,7 +72,7 @@ impl ChatCompletionRequest {
     }
 
     pub fn response_with(&self, text: String, usage: Usage) -> ChatCompletionResponse {
-        let created = now_secs();
+        let created = coulisse_core::now_secs();
         let message = Message {
             content: Some(text),
             name: None,
@@ -122,13 +121,6 @@ impl ChatCompletionRequest {
             .map(str::trim)
             .filter(|s| !s.is_empty())
     }
-}
-
-pub fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 pub fn response_id(created: u64) -> String {

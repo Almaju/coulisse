@@ -1,30 +1,61 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, UserId};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{Executor, SqliteConnection, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{Score, ScoreId};
+use crate::config::JudgeList;
+use crate::merge::{MergeReport, merge};
+use crate::{JudgeConfig, Score, ScoreId};
 
 struct Schema;
 
 impl SchemaMigrator for Schema {
     const NAME: &'static str = "judges";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
-    const VERSIONS: &'static [&'static str] = &["0.1.0"];
+    const VERSIONS: &'static [&'static str] = &["0.1.0", "0.2.0"];
 
     async fn upgrade_from(
         &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
+        from_version: &str,
+        conn: &mut SqliteConnection,
     ) -> sqlx::Result<()> {
-        unreachable!("judges has only one schema version")
+        match from_version {
+            "0.1.0" => {
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS dynamic_judges (\
+                        config_json TEXT,\
+                        created_at  INTEGER NOT NULL,\
+                        disabled    INTEGER NOT NULL DEFAULT 0,\
+                        name        TEXT    NOT NULL PRIMARY KEY,\
+                        updated_at  INTEGER NOT NULL\
+                    )",
+                )
+                .await?;
+                Ok(())
+            }
+            _ => unreachable!("unknown judges schema version: {from_version}"),
+        }
     }
+}
+
+/// One row in `dynamic_judges`. `config` is `Some` for active rows
+/// (overrides and DB-only judges) and `None` for tombstones, paired with
+/// `disabled = true`.
+#[derive(Clone, Debug)]
+pub struct DynamicJudgeRow {
+    pub config: Option<JudgeConfig>,
+    pub created_at: i64,
+    pub disabled: bool,
+    pub name: String,
+    pub updated_at: i64,
 }
 
 pub struct AgentCriterionCell {
@@ -243,6 +274,90 @@ impl Judges {
     }
 }
 
+impl Judges {
+    /// Every dynamic-judge row, in name order. Used by the merge step.
+    pub async fn list_dynamic(&self) -> Result<Vec<DynamicJudgeRow>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT config_json, created_at, disabled, name, updated_at \
+             FROM dynamic_judges ORDER BY name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_dynamic_judge).collect()
+    }
+
+    /// Upsert an active row (override or dynamic). `created_at` is preserved
+    /// across updates; `updated_at` is bumped to now.
+    pub async fn put_active_dynamic(
+        &self,
+        name: &str,
+        config: &JudgeConfig,
+    ) -> Result<(), JudgeStoreError> {
+        let now = now_secs();
+        let json = serde_json::to_string(config)
+            .map_err(|e| JudgeStoreError::RowDecode(format!("serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO dynamic_judges (config_json, created_at, disabled, name, updated_at) \
+             VALUES (?, ?, 0, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET \
+                 config_json = excluded.config_json, \
+                 disabled    = 0, \
+                 updated_at  = excluded.updated_at",
+        )
+        .bind(json)
+        .bind(now)
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Upsert a tombstone row. Use this to disable a YAML-declared judge at
+    /// runtime.
+    pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), JudgeStoreError> {
+        let now = now_secs();
+        sqlx::query(
+            "INSERT INTO dynamic_judges (config_json, created_at, disabled, name, updated_at) \
+             VALUES (NULL, ?, 1, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET \
+                 config_json = NULL, \
+                 disabled    = 1, \
+                 updated_at  = excluded.updated_at",
+        )
+        .bind(now)
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Physically remove the row. Returns true if a row was deleted.
+    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, JudgeStoreError> {
+        let result = sqlx::query("DELETE FROM dynamic_judges WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Read every dynamic row, merge against `yaml_judges`, and atomically
+    /// swap the effective list into `list`. Called once at boot, after every
+    /// YAML reload, and after every admin write.
+    pub async fn rebuild_judges(
+        &self,
+        list: &JudgeList,
+        yaml_judges: &[JudgeConfig],
+    ) -> Result<MergeReport, JudgeStoreError> {
+        let db = self.list_dynamic().await?;
+        let (merged, report) = merge(yaml_judges, &db);
+        let configs: Vec<JudgeConfig> = merged.into_iter().map(|m| m.config).collect();
+        list.store(Arc::new(configs));
+        Ok(report)
+    }
+}
+
 impl ScoreLookup for Judges {
     fn mean_scores_by_agent<'a>(
         &'a self,
@@ -286,6 +401,35 @@ fn row_to_score(row: SqliteRow) -> Result<Score, JudgeStoreError> {
 
 fn parse_uuid(s: &str, label: &str) -> Result<Uuid, JudgeStoreError> {
     Uuid::parse_str(s).map_err(|e| JudgeStoreError::RowDecode(format!("invalid {label}: {e}")))
+}
+
+fn row_to_dynamic_judge(row: SqliteRow) -> Result<DynamicJudgeRow, JudgeStoreError> {
+    let config_json: Option<String> = row.try_get("config_json")?;
+    let created_at: i64 = row.try_get("created_at")?;
+    let disabled: i64 = row.try_get("disabled")?;
+    let name: String = row.try_get("name")?;
+    let updated_at: i64 = row.try_get("updated_at")?;
+    let config = match config_json {
+        Some(s) => Some(
+            serde_json::from_str::<JudgeConfig>(&s)
+                .map_err(|e| JudgeStoreError::RowDecode(format!("config_json: {e}")))?,
+        ),
+        None => None,
+    };
+    Ok(DynamicJudgeRow {
+        config,
+        created_at,
+        disabled: disabled != 0,
+        name,
+        updated_at,
+    })
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Error)]

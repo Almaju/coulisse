@@ -65,6 +65,25 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 
+[workspace.lints.rust]
+unreachable_pub = "warn"
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Restrictions: project-wide hygiene rules. Keep small and meaningful;
+# CLAUDE.md handles unwrap/expect/panic culturally rather than via lints
+# because boot-path code legitimately uses them.
+dbg_macro = "deny"
+mod_module_files = "deny"
+todo = "warn"
+unimplemented = "deny"
+
+# Targeted style lints from pedantic that catch real issues without noise.
+manual_let_else = "warn"
+redundant_closure_for_method_calls = "warn"
+uninlined_format_args = "warn"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
