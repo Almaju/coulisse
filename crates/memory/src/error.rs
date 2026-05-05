@@ -18,7 +18,7 @@ pub enum ConfigError {
     #[error("schema migration failed: {0}")]
     Migrate(#[from] coulisse_core::migrate::MigrateError),
     #[error(
-        "embedder provider '{provider}' requires an api_key (set memory.embedder.api_key or providers.{provider}.api_key)"
+        "embedder provider '{provider}' requires an api_key (set memory.user_state.embed_with.api_key or providers.{provider}.api_key)"
     )]
     MissingApiKey { provider: String },
     #[error("embedder provider '{provider}' does not support model '{model}'")]

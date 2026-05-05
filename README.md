@@ -60,12 +60,8 @@ providers:
     api_key: sk-...
 
 memory:
-  backend:
-    kind: sqlite
-    path: ./coulisse-memory.db
-  embedder:
-    provider: openai
-    model: text-embedding-3-small
+  storage: ./coulisse-memory.db
+  user_state: true
 
 mcp:
   hello:

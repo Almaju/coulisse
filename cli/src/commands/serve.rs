@@ -19,7 +19,7 @@ use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::McpServers;
-use memory::{BackendConfig, EmbedderConfig, Extractor, Store, UserId};
+use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
 use telemetry::Sink as TelemetrySink;
@@ -29,6 +29,7 @@ use crate::admin::shell as admin_shell;
 use crate::banner::Banner;
 use crate::config::Config;
 use crate::config_store::ConfigStore;
+use crate::memory_resolve;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
 
@@ -39,20 +40,29 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path(config_path)?;
     let auth = Auth::from_config(config.auth.clone()).await?;
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
+    let memory_config = memory_resolve::resolve_memory(&config.memory, &config.providers)?;
 
     // Warm the vendored LiteLLM pricing table so the first chat
     // completion doesn't pay for ~9k JSON entries on the request
     // path. Off the request path; one-shot at boot.
     providers::warm_pricing();
 
-    let memory_summary = memory_summary(&config.memory);
-    let stores = boot_stores(&config).await?;
+    let memory_summary = memory_summary(&memory_config);
+    let stores = boot_stores(&config, &memory_config).await?;
     let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
-    let runtime = build_runtime(&config, &stores).await?;
+    let runtime = build_runtime(&config, &memory_config, &stores).await?;
     let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
-    print_banner(addr, &auth, &config, &stores, &proxy_state, &memory_summary);
+    print_banner(
+        addr,
+        &auth,
+        &config,
+        &memory_config,
+        &stores,
+        &proxy_state,
+        &memory_summary,
+    );
 
     // Lift names that the wiring blocks below still reference.
     let Stores {
@@ -156,7 +166,10 @@ struct Stores {
 /// store with the YAML it was given. Each crate runs its own schema
 /// migrations against the shared pool — table ownership is per-crate,
 /// the connection is shared so operators back up one file.
-async fn boot_stores(config: &Config) -> Result<Stores, Box<dyn std::error::Error>> {
+async fn boot_stores(
+    config: &Config,
+    memory_config: &MemoryConfig,
+) -> Result<Stores, Box<dyn std::error::Error>> {
     // The merged effective list (`agents_list`) is what the runtime
     // resolves against; `yaml_agents` is the raw YAML view, kept
     // alongside so the admin layer can compute source labels and the
@@ -170,10 +183,10 @@ async fn boot_stores(config: &Config) -> Result<Stores, Box<dyn std::error::Erro
     let smoke_list = smoke::smoke_list(config.smoke_tests.clone());
     let yaml_smoke = smoke::smoke_list(config.smoke_tests.clone());
     let settings_view = Arc::new(ArcSwap::from_pointee(
-        crate::admin::SettingsView::from_config(config),
+        crate::admin::SettingsView::from_config(config, memory_config),
     ));
 
-    let pool = memory::open_pool(&config.memory.backend).await?;
+    let pool = memory::open_pool(&memory_config.backend).await?;
     let dynamic_agents = Arc::new(DynamicAgents::open(pool.clone()).await?);
     let report = dynamic_agents.rebuild(&agents_list, &config.agents).await?;
     log_agents_merge(&report);
@@ -181,8 +194,8 @@ async fn boot_stores(config: &Config) -> Result<Stores, Box<dyn std::error::Erro
     let memory = Arc::new(
         Store::open(
             pool.clone(),
-            config.memory.clone(),
-            embedder_fallback_key(config).as_deref(),
+            memory_config.clone(),
+            embedder_fallback_key(config, memory_config).as_deref(),
         )
         .await?,
     );
@@ -277,6 +290,7 @@ struct Runtime {
 
 async fn build_runtime(
     config: &Config,
+    memory_config: &MemoryConfig,
     stores: &Stores,
 ) -> Result<Runtime, Box<dyn std::error::Error>> {
     // Build runtime Judge objects from the merged list (DB shadows + YAML)
@@ -298,8 +312,7 @@ async fn build_runtime(
         providers: config.providers.clone(),
         resolver,
     })?);
-    let extractor = config
-        .memory
+    let extractor = memory_config
         .extractor
         .as_ref()
         .map(|cfg| Arc::new(Extractor::new(cfg.clone(), Arc::clone(&prompter) as _)));
@@ -333,7 +346,8 @@ fn build_proxy_state(
 fn print_banner(
     addr: SocketAddr,
     auth: &Auth,
-    config: &Config,
+    _config: &Config,
+    memory_config: &MemoryConfig,
     stores: &Stores,
     proxy_state: &AppState<RigAgents>,
     memory_summary: &str,
@@ -346,7 +360,7 @@ fn print_banner(
         agents: &agent_snapshot,
         auth,
         experiments: &experiments_snapshot,
-        extractor: config.memory.extractor.as_ref(),
+        extractor: memory_config.extractor.as_ref(),
         judges: &judges_snapshot,
         memory_summary,
     }
@@ -413,7 +427,19 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             yaml_judges.store(Arc::new(cfg.judges.clone()));
             yaml_experiments.store(Arc::new(cfg.experiments.clone()));
             yaml_smoke.store(Arc::new(cfg.smoke_tests.clone()));
-            settings_view.store(Arc::new(crate::admin::SettingsView::from_config(&cfg)));
+            // Re-resolve memory config; on failure keep the previous settings
+            // view rather than crashing the reload path. The chat path keeps
+            // its boot-time Store regardless — memory itself does not hot
+            // reload.
+            match memory_resolve::resolve_memory(&cfg.memory, &cfg.providers) {
+                Ok(resolved) => settings_view.store(Arc::new(
+                    crate::admin::SettingsView::from_config(&cfg, &resolved),
+                )),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    "memory config resolution failed during reload; keeping previous settings view",
+                ),
+            }
             log_rebuild_failure(
                 "agents",
                 dynamic_agents.rebuild(&agents_list, &cfg.agents).await,
@@ -532,21 +558,24 @@ fn build_judges(
 /// Derive an API key to use when the memory embedder config doesn't carry
 /// its own. Looks up the matching top-level provider entry so users who
 /// already configured `OpenAI` for completions don't have to repeat the key.
-fn embedder_fallback_key(config: &Config) -> Option<String> {
-    let kind = match &config.memory.embedder {
+fn embedder_fallback_key(config: &Config, memory_config: &MemoryConfig) -> Option<String> {
+    let kind = match &memory_config.embedder {
         EmbedderConfig::Openai { .. } => ProviderKind::Openai,
         // Hash and Voyage are not completion providers — no fallback applies.
-        // For Voyage, the user must set memory.embedder.api_key explicitly.
+        // For Voyage, the user must set memory.user_state.embed_with.api_key explicitly.
         EmbedderConfig::Hash { .. } | EmbedderConfig::Voyage { .. } => return None,
     };
     config.providers.get(&kind).map(|p| p.api_key.clone())
 }
 
-fn memory_summary(config: &memory::MemoryConfig) -> String {
+fn memory_summary(config: &MemoryConfig) -> String {
     let backend = match &config.backend {
         BackendConfig::InMemory => "in-memory (ephemeral)".to_string(),
         BackendConfig::Sqlite { path } => format!("sqlite at {}", path.display()),
     };
+    if config.extractor.is_none() && config.recall_k == 0 {
+        return format!("{backend}; user_state: disabled (history only)");
+    }
     let embedder = match &config.embedder {
         EmbedderConfig::Hash { dims } => {
             format!("hash (dims={dims}, OFFLINE — no semantic understanding)")

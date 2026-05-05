@@ -11,7 +11,7 @@ default_user_id: <string>     # optional, unset by default
 experiments: [ ... ]          # optional; A/B test groups over agents
 judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
-memory: { ... }               # optional; defaults to sqlite + hash embedder
+memory: { ... }               # optional; defaults to sqlite history, no long-term memory
 providers: { ... }            # required
 smoke_tests: [ ... ]          # optional; synthetic-user evaluation runs
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
@@ -143,27 +143,21 @@ mcp:
 ## `memory`
 
 - **Type:** object
-- **Optional.** Omit for defaults (sqlite at `./coulisse-memory.db`, offline `hash` embedder, no auto-extraction).
+- **Optional.** Omit for defaults: SQLite at `./coulisse-memory.db`, history-only (no long-term user state).
 
 See [Memory configuration](../configuration/memory.md) for the full walkthrough and examples.
 
 ### Sub-fields
 
-| Field                          | Type   | Required | Default                                |
-|--------------------------------|--------|----------|----------------------------------------|
-| `backend.kind`                 | enum   | no       | `sqlite`                               |
-| `backend.path`                 | string | no       | `./coulisse-memory.db`                 |
-| `embedder.provider`            | enum   | no       | `hash`                                 |
-| `embedder.model`               | string | depends  | required for `openai`/`voyage`         |
-| `embedder.api_key`             | string | no       | falls back to `providers.<provider>`    |
-| `embedder.dims`                | int    | no       | 32 (hash only)                         |
-| `extractor.provider`           | string | yes\*    | — (\* required when `extractor` is set) |
-| `extractor.model`              | string | yes\*    | —                                      |
-| `extractor.dedup_threshold`    | float  | no       | 0.9                                    |
-| `extractor.max_facts_per_turn` | int    | no       | 5                                      |
-| `context_budget`               | int    | no       | 8000                                   |
-| `memory_budget_fraction`       | float  | no       | 0.1                                    |
-| `recall_k`                     | int    | no       | 5                                      |
+| Field                                 | Type           | Required | Default                                |
+|---------------------------------------|----------------|----------|----------------------------------------|
+| `storage`                             | string         | no       | `./coulisse-memory.db` (or `:memory:`) |
+| `user_state`                          | bool or object | no       | `false`                                |
+| `user_state.embed_with`               | object         | no       | auto-picked from `providers:`          |
+| `user_state.learn_from`               | object         | no       | auto-picked from `providers:`          |
+| `user_state.dedup_threshold`          | float          | no       | 0.9                                    |
+| `user_state.max_facts_per_turn`       | int            | no       | 5                                      |
+| `user_state.recall_k`                 | int            | no       | 5                                      |
 
 ## `agents`
 

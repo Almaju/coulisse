@@ -24,6 +24,16 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
+- **Breaking:** the `memory:` YAML block was reshaped around two pillars —
+  `storage` (where data lives) and `user_state` (long-term memory; off by
+  default). The old `memory.backend`, `memory.embedder`, `memory.extractor`,
+  `memory.context_budget`, `memory.memory_budget_fraction`, and
+  `memory.recall_k` fields are gone. To match the previous "auto-extraction
+  on" behavior, replace the old `extractor:` block with `user_state: true`;
+  Coulisse now picks the embedder and extraction model from your
+  `providers:` automatically. Advanced overrides live under
+  `user_state: { embed_with: ..., learn_from: ..., recall_k: ..., ... }`.
+  Configs that still use the old field names fail loudly at startup.
 - Database migrations replaced the prior two-file `schema.sql` + `migrate.sql`
   model with a `coulisse_core::migrate::SchemaMigrator` trait. Each persistent
   crate declares an ascending `VERSIONS` list of schema-bumping crate

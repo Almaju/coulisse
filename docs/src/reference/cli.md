@@ -96,9 +96,9 @@ your-project/
 └── .coulisse/
     ├── coulisse.pid     # written by `start`, removed on clean exit
     ├── coulisse.log     # detached stdout/stderr
-    └── memory.db        # if you point memory.backend.path here
+    └── memory.db        # if you point memory.storage here
 ```
 
-`.coulisse/` is the recommended target for `memory.backend.path` so
+`.coulisse/` is the recommended target for `memory.storage` so
 the whole runtime footprint of one project sits under a single
 directory.

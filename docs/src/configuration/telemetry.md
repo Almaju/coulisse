@@ -38,7 +38,7 @@ Writes structured logs to stderr. The level is controlled by the `RUST_LOG` envi
 
 Mirrors `turn` and `tool_call` tracing spans into the `events` and `tool_calls` tables that the studio UI reads. Without this layer, the studio loses its per-turn event tree and tool-call panel.
 
-The schema is part of the same SQLite file the rest of Coulisse persists into (controlled by `memory.backend.path`).
+The schema is part of the same SQLite file the rest of Coulisse persists into (controlled by `memory.storage`).
 
 ## `telemetry.otlp`
 

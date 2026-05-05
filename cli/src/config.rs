@@ -14,7 +14,7 @@ use auth::Config as AuthConfig;
 use experiments::{ExperimentConfig, Strategy};
 use judges::JudgeConfig;
 use mcp::McpServerConfig;
-use memory::MemoryConfig;
+use memory::MemoryYaml;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
 use smoke::SmokeTestConfig;
@@ -52,10 +52,12 @@ pub struct Config {
     pub judges: Vec<JudgeConfig>,
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
-    /// Memory subsystem config (persistence, embedder, auto-extraction).
-    /// Omit to use sensible defaults for local development.
+    /// Memory subsystem config. Two pillars: `storage` (where data lives)
+    /// and `user_state` (long-term per-user memory; off by default).
+    /// Omit the whole block for sensible defaults — history-only on a
+    /// local `SQLite` file.
     #[serde(default)]
-    pub memory: MemoryConfig,
+    pub memory: MemoryYaml,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
     /// Synthetic-user evaluation tests. Each entry pairs a persona prompt
     /// with a target agent (or experiment); admin UI exposes a "Run now"

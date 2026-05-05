@@ -9,16 +9,12 @@
 # Useful for local / single-user setups; omit for multi-tenant.
 default_user_id: main
 
-# Memory: sqlite for conversation history + offline `hash` embedder.
-# Swap the embedder to `openai` (text-embedding-3-small) for real
-# semantic recall — see docs/configuration/memory.md.
+# Memory: sqlite for conversation history. Add `user_state: true` to
+# enable long-term per-user facts and preferences (Coulisse will pick
+# the embedder and extraction model automatically based on your
+# `providers:`). See docs/configuration/memory.md.
 memory:
-  backend:
-    kind: sqlite
-    path: ./.coulisse/memory.db
-  embedder:
-    provider: hash
-    dims: 256
+  storage: ./.coulisse/memory.db
 
 providers:
   openai:

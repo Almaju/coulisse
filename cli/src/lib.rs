@@ -10,6 +10,7 @@ pub mod commands;
 pub mod config;
 pub mod config_store;
 pub mod error;
+pub mod memory_resolve;
 pub mod openapi;
 pub mod paths;
 pub mod server;

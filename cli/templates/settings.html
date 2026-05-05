@@ -29,20 +29,16 @@
       </div>
       <div class="divide-y divide-slate-800">
         <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Backend</span>
-          <span class="text-sm text-slate-300">{{ settings.memory_backend }}</span>
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Storage</span>
+          <span class="font-mono text-sm text-slate-300">{{ settings.memory_storage }}</span>
         </div>
         <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Embedder</span>
-          <span class="text-sm text-slate-300">{{ settings.memory_embedder }}</span>
+          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">User state</span>
+          <span class="text-sm text-slate-300">{{ settings.memory_user_state }}</span>
         </div>
         <div class="flex items-center justify-between px-4 py-3">
           <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Extractor</span>
           <span class="text-sm text-slate-300">{{ settings.memory_extractor }}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Context budget</span>
-          <span class="font-mono text-sm text-slate-300">{{ settings.memory_context_budget }} tokens</span>
         </div>
       </div>
     </div>

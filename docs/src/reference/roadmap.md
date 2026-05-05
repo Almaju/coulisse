@@ -8,8 +8,7 @@ What's in Coulisse today, and what's coming.
 - Agents as tools — expose one agent to another under `subagents:` with a `purpose:` description. Nested invocations are bounded by a depth cap.
 - Per-user conversation history with isolation.
 - Long-term memory with semantic recall — **persistent via SQLite** and backed by a real embedder (OpenAI or Voyage AI; `hash` fallback for offline dev).
-- Auto-extraction — an optional background task pulls durable facts from each exchange and deduplicates them before storing.
-- Tunable memory budgets (`context_budget`, `memory_budget_fraction`, `recall_k`) in YAML.
+- Long-term user state — opt-in `user_state: true` enables a background extractor that pulls durable facts from each exchange and deduplicates them before storing. Embedder and extraction model are auto-derived from your configured providers.
 - Multi-backend support (Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq).
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
 - Read-only studio UI at `/admin/` for browsing conversations, memories, and judge scores.

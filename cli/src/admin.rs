@@ -106,10 +106,9 @@ pub struct SettingsView {
     pub auth_proxy: String,
     pub experiment_count: usize,
     pub judge_count: usize,
-    pub memory_backend: String,
-    pub memory_context_budget: u32,
-    pub memory_embedder: String,
     pub memory_extractor: String,
+    pub memory_storage: String,
+    pub memory_user_state: String,
     pub providers: Vec<ProviderRow>,
     pub telemetry_fmt: bool,
     pub telemetry_otlp: String,
@@ -118,22 +117,22 @@ pub struct SettingsView {
 
 impl SettingsView {
     #[must_use]
-    pub fn from_config(config: &Config) -> Self {
+    pub fn from_config(config: &Config, memory_config: &memory::MemoryConfig) -> Self {
         let auth_admin = auth_summary(config.auth.admin.as_ref());
         let auth_proxy = auth_summary(config.auth.proxy.as_ref());
 
-        let memory_backend = match &config.memory.backend {
+        let memory_storage = match &memory_config.backend {
             memory::BackendConfig::InMemory => "In-memory (ephemeral)".to_string(),
-            memory::BackendConfig::Sqlite { path } => format!("SQLite at {}", path.display()),
+            memory::BackendConfig::Sqlite { path } => path.display().to_string(),
         };
 
-        let memory_embedder = match &config.memory.embedder {
-            memory::EmbedderConfig::Hash { dims } => format!("hash (dims={dims})"),
-            memory::EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
-            memory::EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
+        let memory_user_state = match &config.memory.user_state {
+            memory::UserStateYaml::OnOff(false) => "Disabled".to_string(),
+            memory::UserStateYaml::OnOff(true) => "Enabled (auto)".to_string(),
+            memory::UserStateYaml::Configured(_) => "Enabled (custom)".to_string(),
         };
 
-        let memory_extractor = config.memory.extractor.as_ref().map_or_else(
+        let memory_extractor = memory_config.extractor.as_ref().map_or_else(
             || "Disabled".to_string(),
             |e| format!("{} / {}", e.provider, e.model),
         );
@@ -162,10 +161,9 @@ impl SettingsView {
             auth_proxy,
             experiment_count: config.experiments.len(),
             judge_count: config.judges.len(),
-            memory_backend,
-            memory_context_budget: config.memory.context_budget.0,
-            memory_embedder,
             memory_extractor,
+            memory_storage,
+            memory_user_state,
             providers,
             telemetry_fmt: config.telemetry.fmt.enabled,
             telemetry_otlp: config
