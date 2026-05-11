@@ -35,18 +35,6 @@ pub enum ProviderKind {
 
 impl ProviderKind {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::Cohere => "cohere",
-            Self::Deepseek => "deepseek",
-            Self::Gemini => "gemini",
-            Self::Groq => "groq",
-            Self::Openai => "openai",
-        }
-    }
-
-    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "anthropic" => Some(Self::Anthropic),
@@ -56,6 +44,18 @@ impl ProviderKind {
             "groq" => Some(Self::Groq),
             "openai" => Some(Self::Openai),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::Cohere => "cohere",
+            Self::Deepseek => "deepseek",
+            Self::Gemini => "gemini",
+            Self::Groq => "groq",
+            Self::Openai => "openai",
         }
     }
 }
@@ -124,13 +124,13 @@ impl Providers {
     }
 
     #[must_use]
-    pub fn get(&self, kind: ProviderKind) -> Option<&Provider> {
-        self.by_kind.get(&kind)
+    pub fn contains(&self, kind: ProviderKind) -> bool {
+        self.by_kind.contains_key(&kind)
     }
 
     #[must_use]
-    pub fn contains(&self, kind: ProviderKind) -> bool {
-        self.by_kind.contains_key(&kind)
+    pub fn get(&self, kind: ProviderKind) -> Option<&Provider> {
+        self.by_kind.get(&kind)
     }
 }
 

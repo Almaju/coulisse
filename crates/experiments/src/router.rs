@@ -46,10 +46,6 @@ impl ExperimentRouter {
         Self { by_name }
     }
 
-    pub fn experiments(&self) -> impl Iterator<Item = &ExperimentConfig> {
-        self.by_name.values()
-    }
-
     /// For a bandit experiment, return the score-query inputs the
     /// caller needs to fetch from memory before resolving:
     /// `(judge, criterion, since_seconds)`. Returns `None` for
@@ -70,6 +66,10 @@ impl ExperimentRouter {
             .map_or(0, |d| d.as_secs());
         let since = now.saturating_sub(window);
         Some((judge.to_string(), criterion.to_string(), since))
+    }
+
+    pub fn experiments(&self) -> impl Iterator<Item = &ExperimentConfig> {
+        self.by_name.values()
     }
 
     #[must_use]
@@ -116,23 +116,6 @@ impl ExperimentRouter {
         }
     }
 
-    /// Variants other than the shadow primary, in declaration order.
-    /// Returns an empty slice for non-shadow experiments so callers
-    /// can blindly iterate without strategy-specific guards.
-    pub fn shadow_variants<'a>(
-        &'a self,
-        experiment: &'a ExperimentConfig,
-    ) -> impl Iterator<Item = &'a Variant> + 'a {
-        let primary = match experiment.strategy {
-            Strategy::Shadow => experiment.primary.as_deref(),
-            _ => None,
-        };
-        experiment
-            .variants
-            .iter()
-            .filter(move |v| Some(v.agent.as_str()) != primary)
-    }
-
     /// True iff a shadow experiment should also run its non-primary
     /// variants for this turn. Always `true` for non-shadow strategies
     /// (callers gate that themselves) — shadow gates probabilistically
@@ -154,6 +137,23 @@ impl ExperimentRouter {
         // the rate.
         let seed = per_request_seed(user_id, &experiment.name);
         seed_to_unit_f32(seed) < rate
+    }
+
+    /// Variants other than the shadow primary, in declaration order.
+    /// Returns an empty slice for non-shadow experiments so callers
+    /// can blindly iterate without strategy-specific guards.
+    pub fn shadow_variants<'a>(
+        &'a self,
+        experiment: &'a ExperimentConfig,
+    ) -> impl Iterator<Item = &'a Variant> + 'a {
+        let primary = match experiment.strategy {
+            Strategy::Shadow => experiment.primary.as_deref(),
+            _ => None,
+        };
+        experiment
+            .variants
+            .iter()
+            .filter(move |v| Some(v.agent.as_str()) != primary)
     }
 }
 

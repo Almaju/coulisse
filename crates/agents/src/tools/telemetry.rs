@@ -15,14 +15,6 @@ pub(crate) struct TelemetryTool {
 }
 
 impl ToolDyn for TelemetryTool {
-    fn name(&self) -> String {
-        self.inner.name()
-    }
-
-    fn definition(&self, prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
-        self.inner.definition(prompt)
-    }
-
     fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
         let kind_str = match self.kind {
             ToolCallKind::Mcp => "mcp",
@@ -43,12 +35,20 @@ impl ToolDyn for TelemetryTool {
                 let result = inner_call.await;
                 let span = tracing::Span::current();
                 match &result {
-                    Ok(text) => span.record("result", text.as_str()),
                     Err(err) => span.record("error", err.to_string().as_str()),
+                    Ok(text) => span.record("result", text.as_str()),
                 };
                 result
             }
             .instrument(span),
         )
+    }
+
+    fn definition(&self, prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+        self.inner.definition(prompt)
+    }
+
+    fn name(&self) -> String {
+        self.inner.name()
     }
 }

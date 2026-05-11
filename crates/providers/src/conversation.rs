@@ -266,9 +266,10 @@ where
         let subagent_names = Arc::clone(&subagent_names);
         async move {
             match item {
-                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    Some(Ok(StreamEvent::Delta(t.text)))
-                }
+                Err(e) => Some(Err(CallError::Streaming(e.to_string()))),
+                Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
+                    usage: fr.usage().into(),
+                })),
                 Ok(MultiTurnStreamItem::StreamAssistantItem(
                     StreamedAssistantContent::ToolCall {
                         tool_call,
@@ -289,6 +290,9 @@ where
                         tool_name,
                     }))
                 }
+                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
+                    Some(Ok(StreamEvent::Delta(t.text)))
+                }
                 Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
                     tool_result,
                     internal_call_id,
@@ -300,11 +304,7 @@ where
                         result: Some(result),
                     }))
                 }
-                Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
-                    usage: fr.usage().into(),
-                })),
                 Ok(_) => None,
-                Err(e) => Some(Err(CallError::Streaming(e.to_string()))),
             }
         }
     });
@@ -322,8 +322,8 @@ fn flatten_tool_result(tool_result: &rig::completion::message::ToolResult) -> St
         .content
         .iter()
         .map(|part| match part {
-            ToolResultContent::Text(t) => t.text.clone(),
             ToolResultContent::Image(_) => "<image>".to_string(),
+            ToolResultContent::Text(t) => t.text.clone(),
         })
         .collect::<Vec<_>>()
         .join("\n")

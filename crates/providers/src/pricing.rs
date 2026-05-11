@@ -62,11 +62,11 @@ pub fn cost_for(provider: ProviderKind, model: &str, usage: &Usage) -> Option<Co
     let input = pricing.input_cost_per_token.unwrap_or(0.0);
     let output = pricing.output_cost_per_token.unwrap_or(0.0);
 
-    // LiteLLM's `input_cost_per_token` is the price for *uncached* input
-    // tokens. Anthropic's `Usage::input_tokens` already excludes cached
-    // reads and cache writes, so summing them here doesn't double-count.
-    // Token counts in practice are well under 2^53 — f64 representation
-    // is exact for any value any provider would ever return.
+    // WHY: LiteLLM's `input_cost_per_token` is the price for *uncached*
+    // input tokens. Anthropic's `Usage::input_tokens` already excludes
+    // cached reads and cache writes, so summing them here doesn't
+    // double-count. Token counts in practice are well under 2^53 — f64
+    // representation is exact for any value any provider would return.
     #[allow(clippy::cast_precision_loss)]
     let usd = (usage.input_tokens as f64) * input
         + (usage.output_tokens as f64) * output
@@ -122,11 +122,11 @@ pub fn warm() {
 fn table() -> &'static std::collections::HashMap<String, ModelPricing> {
     static TABLE: OnceLock<std::collections::HashMap<String, ModelPricing>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        // The vendored file has one non-pricing entry (`sample_spec`) used
-        // by LiteLLM as schema documentation; deserializing it as
-        // `ModelPricing` would fail because its fields are descriptive
-        // strings, not numbers. Parse to `serde_json::Value` first and
-        // skip rows that don't deserialize cleanly.
+        // WHY: the vendored file has one non-pricing entry (`sample_spec`)
+        // used by LiteLLM as schema documentation; deserializing it as
+        // `ModelPricing` fails because its fields are descriptive strings,
+        // not numbers. Parse to `serde_json::Value` first and skip rows
+        // that don't deserialize cleanly.
         let raw: serde_json::Value =
             serde_json::from_str(RAW_PRICES).expect("vendored model_prices.json is valid JSON");
         let serde_json::Value::Object(map) = raw else {

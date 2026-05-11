@@ -44,18 +44,6 @@ pub struct ScriptedToolCall {
 }
 
 impl ScriptedReply {
-    pub fn text(s: impl Into<String>) -> Self {
-        Self {
-            deltas: vec![s.into()],
-            tool_calls: Vec::new(),
-            usage: Usage {
-                output_tokens: 1,
-                total_tokens: 1,
-                ..Usage::default()
-            },
-        }
-    }
-
     pub fn deltas<I, S>(deltas: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -72,10 +60,16 @@ impl ScriptedReply {
         }
     }
 
-    #[must_use]
-    pub fn with_usage(mut self, usage: Usage) -> Self {
-        self.usage = usage;
-        self
+    pub fn text(s: impl Into<String>) -> Self {
+        Self {
+            deltas: vec![s.into()],
+            tool_calls: Vec::new(),
+            usage: Usage {
+                output_tokens: 1,
+                total_tokens: 1,
+                ..Usage::default()
+            },
+        }
     }
 
     /// Attach a scripted tool call to this reply. In the streaming path, the
@@ -101,6 +95,12 @@ impl ScriptedReply {
         self
     }
 
+    #[must_use]
+    pub fn with_usage(mut self, usage: Usage) -> Self {
+        self.usage = usage;
+        self
+    }
+
     fn full_text(&self) -> String {
         self.deltas.concat()
     }
@@ -117,6 +117,17 @@ impl ScriptedAgents {
         }
     }
 
+    /// Messages received on each `complete`/`complete_streaming` call so far,
+    /// in call order. Useful for asserting that the handler assembled the
+    /// context correctly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if invariants documented above are violated.
+    pub fn calls(&self) -> Vec<Vec<Message>> {
+        self.calls.lock().unwrap().clone()
+    }
+
     /// Agent names the prompter was asked to run, in call order. Lets
     /// tests verify experiment routing — if the proxy resolved
     /// `model: alice` to variant `alice-v1`, this records `alice-v1`,
@@ -127,17 +138,6 @@ impl ScriptedAgents {
     /// Panics if invariants documented above are violated.
     pub fn dispatched_to(&self) -> Vec<String> {
         self.dispatched_to.lock().unwrap().clone()
-    }
-
-    /// Messages received on each `complete`/`complete_streaming` call so far,
-    /// in call order. Useful for asserting that the handler assembled the
-    /// context correctly.
-    ///
-    /// # Panics
-    ///
-    /// Panics if invariants documented above are violated.
-    pub fn calls(&self) -> Vec<Vec<Message>> {
-        self.calls.lock().unwrap().clone()
     }
 
     fn next_reply(&self, agent_name: &str) -> Result<ScriptedReply, AgentsError> {
@@ -188,11 +188,10 @@ impl Agents for ScriptedAgents {
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
             for tc in reply.tool_calls {
-                // Synthesize the same `tool_call` span the real
-                // wrappers emit so a SqliteLayer-backed test
-                // subscriber sees it. Created and dropped
-                // synchronously (yields are await points; we can't
-                // hold a span guard across them).
+                // WHY: synthesize the same `tool_call` span the real
+                // wrappers emit so a SqliteLayer-backed test subscriber
+                // sees it. Created and dropped synchronously — yields are
+                // await points; we can't hold a span guard across them.
                 {
                     let kind_str = match tc.kind {
                         ToolCallKind::Mcp => "mcp",

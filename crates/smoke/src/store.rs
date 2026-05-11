@@ -76,6 +76,189 @@ impl SmokeStore {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, SmokeStoreError> {
+        let result = sqlx::query("DELETE FROM dynamic_smoke_tests WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn finish_run(
+        &self,
+        run_id: RunId,
+        status: RunStatus,
+        error: Option<&str>,
+    ) -> Result<(), SmokeStoreError> {
+        sqlx::query("UPDATE smoke_runs SET ended_at = ?, error = ?, status = ? WHERE id = ?")
+            .bind(u64_to_i64(now_secs()))
+            .bind(error)
+            .bind(status.as_str())
+            .bind(run_id.0.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    /// Most recent runs, newest first. `limit` caps the result set so
+    /// the admin list page stays bounded on noisy databases.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn get_run(&self, run_id: RunId) -> Result<Option<StoredRun>, SmokeStoreError> {
+        let row = sqlx::query(
+            "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
+             test_name, total_turns \
+             FROM smoke_runs WHERE id = ?",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(row_to_run).transpose()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn list_dynamic(&self) -> Result<Vec<DynamicSmokeRow>, SmokeStoreError> {
+        let rows = sqlx::query(
+            "SELECT config_json, created_at, disabled, name, updated_at \
+             FROM dynamic_smoke_tests ORDER BY name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_dynamic_smoke).collect()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn list_runs(&self, limit: u32) -> Result<Vec<StoredRun>, SmokeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
+             test_name, total_turns \
+             FROM smoke_runs ORDER BY started_at DESC LIMIT ?",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_run).collect()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn list_runs_for_test(
+        &self,
+        test_name: &str,
+        limit: u32,
+    ) -> Result<Vec<StoredRun>, SmokeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
+             test_name, total_turns \
+             FROM smoke_runs WHERE test_name = ? ORDER BY started_at DESC LIMIT ?",
+        )
+        .bind(test_name)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_run).collect()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn messages_for_run(
+        &self,
+        run_id: RunId,
+    ) -> Result<Vec<StoredMessage>, SmokeStoreError> {
+        let rows = sqlx::query(
+            "SELECT content, message_id, role, run_id, turn_index \
+             FROM smoke_messages WHERE run_id = ? ORDER BY turn_index ASC, role ASC",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_message).collect()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn put_active_dynamic(
+        &self,
+        name: &str,
+        config: &SmokeTestConfig,
+    ) -> Result<(), SmokeStoreError> {
+        let now = u64_to_i64(now_secs());
+        let json = serde_json::to_string(config)
+            .map_err(|e| SmokeStoreError::RowDecode(format!("serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO dynamic_smoke_tests (config_json, created_at, disabled, name, updated_at) \
+             VALUES (?, ?, 0, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET \
+                 config_json = excluded.config_json, \
+                 disabled    = 0, \
+                 updated_at  = excluded.updated_at",
+        )
+        .bind(json)
+        .bind(now)
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), SmokeStoreError> {
+        let now = u64_to_i64(now_secs());
+        sqlx::query(
+            "INSERT INTO dynamic_smoke_tests (config_json, created_at, disabled, name, updated_at) \
+             VALUES (NULL, ?, 1, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET \
+                 config_json = NULL, \
+                 disabled    = 1, \
+                 updated_at  = excluded.updated_at",
+        )
+        .bind(now)
+        .bind(name)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn rebuild_smoke(
+        &self,
+        list: &SmokeList,
+        yaml: &[SmokeTestConfig],
+    ) -> Result<MergeReport, SmokeStoreError> {
+        let db = self.list_dynamic().await?;
+        let (merged, report) = merge(yaml, &db);
+        let configs: Vec<SmokeTestConfig> = merged.into_iter().map(|m| m.config).collect();
+        list.store(Arc::new(configs));
+        Ok(report)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn record_assistant_turn(
         &self,
         run_id: RunId,
@@ -167,183 +350,6 @@ impl SmokeStore {
         .execute(&self.pool)
         .await?;
         Ok(id)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn finish_run(
-        &self,
-        run_id: RunId,
-        status: RunStatus,
-        error: Option<&str>,
-    ) -> Result<(), SmokeStoreError> {
-        sqlx::query("UPDATE smoke_runs SET ended_at = ?, error = ?, status = ? WHERE id = ?")
-            .bind(u64_to_i64(now_secs()))
-            .bind(error)
-            .bind(status.as_str())
-            .bind(run_id.0.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Most recent runs, newest first. `limit` caps the result set so
-    /// the admin list page stays bounded on noisy databases.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn list_runs(&self, limit: u32) -> Result<Vec<StoredRun>, SmokeStoreError> {
-        let rows = sqlx::query(
-            "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
-             test_name, total_turns \
-             FROM smoke_runs ORDER BY started_at DESC LIMIT ?",
-        )
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_run).collect()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn list_runs_for_test(
-        &self,
-        test_name: &str,
-        limit: u32,
-    ) -> Result<Vec<StoredRun>, SmokeStoreError> {
-        let rows = sqlx::query(
-            "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
-             test_name, total_turns \
-             FROM smoke_runs WHERE test_name = ? ORDER BY started_at DESC LIMIT ?",
-        )
-        .bind(test_name)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_run).collect()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn get_run(&self, run_id: RunId) -> Result<Option<StoredRun>, SmokeStoreError> {
-        let row = sqlx::query(
-            "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
-             test_name, total_turns \
-             FROM smoke_runs WHERE id = ?",
-        )
-        .bind(run_id.0.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
-        row.as_ref().map(row_to_run).transpose()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn messages_for_run(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredMessage>, SmokeStoreError> {
-        let rows = sqlx::query(
-            "SELECT content, message_id, role, run_id, turn_index \
-             FROM smoke_messages WHERE run_id = ? ORDER BY turn_index ASC, role ASC",
-        )
-        .bind(run_id.0.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_message).collect()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn list_dynamic(&self) -> Result<Vec<DynamicSmokeRow>, SmokeStoreError> {
-        let rows = sqlx::query(
-            "SELECT config_json, created_at, disabled, name, updated_at \
-             FROM dynamic_smoke_tests ORDER BY name ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_dynamic_smoke).collect()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn put_active_dynamic(
-        &self,
-        name: &str,
-        config: &SmokeTestConfig,
-    ) -> Result<(), SmokeStoreError> {
-        let now = u64_to_i64(now_secs());
-        let json = serde_json::to_string(config)
-            .map_err(|e| SmokeStoreError::RowDecode(format!("serialize: {e}")))?;
-        sqlx::query(
-            "INSERT INTO dynamic_smoke_tests (config_json, created_at, disabled, name, updated_at) \
-             VALUES (?, ?, 0, ?, ?) \
-             ON CONFLICT(name) DO UPDATE SET \
-                 config_json = excluded.config_json, \
-                 disabled    = 0, \
-                 updated_at  = excluded.updated_at",
-        )
-        .bind(json)
-        .bind(now)
-        .bind(name)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), SmokeStoreError> {
-        let now = u64_to_i64(now_secs());
-        sqlx::query(
-            "INSERT INTO dynamic_smoke_tests (config_json, created_at, disabled, name, updated_at) \
-             VALUES (NULL, ?, 1, ?, ?) \
-             ON CONFLICT(name) DO UPDATE SET \
-                 config_json = NULL, \
-                 disabled    = 1, \
-                 updated_at  = excluded.updated_at",
-        )
-        .bind(now)
-        .bind(name)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, SmokeStoreError> {
-        let result = sqlx::query("DELETE FROM dynamic_smoke_tests WHERE name = ?")
-            .bind(name)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn rebuild_smoke(
-        &self,
-        list: &SmokeList,
-        yaml: &[SmokeTestConfig],
-    ) -> Result<MergeReport, SmokeStoreError> {
-        let db = self.list_dynamic().await?;
-        let (merged, report) = merge(yaml, &db);
-        let configs: Vec<SmokeTestConfig> = merged.into_iter().map(|m| m.config).collect();
-        list.store(Arc::new(configs));
-        Ok(report)
     }
 }
 

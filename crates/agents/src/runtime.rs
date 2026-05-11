@@ -200,10 +200,34 @@ impl OneShotPrompt for RigAgents {
 }
 
 impl AgentsInner {
-    /// Snapshot of agents at the moment of the call. Returned as an owned
-    /// `AgentConfig` so the caller can outlive any subsequent hot swap.
-    fn find_agent(&self, name: &str) -> Option<AgentConfig> {
-        self.agents.load().iter().find(|a| a.name == name).cloned()
+    pub(crate) async fn complete_with_depth(
+        self: &Arc<Self>,
+        agent_name: &str,
+        messages: Vec<Message>,
+        depth: usize,
+        user_id: UserId,
+    ) -> Result<Completion, AgentsError> {
+        if depth > MAX_SUBAGENT_DEPTH {
+            return Err(AgentsError::SubagentDepthExceeded {
+                limit: MAX_SUBAGENT_DEPTH,
+                subagent: agent_name.to_string(),
+            });
+        }
+        let agent = self
+            .find_agent(agent_name)
+            .ok_or_else(|| AgentsError::UnknownAgent(agent_name.to_string()))?;
+        let provider = self.providers.get(agent.provider).ok_or_else(|| {
+            AgentsError::ProviderNotConfigured {
+                agent: agent.name.clone(),
+                provider: agent.provider,
+            }
+        })?;
+        let (tools, _) = self.build_tools(&agent, depth, user_id)?;
+        let conversation = Conversation::from_messages(messages, &agent.preamble)?;
+        provider
+            .send(conversation, &agent.model, tools)
+            .await
+            .map_err(AgentsError::from)
     }
 
     /// Build the full tool list the agent will see: MCP tools (wrapped in
@@ -243,52 +267,6 @@ impl AgentsInner {
         Ok((tools, subagent_names))
     }
 
-    /// Tool description for a subagent reference. Subagent names share
-    /// the agent + experiment namespace: agents looks at its own table
-    /// first, then defers to the resolver for experiment purposes.
-    /// Validation already guarantees the name exists somewhere.
-    fn subagent_purpose(&self, name: &str) -> String {
-        if let Some(agent) = self.find_agent(name) {
-            return agent
-                .purpose
-                .clone()
-                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", agent.name));
-        }
-        self.resolver
-            .purpose(name)
-            .unwrap_or_else(|| format!("Invoke the '{name}' subagent."))
-    }
-
-    pub(crate) async fn complete_with_depth(
-        self: &Arc<Self>,
-        agent_name: &str,
-        messages: Vec<Message>,
-        depth: usize,
-        user_id: UserId,
-    ) -> Result<Completion, AgentsError> {
-        if depth > MAX_SUBAGENT_DEPTH {
-            return Err(AgentsError::SubagentDepthExceeded {
-                limit: MAX_SUBAGENT_DEPTH,
-                subagent: agent_name.to_string(),
-            });
-        }
-        let agent = self
-            .find_agent(agent_name)
-            .ok_or_else(|| AgentsError::UnknownAgent(agent_name.to_string()))?;
-        let provider = self.providers.get(agent.provider).ok_or_else(|| {
-            AgentsError::ProviderNotConfigured {
-                agent: agent.name.clone(),
-                provider: agent.provider,
-            }
-        })?;
-        let (tools, _) = self.build_tools(&agent, depth, user_id)?;
-        let conversation = Conversation::from_messages(messages, &agent.preamble)?;
-        provider
-            .send(conversation, &agent.model, tools)
-            .await
-            .map_err(AgentsError::from)
-    }
-
     async fn complete_streaming_with_depth(
         self: &Arc<Self>,
         agent_name: &str,
@@ -319,6 +297,12 @@ impl AgentsInner {
             .map_err(AgentsError::from)
     }
 
+    /// Snapshot of agents at the moment of the call. Returned as an owned
+    /// `AgentConfig` so the caller can outlive any subsequent hot swap.
+    fn find_agent(&self, name: &str) -> Option<AgentConfig> {
+        self.agents.load().iter().find(|a| a.name == name).cloned()
+    }
+
     async fn prompt_with(
         &self,
         provider: ProviderKind,
@@ -338,5 +322,21 @@ impl AgentsInner {
             .send(conversation, model, vec![])
             .await
             .map_err(AgentsError::from)
+    }
+
+    /// Tool description for a subagent reference. Subagent names share
+    /// the agent + experiment namespace: agents looks at its own table
+    /// first, then defers to the resolver for experiment purposes.
+    /// Validation already guarantees the name exists somewhere.
+    fn subagent_purpose(&self, name: &str) -> String {
+        if let Some(agent) = self.find_agent(name) {
+            return agent
+                .purpose
+                .clone()
+                .unwrap_or_else(|| format!("Invoke the '{}' subagent.", agent.name));
+        }
+        self.resolver
+            .purpose(name)
+            .unwrap_or_else(|| format!("Invoke the '{name}' subagent."))
     }
 }

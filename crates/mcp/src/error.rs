@@ -16,16 +16,16 @@ pub enum McpError {
     },
     #[error("agent '{agent}' references MCP server '{server}' which is not configured")]
     ServerNotConfigured { agent: String, server: String },
-    #[error("MCP server '{server}' does not expose tool '{tool}' (agent '{agent}')")]
-    ToolNotFound {
-        agent: String,
-        server: String,
-        tool: String,
-    },
     #[error("failed to spawn MCP server '{server}': {source}")]
     Spawn {
         server: String,
         #[source]
         source: std::io::Error,
+    },
+    #[error("MCP server '{server}' does not expose tool '{tool}' (agent '{agent}')")]
+    ToolNotFound {
+        agent: String,
+        server: String,
+        tool: String,
     },
 }

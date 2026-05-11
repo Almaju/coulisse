@@ -146,24 +146,15 @@ impl Sink {
             .collect()
     }
 
-    /// All tool calls for one user, chronological. Studio uses this to
-    /// render the per-message tool-call panel.
-    ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn tool_calls_for_user(
-        &self,
-        user_id: UserId,
-    ) -> Result<Vec<ToolCall>, TelemetryError> {
-        let rows = sqlx::query(
-            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
-             turn_id, user_id FROM tool_calls WHERE user_id = ? ORDER BY rowid ASC",
-        )
-        .bind(user_id.0.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_tool_call).collect()
+    pub async fn tool_call_count(&self, user_id: UserId) -> Result<usize, TelemetryError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tool_calls WHERE user_id = ?")
+            .bind(user_id.0.to_string())
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
     }
 
     /// # Errors
@@ -243,15 +234,24 @@ impl Sink {
         rows.iter().map(row_to_tool_call).collect()
     }
 
+    /// All tool calls for one user, chronological. Studio uses this to
+    /// render the per-message tool-call panel.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn tool_call_count(&self, user_id: UserId) -> Result<usize, TelemetryError> {
-        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tool_calls WHERE user_id = ?")
-            .bind(user_id.0.to_string())
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
+    pub async fn tool_calls_for_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<ToolCall>, TelemetryError> {
+        let rows = sqlx::query(
+            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
+             turn_id, user_id FROM tool_calls WHERE user_id = ? ORDER BY rowid ASC",
+        )
+        .bind(user_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_tool_call).collect()
     }
 }
 

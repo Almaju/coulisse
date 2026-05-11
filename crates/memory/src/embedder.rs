@@ -73,14 +73,6 @@ impl BundledEmbedder {
         }
     }
 
-    #[must_use]
-    pub fn ndims(&self) -> usize {
-        match self {
-            Self::Hash(h) => h.ndims(),
-            Self::Openai { dims, .. } | Self::Voyage { dims, .. } => *dims,
-        }
-    }
-
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -95,6 +87,14 @@ impl BundledEmbedder {
                 let embedding = model.embed_text(text).await.map_err(EmbedError::from)?;
                 Ok(to_f32(embedding.vec))
             }
+        }
+    }
+
+    #[must_use]
+    pub fn ndims(&self) -> usize {
+        match self {
+            Self::Hash(h) => h.ndims(),
+            Self::Openai { dims, .. } | Self::Voyage { dims, .. } => *dims,
         }
     }
 }
@@ -117,18 +117,13 @@ impl HashEmbedder {
     }
 
     #[must_use]
-    pub fn ndims(&self) -> usize {
-        self.dims
-    }
-
-    #[must_use]
     pub fn embed(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; self.dims];
         for word in text.to_lowercase().split_whitespace() {
             let mut hasher = DefaultHasher::new();
             word.hash(&mut hasher);
-            // Hash output is u64; usize is at least 32 bits everywhere we
-            // build, so truncating with `as` matches usize::MAX on the host.
+            // WHY: hash output is u64; usize is at least 32 bits everywhere
+            // we build, so truncating with `as` matches usize::MAX on the host.
             #[allow(clippy::cast_possible_truncation)]
             let idx = (hasher.finish() as usize) % self.dims;
             v[idx] += 1.0;
@@ -141,10 +136,15 @@ impl HashEmbedder {
         }
         v
     }
+
+    #[must_use]
+    pub fn ndims(&self) -> usize {
+        self.dims
+    }
 }
 
 fn to_f32(vec: Vec<f64>) -> Vec<f32> {
-    // Embeddings are bounded magnitudes; the f64 → f32 narrowing is
+    // WHY: embeddings are bounded magnitudes; the f64 → f32 narrowing is
     // intrinsic to storing them packed in SQLite.
     #[allow(clippy::cast_possible_truncation)]
     vec.into_iter().map(|x| x as f32).collect()

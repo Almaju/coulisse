@@ -34,31 +34,6 @@ pub(crate) struct SubagentTool {
 }
 
 impl ToolDyn for SubagentTool {
-    fn name(&self) -> String {
-        self.target_name.clone()
-    }
-
-    fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
-        let name = self.target_name.clone();
-        let description = self.purpose.clone();
-        Box::pin(async move {
-            ToolDefinition {
-                name,
-                description,
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Natural-language message or instruction to send to the subagent. The subagent starts with a fresh context and sees only this message.",
-                        }
-                    },
-                    "required": ["message"],
-                }),
-            }
-        })
-    }
-
     fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
         let depth = self.depth;
         let inner = Arc::clone(&self.inner);
@@ -90,10 +65,10 @@ impl ToolDyn for SubagentTool {
                     content: message,
                 }];
                 let next_depth = depth.saturating_add(1);
-                // Subagent name may be an experiment — defer resolution to
-                // the runtime's resolver so the variant is picked at call
-                // time, consistent with the sticky-by-user hashing the
-                // proxy applies at the top level.
+                // WHY: subagent name may be an experiment — defer resolution
+                // to the runtime's resolver so the variant is picked at call
+                // time, consistent with the sticky-by-user hashing the proxy
+                // applies at the top level.
                 let agent_name = inner.resolver.resolve(&target, user_id).await;
                 let outcome = AgentsInner::complete_with_depth(
                     &inner,
@@ -106,16 +81,41 @@ impl ToolDyn for SubagentTool {
 
                 let span = tracing::Span::current();
                 match &outcome {
-                    Ok(completion) => span.record("result", completion.text.as_str()),
                     Err(err) => span.record("error", err.to_string().as_str()),
+                    Ok(completion) => span.record("result", completion.text.as_str()),
                 };
 
                 match outcome {
-                    Ok(completion) => Ok(completion.text),
                     Err(err) => Err(ToolError::ToolCallError(Box::new(err))),
+                    Ok(completion) => Ok(completion.text),
                 }
             }
             .instrument(span),
         )
+    }
+
+    fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+        let name = self.target_name.clone();
+        let description = self.purpose.clone();
+        Box::pin(async move {
+            ToolDefinition {
+                name,
+                description,
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "Natural-language message or instruction to send to the subagent. The subagent starts with a fresh context and sees only this message.",
+                        }
+                    },
+                    "required": ["message"],
+                }),
+            }
+        })
+    }
+
+    fn name(&self) -> String {
+        self.target_name.clone()
     }
 }

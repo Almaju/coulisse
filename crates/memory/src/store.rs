@@ -76,21 +76,8 @@ impl Store {
         &self.config
     }
 
-    #[must_use]
-    pub fn embedder(&self) -> &BundledEmbedder {
-        &self.embedder
-    }
-
     /// Obtain a scoped handle for `user_id`. Does not create any rows until
     /// the caller writes something.
-    #[must_use]
-    pub fn for_user(&self, user_id: UserId) -> UserMemory<'_> {
-        UserMemory {
-            store: self,
-            user_id,
-        }
-    }
-
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -131,6 +118,24 @@ impl Store {
     /// memories); studio composes other per-feature counts (scores,
     /// tool calls) from the crates that own them.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    #[must_use]
+    pub fn embedder(&self) -> &BundledEmbedder {
+        &self.embedder
+    }
+
+    /// Obtain a scoped handle for `user_id`. Does not create any rows until
+    /// the caller writes something.
+    #[must_use]
+    pub fn for_user(&self, user_id: UserId) -> UserMemory<'_> {
+        UserMemory {
+            store: self,
+            user_id,
+        }
+    }
+
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -180,11 +185,6 @@ pub struct UserMemory<'a> {
 }
 
 impl UserMemory<'_> {
-    #[must_use]
-    pub fn user_id(&self) -> UserId {
-        self.user_id
-    }
-
     /// Append a message to the user's conversation history.
     ///
     /// # Errors
@@ -227,6 +227,108 @@ impl UserMemory<'_> {
         .execute(&self.store.pool)
         .await?;
         Ok(stored.id)
+    }
+
+    /// Assemble a context window for an upcoming prompt. Takes the new user
+    /// message (used for semantic recall) and a total token budget. Returns
+    /// recalled memories and the most-recent conversation messages that fit
+    /// within the budget, in chronological order. The new message is *not*
+    /// included — the caller appends it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn assemble_context(
+        &self,
+        new_user_message: &str,
+        budget: TokenCount,
+    ) -> Result<AssembledContext, MemoryError> {
+        let recalled = self
+            .recall(new_user_message, self.store.config.recall_k)
+            .await?;
+
+        let scaled = f64::from(budget.0) * f64::from(self.store.config.memory_budget_fraction);
+        // WHY: clamped to [0, u32::MAX] just above, so the truncating cast
+        // cannot overflow or sign-flip — only drops the fractional part.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let memory_budget = TokenCount(scaled.clamp(0.0, f64::from(u32::MAX)) as u32);
+        let memories = fit_memories(recalled, memory_budget);
+        let memories_used: TokenCount = memories
+            .iter()
+            .map(|m| TokenCount::estimate(&m.content))
+            .fold(TokenCount(0), |a, b| a + b);
+        let history_budget = budget.saturating_sub(memories_used);
+
+        let stored = self.messages().await?;
+        let messages = fit_messages(&stored, history_budget);
+
+        Ok(AssembledContext { memories, messages })
+    }
+
+    /// All long-term memories recorded for this user, in insertion order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn memories(&self) -> Result<Vec<Memory>, MemoryError> {
+        self.load_memories().await
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn memory_count(&self) -> Result<usize, MemoryError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memories WHERE user_id = ?")
+            .bind(self.user_id.0.to_string())
+            .fetch_one(&self.store.pool)
+            .await?;
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn message_count(&self) -> Result<usize, MemoryError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE user_id = ?")
+            .bind(self.user_id.0.to_string())
+            .fetch_one(&self.store.pool)
+            .await?;
+        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
+    }
+
+    /// Full conversation history for this user, in chronological order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn messages(&self) -> Result<Vec<StoredMessage>, MemoryError> {
+        let rows = sqlx::query(
+            "SELECT content, created_at, id, role, token_count, user_id \
+             FROM messages WHERE user_id = ? ORDER BY rowid ASC",
+        )
+        .bind(self.user_id.0.to_string())
+        .fetch_all(&self.store.pool)
+        .await?;
+        rows.iter().map(row_to_stored_message).collect()
+    }
+
+    /// Return top-`k` memories most relevant to `query` by cosine similarity.
+    /// Only memories embedded with the currently-configured embedder model
+    /// are considered — stale rows are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<Memory>, MemoryError> {
+        let query_embedding = self.store.embedder.embed(query).await?;
+        check_dims(&query_embedding, self.store.embedder.ndims())?;
+        let memories = self.load_memories().await?;
+        let mut scored: Vec<(f32, Memory)> = memories
+            .into_iter()
+            .map(|m| (cosine_similarity(&query_embedding, &m.embedding), m))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored.into_iter().take(k).map(|(_, m)| m).collect())
     }
 
     /// Record a long-term memory (fact or preference) for this user. Always
@@ -274,106 +376,9 @@ impl UserMemory<'_> {
         Ok(Some(memory.id))
     }
 
-    /// Return top-`k` memories most relevant to `query` by cosine similarity.
-    /// Only memories embedded with the currently-configured embedder model
-    /// are considered — stale rows are ignored.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<Memory>, MemoryError> {
-        let query_embedding = self.store.embedder.embed(query).await?;
-        check_dims(&query_embedding, self.store.embedder.ndims())?;
-        let memories = self.load_memories().await?;
-        let mut scored: Vec<(f32, Memory)> = memories
-            .into_iter()
-            .map(|m| (cosine_similarity(&query_embedding, &m.embedding), m))
-            .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(scored.into_iter().take(k).map(|(_, m)| m).collect())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn message_count(&self) -> Result<usize, MemoryError> {
-        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE user_id = ?")
-            .bind(self.user_id.0.to_string())
-            .fetch_one(&self.store.pool)
-            .await?;
-        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn memory_count(&self) -> Result<usize, MemoryError> {
-        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memories WHERE user_id = ?")
-            .bind(self.user_id.0.to_string())
-            .fetch_one(&self.store.pool)
-            .await?;
-        Ok(usize::try_from(row.0.max(0)).unwrap_or(0))
-    }
-
-    /// Full conversation history for this user, in chronological order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn messages(&self) -> Result<Vec<StoredMessage>, MemoryError> {
-        let rows = sqlx::query(
-            "SELECT content, created_at, id, role, token_count, user_id \
-             FROM messages WHERE user_id = ? ORDER BY rowid ASC",
-        )
-        .bind(self.user_id.0.to_string())
-        .fetch_all(&self.store.pool)
-        .await?;
-        rows.iter().map(row_to_stored_message).collect()
-    }
-
-    /// All long-term memories recorded for this user, in insertion order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn memories(&self) -> Result<Vec<Memory>, MemoryError> {
-        self.load_memories().await
-    }
-
-    /// Assemble a context window for an upcoming prompt. Takes the new user
-    /// message (used for semantic recall) and a total token budget. Returns
-    /// recalled memories and the most-recent conversation messages that fit
-    /// within the budget, in chronological order. The new message is *not*
-    /// included — the caller appends it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn assemble_context(
-        &self,
-        new_user_message: &str,
-        budget: TokenCount,
-    ) -> Result<AssembledContext, MemoryError> {
-        let recalled = self
-            .recall(new_user_message, self.store.config.recall_k)
-            .await?;
-
-        let scaled = f64::from(budget.0) * f64::from(self.store.config.memory_budget_fraction);
-        // Clamped to [0, u32::MAX] just above; the truncating cast cannot
-        // overflow or sign-flip and only drops the fractional part.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let memory_budget = TokenCount(scaled.clamp(0.0, f64::from(u32::MAX)) as u32);
-        let memories = fit_memories(recalled, memory_budget);
-        let memories_used: TokenCount = memories
-            .iter()
-            .map(|m| TokenCount::estimate(&m.content))
-            .fold(TokenCount(0), |a, b| a + b);
-        let history_budget = budget.saturating_sub(memories_used);
-
-        let stored = self.messages().await?;
-        let messages = fit_messages(&stored, history_budget);
-
-        Ok(AssembledContext { memories, messages })
+    #[must_use]
+    pub fn user_id(&self) -> UserId {
+        self.user_id
     }
 
     async fn insert_memory(&self, memory: &Memory) -> Result<(), MemoryError> {

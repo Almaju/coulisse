@@ -180,19 +180,46 @@ impl Judges {
 
     /// All judge scores recorded for `user_id`, chronological.
     ///
+    /// Mean and sample count of scores grouped by `agent_name`, scoped to
+    /// `(judge, criterion)` and to scores recorded after `since`. Used by
+    /// the bandit strategy. Aggregates across all users (the experiment
+    /// is global, not per-user). Empty when no scores match — callers
+    /// fall back to exploration.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn scores(&self, user_id: UserId) -> Result<Vec<Score>, JudgeStoreError> {
+    pub async fn mean_scores_by_agent(
+        &self,
+        judge: &str,
+        criterion: &str,
+        since: u64,
+    ) -> Result<Vec<AgentScoreSummary>, JudgeStoreError> {
         let rows = sqlx::query(
-            "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
-             message_id, reasoning, score, user_id \
-             FROM scores WHERE user_id = ? ORDER BY rowid ASC",
+            "SELECT agent_name, AVG(score) AS mean, COUNT(*) AS samples \
+             FROM scores \
+             WHERE judge_name = ? AND criterion = ? AND created_at >= ? AND agent_name <> '' \
+             GROUP BY agent_name",
         )
-        .bind(user_id.0.to_string())
+        .bind(judge)
+        .bind(criterion)
+        .bind(u64_to_i64(since))
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_score).collect()
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let agent_name: String = row.try_get("agent_name")?;
+            let mean: f64 = row.try_get("mean")?;
+            let samples: i64 = row.try_get("samples")?;
+            out.push(AgentScoreSummary {
+                agent_name,
+                // WHY: score means are bounded 0..10
+                #[allow(clippy::cast_possible_truncation)]
+                mean: mean as f32,
+                samples: i64_to_u32(samples),
+            });
+        }
+        Ok(out)
     }
 
     /// # Errors
@@ -235,6 +262,21 @@ impl Judges {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
+    pub async fn scores(&self, user_id: UserId) -> Result<Vec<Score>, JudgeStoreError> {
+        let rows = sqlx::query(
+            "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id \
+             FROM scores WHERE user_id = ? ORDER BY rowid ASC",
+        )
+        .bind(user_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_score).collect()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn scores_for_agent(&self, agent_name: &str) -> Result<Vec<Score>, JudgeStoreError> {
         let rows = sqlx::query(
             "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
@@ -269,51 +311,22 @@ impl Judges {
         .await?;
         rows.iter().map(row_to_score).collect()
     }
+}
 
-    /// Mean and sample count of scores grouped by `agent_name`, scoped to
-    /// `(judge, criterion)` and to scores recorded after `since`. Used by
-    /// the bandit strategy. Aggregates across all users (the experiment
-    /// is global, not per-user). Empty when no scores match — callers
-    /// fall back to exploration.
+impl Judges {
+    /// Physically remove the row. Returns true if a row was deleted.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn mean_scores_by_agent(
-        &self,
-        judge: &str,
-        criterion: &str,
-        since: u64,
-    ) -> Result<Vec<AgentScoreSummary>, JudgeStoreError> {
-        let rows = sqlx::query(
-            "SELECT agent_name, AVG(score) AS mean, COUNT(*) AS samples \
-             FROM scores \
-             WHERE judge_name = ? AND criterion = ? AND created_at >= ? AND agent_name <> '' \
-             GROUP BY agent_name",
-        )
-        .bind(judge)
-        .bind(criterion)
-        .bind(u64_to_i64(since))
-        .fetch_all(&self.pool)
-        .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let agent_name: String = row.try_get("agent_name")?;
-            let mean: f64 = row.try_get("mean")?;
-            let samples: i64 = row.try_get("samples")?;
-            out.push(AgentScoreSummary {
-                agent_name,
-                // WHY: score means are bounded 0..10
-                #[allow(clippy::cast_possible_truncation)]
-                mean: mean as f32,
-                samples: i64_to_u32(samples),
-            });
-        }
-        Ok(out)
+    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, JudgeStoreError> {
+        let result = sqlx::query("DELETE FROM dynamic_judges WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
-}
 
-impl Judges {
     /// Every dynamic-judge row, in name order. Used by the merge step.
     ///
     /// # Errors
@@ -327,22 +340,6 @@ impl Judges {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_dynamic_judge).collect()
-    }
-
-    /// Upsert an active row (override or dynamic). `created_at` is preserved
-    /// across updates; `updated_at` is bumped to now.
-    ///
-    /// Physically remove the row. Returns true if a row was deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, JudgeStoreError> {
-        let result = sqlx::query("DELETE FROM dynamic_judges WHERE name = ?")
-            .bind(name)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
     }
 
     /// # Errors

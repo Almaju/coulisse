@@ -62,6 +62,24 @@ impl DynamicAgents {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
+    /// Physically remove the row. Returns true if a row was deleted. Used by
+    /// "reset to YAML default" (drop an override so YAML reasserts) and by
+    /// hard-delete of pure dynamic agents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn delete(&self, name: &str) -> Result<bool, DynamicAgentsError> {
+        let result = sqlx::query("DELETE FROM dynamic_agents WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn list(&self) -> Result<Vec<DynamicRow>, DynamicAgentsError> {
         let rows = sqlx::query(
             "SELECT config_json, created_at, disabled, name, updated_at \
@@ -128,21 +146,6 @@ impl DynamicAgents {
         Ok(())
     }
 
-    /// Physically remove the row. Returns true if a row was deleted. Used by
-    /// "reset to YAML default" (drop an override so YAML reasserts) and by
-    /// hard-delete of pure dynamic agents.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn delete(&self, name: &str) -> Result<bool, DynamicAgentsError> {
-        let result = sqlx::query("DELETE FROM dynamic_agents WHERE name = ?")
-            .bind(name)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
     /// Read every row, merge against `yaml_agents`, and atomically swap the
     /// effective list into `list`. Called once at boot, after every YAML
     /// reload, and after every admin write so all readers see one
@@ -171,11 +174,11 @@ fn row_to_dynamic(row: &SqliteRow) -> Result<DynamicRow, DynamicAgentsError> {
     let name: String = row.try_get("name")?;
     let updated_at: i64 = row.try_get("updated_at")?;
     let config = match config_json {
+        None => None,
         Some(s) => Some(
             serde_json::from_str::<AgentConfig>(&s)
                 .map_err(|e| DynamicAgentsError::RowDecode(format!("config_json: {e}")))?,
         ),
-        None => None,
     };
     Ok(DynamicRow {
         config,

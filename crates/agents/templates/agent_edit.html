@@ -65,14 +65,14 @@
     </div>
   </form>
   <script>
-    // The form submits its YAML body as a single string. Translate it
+    // WHY: the form submits its YAML body as a single string. Translate it
     // to a parsed JSON payload before posting so the API receives the
     // typed AgentConfig shape rather than `{ "__yaml": "..." }`.
     document.currentScript.previousElementSibling
       ?.querySelector?.('form')?.addEventListener('htmx:configRequest', function (e) {
         const body = (e.detail.parameters && e.detail.parameters['__yaml']) || '';
         try {
-          // Browsers don't ship a YAML parser. Send the raw YAML body
+          // WHY: browsers don't ship a YAML parser. Send the raw YAML body
           // with `Content-Type: application/yaml`; the server accepts
           // it on the same routes as JSON.
           e.detail.parameters = {};

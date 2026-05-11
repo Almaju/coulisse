@@ -57,7 +57,6 @@ impl AgentDetailRow {
     pub(super) fn from_admin(row: &AdminAgent) -> Self {
         let label = SourceLabel::from_admin(row.source);
         match &row.config {
-            Some(cfg) => Self::from_config(cfg, label, row.yaml_backed),
             None => Self {
                 judges: Vec::new(),
                 mcp_tools: Vec::new(),
@@ -70,6 +69,7 @@ impl AgentDetailRow {
                 subagents: Vec::new(),
                 yaml_backed: row.yaml_backed,
             },
+            Some(cfg) => Self::from_config(cfg, label, row.yaml_backed),
         }
     }
 
@@ -113,17 +113,6 @@ impl AgentRow {
     pub(super) fn from_admin(row: &AdminAgent) -> Self {
         let label = SourceLabel::from_admin(row.source);
         match &row.config {
-            Some(cfg) => Self {
-                judge_count: cfg.judges.len(),
-                model: cfg.model.clone(),
-                name: cfg.name.clone(),
-                provider: cfg.provider.as_str().to_string(),
-                purpose: cfg.purpose.clone(),
-                source: label,
-                subagent_count: cfg.subagents.len(),
-                tombstoned: false,
-                tool_count: cfg.mcp_tools.len(),
-            },
             None => Self {
                 judge_count: 0,
                 model: String::new(),
@@ -134,6 +123,17 @@ impl AgentRow {
                 subagent_count: 0,
                 tombstoned: true,
                 tool_count: 0,
+            },
+            Some(cfg) => Self {
+                judge_count: cfg.judges.len(),
+                model: cfg.model.clone(),
+                name: cfg.name.clone(),
+                provider: cfg.provider.as_str().to_string(),
+                purpose: cfg.purpose.clone(),
+                source: label,
+                subagent_count: cfg.subagents.len(),
+                tombstoned: false,
+                tool_count: cfg.mcp_tools.len(),
             },
         }
     }

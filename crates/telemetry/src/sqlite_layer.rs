@@ -147,46 +147,6 @@ impl<S> Layer<S> for SqliteLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        if !is_recorded_span(attrs.metadata().name()) {
-            return;
-        }
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
-        let mut visitor = FieldVisitor::default();
-        attrs.record(&mut visitor);
-        span.extensions_mut().insert(SpanExt {
-            event_id: Uuid::new_v4(),
-            fields: visitor.fields,
-            started_at: Instant::now(),
-            started_at_ms: now_millis(),
-        });
-
-        if span.name() == "turn" {
-            let extensions = span.extensions();
-            let Some(span_ext) = extensions.get::<SpanExt>() else {
-                return;
-            };
-            let user_id = span_ext
-                .fields
-                .get("user_id")
-                .and_then(|s| Uuid::parse_str(s).ok().map(UserId::from));
-            let turn_id = span_ext
-                .fields
-                .get("turn_id")
-                .and_then(|s| Uuid::parse_str(s).ok().map(TurnId));
-            drop(extensions);
-            if let (Some(user_id), Some(turn_id)) = (user_id, turn_id) {
-                span.extensions_mut().insert(TurnExt {
-                    ordinal: AtomicU32::new(0),
-                    turn_id,
-                    user_id,
-                });
-            }
-        }
-    }
-
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else {
             return;
@@ -283,6 +243,46 @@ where
                 user_id: user_id.0.to_string(),
             };
             let _ = self.tx.send(WriteJob::ToolCall(row));
+        }
+    }
+
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if !is_recorded_span(attrs.metadata().name()) {
+            return;
+        }
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let mut visitor = FieldVisitor::default();
+        attrs.record(&mut visitor);
+        span.extensions_mut().insert(SpanExt {
+            event_id: Uuid::new_v4(),
+            fields: visitor.fields,
+            started_at: Instant::now(),
+            started_at_ms: now_millis(),
+        });
+
+        if span.name() == "turn" {
+            let extensions = span.extensions();
+            let Some(span_ext) = extensions.get::<SpanExt>() else {
+                return;
+            };
+            let user_id = span_ext
+                .fields
+                .get("user_id")
+                .and_then(|s| Uuid::parse_str(s).ok().map(UserId::from));
+            let turn_id = span_ext
+                .fields
+                .get("turn_id")
+                .and_then(|s| Uuid::parse_str(s).ok().map(TurnId));
+            drop(extensions);
+            if let (Some(user_id), Some(turn_id)) = (user_id, turn_id) {
+                span.extensions_mut().insert(TurnExt {
+                    ordinal: AtomicU32::new(0),
+                    turn_id,
+                    user_id,
+                });
+            }
         }
     }
 
@@ -389,15 +389,11 @@ impl Visit for FieldVisitor {
         self.fields.insert(field.name(), value.to_string());
     }
 
-    fn record_str(&mut self, field: &Field, value: &str) {
-        self.fields.insert(field.name(), value.to_string());
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.fields.insert(field.name(), format!("{value:?}"));
     }
 
-    fn record_i64(&mut self, field: &Field, value: i64) {
-        self.fields.insert(field.name(), value.to_string());
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
         self.fields.insert(field.name(), value.to_string());
     }
 
@@ -405,11 +401,15 @@ impl Visit for FieldVisitor {
         self.fields.insert(field.name(), value.to_string());
     }
 
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.fields.insert(field.name(), format!("{value:?}"));
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.fields.insert(field.name(), value.to_string());
     }
 
-    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.fields.insert(field.name(), value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
         self.fields.insert(field.name(), value.to_string());
     }
 }

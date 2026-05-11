@@ -278,10 +278,10 @@ mod tests {
     fn admin_view_covers_all_states() {
         let yaml = vec![cfg("alice", "y"), cfg("bob", "y"), cfg("charlie", "y")];
         let db = vec![
-            active("alice", "db"), // Override
-            tombstone("bob"),      // Tombstoned with yaml_backed
-            active("dave", "db"),  // Dynamic
-            tombstone("ghost"),    // Tombstoned without yaml_backed
+            active("alice", "db"),
+            tombstone("bob"),
+            active("dave", "db"),
+            tombstone("ghost"),
         ];
         let rows = admin_view(&yaml, &db);
         let by_name: std::collections::HashMap<_, _> =
@@ -323,10 +323,10 @@ mod tests {
     fn mixed_scenario_counts_correctly() {
         let yaml = vec![cfg("alice", "y"), cfg("bob", "y"), cfg("charlie", "y")];
         let db = vec![
-            active("alice", "db"), // override
-            tombstone("bob"),      // tombstone
-            active("dave", "db"),  // dynamic
-            tombstone("ghost"),    // orphan tombstone
+            active("alice", "db"),
+            tombstone("bob"),
+            active("dave", "db"),
+            tombstone("ghost"),
         ];
         let (out, report) = merge(&yaml, &db);
 

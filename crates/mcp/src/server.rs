@@ -62,6 +62,7 @@ impl McpServers {
                         server: access.server.clone(),
                     })?;
             let picked: Vec<_> = match &access.only {
+                None => server.tools.values().cloned().collect(),
                 Some(names) => names
                     .iter()
                     .map(|name| {
@@ -76,7 +77,6 @@ impl McpServers {
                             })
                     })
                     .collect::<Result<_, _>>()?,
-                None => server.tools.values().cloned().collect(),
             };
             for tool in picked {
                 tools.push(Box::new(McpTool::from_mcp_server(
