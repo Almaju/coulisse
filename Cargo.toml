@@ -85,3 +85,13 @@ unimplemented = "deny"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# dylint integration. `just lint` runs `cargo dylint --all` which builds
+# the libraries listed below and applies them to the workspace. The
+# oneway-lints crate enforces the "one way to write it" rules — sorted
+# fields/variants/match arms, no .unwrap() outside tests, newtype-first,
+# etc. See https://github.com/Almaju/oneway/tree/main/oneway-lints.
+[workspace.metadata.dylint]
+libraries = [
+    { git = "https://github.com/Almaju/oneway", pattern = "oneway-lints" },
+]
