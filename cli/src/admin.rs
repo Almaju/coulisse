@@ -55,7 +55,6 @@ pub async fn shell(request: Request, next: Next) -> Response {
     }
     let (mut parts, body) = response.into_parts();
     let bytes = match to_bytes(body, usize::MAX).await {
-        Ok(b) => b,
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -63,10 +62,10 @@ pub async fn shell(request: Request, next: Next) -> Response {
             )
                 .into_response();
         }
+        Ok(b) => b,
     };
     let inner = String::from_utf8_lossy(&bytes);
     let html = match (BaseShell { content: &inner }).render() {
-        Ok(s) => s,
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -74,6 +73,7 @@ pub async fn shell(request: Request, next: Next) -> Response {
             )
                 .into_response();
         }
+        Ok(s) => s,
     };
     parts.headers.remove(header::CONTENT_LENGTH);
     Response::from_parts(parts, Body::from(html))
@@ -127,9 +127,9 @@ impl SettingsView {
         };
 
         let memory_user_state = match &config.memory.user_state {
+            memory::UserStateYaml::Configured(_) => "Enabled (custom)".to_string(),
             memory::UserStateYaml::OnOff(false) => "Disabled".to_string(),
             memory::UserStateYaml::OnOff(true) => "Enabled (auto)".to_string(),
-            memory::UserStateYaml::Configured(_) => "Enabled (custom)".to_string(),
         };
 
         let memory_extractor = memory_config.extractor.as_ref().map_or_else(

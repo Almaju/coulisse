@@ -69,8 +69,8 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
     messages: Vec<AgentMessage>,
 ) {
     let shadow_message_id = MessageId::new();
-    // Reuse the parent turn's correlation id so shadow events nest
-    // under the same turn tree in the studio: a fresh `turn` span with
+    // WHY: reuse the parent turn's correlation id so shadow events nest
+    // under the same turn tree in the studio — a fresh `turn` span with
     // the same `turn_id` keeps every nested `tool_call` span linked to
     // the original request in the events table.
     let span = info_span!(
@@ -86,6 +86,14 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
         .instrument(span)
         .await;
     match outcome {
+        Err(err) => {
+            tracing::warn!(
+                user = %user_id.0,
+                agent = %agent_name,
+                error = %err,
+                "shadow run failed",
+            );
+        }
         Ok(completion) => {
             let judges: Vec<Arc<Judge>> = judges_for_agent(&state, &agent_name);
             spawn_score(
@@ -99,14 +107,6 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
                     user_id,
                     user_message,
                 },
-            );
-        }
-        Err(err) => {
-            tracing::warn!(
-                user = %user_id.0,
-                agent = %agent_name,
-                error = %err,
-                "shadow run failed",
             );
         }
     }

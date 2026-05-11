@@ -38,6 +38,12 @@ pub type OnReload =
 /// every feature crate's admin router and to the cli's own
 /// `PUT /admin/config` handler.
 pub struct ConfigStore {
+    on_reload: OnReload,
+    /// Path to `coulisse.yaml` (or whatever `COULISSE_CONFIG` was set
+    /// to). Resolved to absolute at construction so relative-path
+    /// surprises don't bite when the watcher fires from a different
+    /// CWD context.
+    path: PathBuf,
     /// Last validated `Config` snapshot. Updated on every successful
     /// admin write and every file-watcher reload. Admin handlers for
     /// sections that don't have their own `ArcSwap` (providers, mcp,
@@ -51,12 +57,6 @@ pub struct ConfigStore {
     /// write. The file watcher does not contend with this lock — it
     /// only reads.
     write_lock: Mutex<()>,
-    /// Path to `coulisse.yaml` (or whatever `COULISSE_CONFIG` was set
-    /// to). Resolved to absolute at construction so relative-path
-    /// surprises don't bite when the watcher fires from a different
-    /// CWD context.
-    path: PathBuf,
-    on_reload: OnReload,
 }
 
 impl ConfigStore {
@@ -99,10 +99,10 @@ impl ConfigStore {
             notify::Config::default(),
         )
         .map_err(|err| ConfigPersistError::Io(err.to_string()))?;
-        // Watch the parent directory rather than the file itself:
-        // many editors save by writing a temp file + rename, which
-        // breaks file-level inode watches on macOS/Linux. Filter
-        // events down to our path on the receiving side.
+        // WHY: watch the parent directory rather than the file itself —
+        // many editors save by writing a temp file + rename, which breaks
+        // file-level inode watches on macOS/Linux. Filter events down to
+        // our path on the receiving side.
         let watch_dir = self
             .path
             .parent()
@@ -114,10 +114,10 @@ impl ConfigStore {
         let store = Arc::clone(self);
         let target = self.path.clone();
         let handle = tokio::spawn(async move {
-            // Coalesce bursts: editors typically emit several events
-            // per save (truncate, write, rename, chmod). We only need
-            // the trailing state, so wait a beat after the first event
-            // and drain anything that piles up before reloading.
+            // WHY: editors typically emit several events per save
+            // (truncate, write, rename, chmod). Coalesce bursts — wait a
+            // beat after the first event and drain anything that piles up
+            // before reloading.
             const DEBOUNCE: Duration = Duration::from_millis(75);
             while let Some(event) = rx.recv().await {
                 if !is_relevant(&event, &target) {
@@ -143,22 +143,6 @@ impl ConfigStore {
         })
     }
 
-    /// Re-read the on-disk file, validate, and push the new config
-    /// into feature crates via `on_reload`. Errors are reported but
-    /// non-fatal — the previous in-memory state stays live so a broken
-    /// hand-edit doesn't take chat down.
-    async fn reload_from_disk(&self) -> Result<(), ConfigPersistError> {
-        let path = self.path.clone();
-        let config = tokio::task::spawn_blocking(move || Config::from_path(&path))
-            .await
-            .map_err(|err| ConfigPersistError::Io(err.to_string()))?
-            .map_err(|err| ConfigPersistError::Invalid(err.to_string()))?;
-        self.snapshot.store(Arc::new(config.clone()));
-        (self.on_reload)(config).await;
-        tracing::info!(path = %self.path.display(), "config reloaded");
-        Ok(())
-    }
-
     /// Read the file as a YAML mapping. Lets writers splice in a
     /// section without dropping unknown keys — future YAML fields a
     /// newer binary doesn't recognize round-trip cleanly.
@@ -173,6 +157,22 @@ impl ConfigStore {
                 "config root must be a YAML mapping".into(),
             )),
         }
+    }
+
+    /// Re-read the on-disk file, validate, and push the new config
+    /// into feature crates via `on_reload`. Errors are reported but
+    /// non-fatal — the previous in-memory state stays live so a broken
+    /// hand-edit doesn't take chat down.
+    async fn reload_from_disk(&self) -> Result<(), ConfigPersistError> {
+        let path = self.path.clone();
+        let config = tokio::task::spawn_blocking(move || Config::from_path(&path))
+            .await
+            .map_err(|err| ConfigPersistError::Io(err.to_string()))?
+            .map_err(|err| ConfigPersistError::Invalid(err.to_string()))?;
+        self.snapshot.store(Arc::new(config.clone()));
+        (self.on_reload)(config).await;
+        tracing::info!(path = %self.path.display(), "config reloaded");
+        Ok(())
     }
 
     /// Validate and atomically write a serialized YAML mapping to disk.
@@ -196,22 +196,6 @@ impl ConfigStore {
 }
 
 impl ConfigPersister for ConfigStore {
-    fn write_section<'a>(
-        &'a self,
-        section: &'a str,
-        value: serde_yaml::Value,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            let _guard = self.write_lock.lock().await;
-            let mut root = self.read_root()?;
-            root.insert(serde_yaml::Value::String(section.to_string()), value);
-            let config = self.validate_and_write(root)?;
-            (self.on_reload)(config).await;
-            Ok(())
-        })
-    }
-
     fn write_all<'a>(
         &'a self,
         value: serde_yaml::Value,
@@ -224,6 +208,22 @@ impl ConfigPersister for ConfigStore {
                     "config root must be a YAML mapping".into(),
                 ));
             };
+            let config = self.validate_and_write(root)?;
+            (self.on_reload)(config).await;
+            Ok(())
+        })
+    }
+
+    fn write_section<'a>(
+        &'a self,
+        section: &'a str,
+        value: serde_yaml::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let _guard = self.write_lock.lock().await;
+            let mut root = self.read_root()?;
+            root.insert(serde_yaml::Value::String(section.to_string()), value);
             let config = self.validate_and_write(root)?;
             (self.on_reload)(config).await;
             Ok(())

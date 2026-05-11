@@ -62,6 +62,12 @@ impl Banner<'_> {
             reset = s.reset,
         );
         match self.extractor {
+            None => println!(
+                "  {}{dim}disabled (memory grows only via explicit API calls){reset}",
+                label("Extractor"),
+                dim = s.dim,
+                reset = s.reset,
+            ),
             Some(cfg) => println!(
                 "  {}{} / {} {dim}(dedup={}, max={}){reset}",
                 label("Extractor"),
@@ -69,12 +75,6 @@ impl Banner<'_> {
                 cfg.model,
                 cfg.dedup_threshold,
                 cfg.max_facts_per_turn,
-                dim = s.dim,
-                reset = s.reset,
-            ),
-            None => println!(
-                "  {}{dim}disabled (memory grows only via explicit API calls){reset}",
-                label("Extractor"),
                 dim = s.dim,
                 reset = s.reset,
             ),
@@ -123,31 +123,6 @@ impl Banner<'_> {
         println!();
     }
 
-    fn print_judges(&self, s: &Style) {
-        section_header(s, "Judges", self.judges.len());
-        if self.judges.is_empty() {
-            println!("    {}none configured{}", s.dim, s.reset);
-            println!();
-            return;
-        }
-        let w = self.judges.iter().map(|j| j.name.len()).max().unwrap_or(0);
-        for judge in self.judges {
-            let criteria: Vec<&str> = judge.rubrics.keys().map(String::as_str).collect();
-            println!(
-                "    {bold}{name:<w$}{reset}  {dim}{provider} / {model}  sampling={rate}{reset}  {criteria}",
-                bold = s.bold,
-                reset = s.reset,
-                name = judge.name,
-                dim = s.dim,
-                provider = judge.provider,
-                model = judge.model,
-                rate = judge.sampling_rate,
-                criteria = criteria.join(", "),
-            );
-        }
-        println!();
-    }
-
     fn print_experiments(&self, s: &Style) {
         section_header(s, "Experiments", self.experiments.len());
         if self.experiments.is_empty() {
@@ -181,6 +156,31 @@ impl Banner<'_> {
                 strategy = strategy,
                 sticky = exp.sticky_by_user,
                 variants = variants.join(", "),
+            );
+        }
+        println!();
+    }
+
+    fn print_judges(&self, s: &Style) {
+        section_header(s, "Judges", self.judges.len());
+        if self.judges.is_empty() {
+            println!("    {}none configured{}", s.dim, s.reset);
+            println!();
+            return;
+        }
+        let w = self.judges.iter().map(|j| j.name.len()).max().unwrap_or(0);
+        for judge in self.judges {
+            let criteria: Vec<&str> = judge.rubrics.keys().map(String::as_str).collect();
+            println!(
+                "    {bold}{name:<w$}{reset}  {dim}{provider} / {model}  sampling={rate}{reset}  {criteria}",
+                bold = s.bold,
+                reset = s.reset,
+                name = judge.name,
+                dim = s.dim,
+                provider = judge.provider,
+                model = judge.model,
+                rate = judge.sampling_rate,
+                criteria = criteria.join(", "),
             );
         }
         println!();

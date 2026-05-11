@@ -52,7 +52,7 @@ pub fn router(store: Arc<ConfigStore>) -> Router {
         .with_state(state)
 }
 
-// ---- providers --------------------------------------------------------
+// NOTE: providers
 
 #[derive(Template)]
 #[template(path = "providers.html")]
@@ -110,15 +110,14 @@ async fn providers_detail(
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(value).into_response());
     }
-    // No bespoke detail page; fall back to the edit form.
     providers_edit_form(State(state), Path(kind)).await
 }
 
 #[derive(Deserialize)]
 struct ProviderCreateBody {
-    kind: ProviderKind,
     #[serde(flatten)]
     config: ProviderConfig,
+    kind: ProviderKind,
 }
 
 async fn providers_create(
@@ -250,7 +249,7 @@ fn mask_key(key: &str) -> String {
     }
 }
 
-// ---- mcp servers ------------------------------------------------------
+// NOTE: mcp servers
 
 #[derive(Template)]
 #[template(path = "mcp.html")]

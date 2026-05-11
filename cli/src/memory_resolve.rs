@@ -83,6 +83,7 @@ fn resolve_embedder<S: BuildHasher>(
     providers: &HashMap<ProviderKind, ProviderConfig, S>,
 ) -> EmbedderConfig {
     match yaml {
+        None => auto_pick_embedder(providers),
         Some(EmbedderYaml::Hash { dims }) => EmbedderConfig::Hash {
             dims: dims.unwrap_or_else(default_hash_dims),
         },
@@ -94,7 +95,6 @@ fn resolve_embedder<S: BuildHasher>(
             api_key: api_key.clone(),
             model: model.clone().unwrap_or_else(default_voyage_model),
         },
-        None => auto_pick_embedder(providers),
     }
 }
 
@@ -122,6 +122,7 @@ fn resolve_extractor<S: BuildHasher>(
     providers: &HashMap<ProviderKind, ProviderConfig, S>,
 ) -> Result<ExtractorConfig, MemoryResolveError> {
     let (provider, model) = match overrides.and_then(|c| c.learn_from.as_ref()) {
+        None => auto_pick_extractor(providers)?,
         Some(ProviderModel { provider, model }) => {
             let kind = ProviderKind::parse(provider).ok_or_else(|| {
                 MemoryResolveError::LearnFromUnknownProvider {
@@ -133,7 +134,6 @@ fn resolve_extractor<S: BuildHasher>(
             }
             (provider.clone(), model.clone())
         }
-        None => auto_pick_extractor(providers)?,
     };
     Ok(ExtractorConfig {
         dedup_threshold: overrides

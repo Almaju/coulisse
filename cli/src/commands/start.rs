@@ -27,16 +27,16 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
-    #[error("config not found at {0} — run `coulisse init` first")]
-    ConfigMissing(String),
     #[error("coulisse already running (pid {0}) — run `coulisse stop` first")]
     AlreadyRunning(i32),
-    #[error("server failed to come up within {0:?} — see {1}")]
-    StartTimeout(Duration, String),
+    #[error("config not found at {0} — run `coulisse init` first")]
+    ConfigMissing(String),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error(transparent)]
     Serve(Box<dyn std::error::Error>),
+    #[error("server failed to come up within {0:?} — see {1}")]
+    StartTimeout(Duration, String),
 }
 
 pub struct Options {
@@ -100,7 +100,7 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
     {
         return Err(StartError::AlreadyRunning(pid));
     }
-    // Stale PID file from a previous crash — replace it.
+    // NOTE: stale PID file from a previous crash — replace it.
     let _ = fs::remove_file(&paths.pid);
 
     fs::create_dir_all(&paths.dir)?;
@@ -121,7 +121,7 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         .stderr(Stdio::from(log_err));
     unsafe {
         cmd.pre_exec(|| {
-            // Detach from controlling terminal so SIGHUP from the
+            // WHY: detach from controlling terminal so SIGHUP from the
             // launching shell doesn't kill the server.
             setsid().map_err(io::Error::from)?;
             Ok(())
@@ -144,7 +144,7 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    // Detach: leak the child handle so we don't try to wait/kill on drop.
+    // WHY: leak the child handle so we don't try to wait/kill on drop.
     drop(child);
 
     println!("coulisse started (pid {pid})");

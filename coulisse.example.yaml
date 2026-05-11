@@ -12,8 +12,8 @@
 # `user_state: true` to also remember durable facts about each user across
 # conversations. See docs/src/configuration/memory.md for the full schema.
 memory:
-  storage: ./coulisse-memory.db    # or `:memory:` for ephemeral
-  user_state: true                 # picks the embedder + extraction model from `providers:` below
+  storage: ./coulisse-memory.db
+  user_state: true
 
 providers:
   anthropic:
@@ -33,12 +33,12 @@ mcp:
     command: uvx
     args:
       - --from
-      - git+https://github.com/macsymwang/hello-mcp-server.git
+      - "git+ssh://git@github.com/macsymwang/hello-mcp-server.git"
       - hello-mcp-server
-  # Example of an HTTP-based MCP server:
+  # NOTE: HTTP-based servers use `transport: http` and a `url` field.
   # calculator:
   #   transport: http
-  #   url: http://localhost:8080
+  #   url: localhost:8080
 
 # LLM-as-judge evaluators. Optional — omit the block for no evaluation.
 # Each judge runs in a background task after an assistant turn. Agents opt

@@ -42,9 +42,9 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
     let memory_config = memory_resolve::resolve_memory(&config.memory, &config.providers)?;
 
-    // Warm the vendored LiteLLM pricing table so the first chat
-    // completion doesn't pay for ~9k JSON entries on the request
-    // path. Off the request path; one-shot at boot.
+    // WHY: warm the vendored LiteLLM pricing table so the first chat
+    // completion doesn't pay for ~9k JSON entries on the request path.
+    // Off the request path; one-shot at boot.
     providers::warm_pricing();
 
     let memory_summary = memory_summary(&memory_config);
@@ -64,7 +64,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &memory_summary,
     );
 
-    // Lift names that the wiring blocks below still reference.
+    // NOTE: lift names that the wiring blocks below still reference.
     let Stores {
         agents_list,
         dynamic_agents,
@@ -84,10 +84,10 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         ..
     } = stores;
 
-    // ConfigStore is the single point all YAML edits flow through —
-    // admin POSTs, the `PUT /admin/config` handler, hand-edits picked
-    // up by the file watcher. The `on_reload` closure is the seam
-    // back into the in-memory hot state held by feature crates.
+    // NOTE: ConfigStore is the single point all YAML edits flow through —
+    // admin POSTs, the `PUT /admin/config` handler, hand-edits picked up
+    // by the file watcher. The `on_reload` closure is the seam back into
+    // the in-memory hot state held by feature crates.
     let on_reload = make_on_reload(ReloadHandles {
         agents_list: Arc::clone(&agents_list),
         dynamic_agents: Arc::clone(&dynamic_agents),
@@ -129,8 +129,8 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }));
     let proxy_router = auth.wrap_proxy(server::router(proxy_state));
 
-    // axum 0.8 nests asymmetrically: `nest("/admin", ...)` matches the
-    // inner `/` route at `/admin`, but a request to `/admin/` returns
+    // WHY: axum 0.8 nests asymmetrically — `nest("/admin", ...)` matches
+    // the inner `/` route at `/admin`, but a request to `/admin/` returns
     // 404. Redirect the trailing-slash form so bookmarks don't break.
     let app = Router::new()
         .merge(proxy_router)
@@ -170,10 +170,10 @@ async fn boot_stores(
     config: &Config,
     memory_config: &MemoryConfig,
 ) -> Result<Stores, Box<dyn std::error::Error>> {
-    // The merged effective list (`agents_list`) is what the runtime
-    // resolves against; `yaml_agents` is the raw YAML view, kept
-    // alongside so the admin layer can compute source labels and the
-    // smart DELETE handler can decide tombstone-vs-physical-delete.
+    // NOTE: the merged effective list (`agents_list`) is what the runtime
+    // resolves against; `yaml_agents` is the raw YAML view, kept alongside
+    // so the admin layer can compute source labels and the smart DELETE
+    // handler can decide tombstone-vs-physical-delete.
     let agents_list = agents::agent_list(config.agents.clone());
     let yaml_agents = agents::agent_list(config.agents.clone());
     let judges_list = judges::judge_list(config.judges.clone());
@@ -293,10 +293,10 @@ async fn build_runtime(
     memory_config: &MemoryConfig,
     stores: &Stores,
 ) -> Result<Runtime, Box<dyn std::error::Error>> {
-    // Build runtime Judge objects from the merged list (DB shadows + YAML)
-    // so DB-only judges are usable from the moment they're created. The
-    // HashMap itself is rebuilt only at boot — runtime hot-reload of the
-    // Judge instances is a follow-up.
+    // NOTE: build runtime Judge objects from the merged list (DB shadows +
+    // YAML) so DB-only judges are usable from the moment they're created.
+    // The HashMap itself is rebuilt only at boot — runtime hot-reload of
+    // the Judge instances is a follow-up.
     let judges = build_judges(&stores.judges_list.load())?;
     let mcp = Arc::new(McpServers::connect(config.mcp.clone()).await?);
     let experiments = Arc::new(ExperimentRouter::new(
@@ -427,18 +427,18 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             yaml_judges.store(Arc::new(cfg.judges.clone()));
             yaml_experiments.store(Arc::new(cfg.experiments.clone()));
             yaml_smoke.store(Arc::new(cfg.smoke_tests.clone()));
-            // Re-resolve memory config; on failure keep the previous settings
-            // view rather than crashing the reload path. The chat path keeps
-            // its boot-time Store regardless — memory itself does not hot
-            // reload.
+            // WHY: re-resolve memory config; on failure keep the previous
+            // settings view rather than crashing the reload path. The chat
+            // path keeps its boot-time Store regardless — memory itself
+            // does not hot reload.
             match memory_resolve::resolve_memory(&cfg.memory, &cfg.providers) {
-                Ok(resolved) => settings_view.store(Arc::new(
-                    crate::admin::SettingsView::from_config(&cfg, &resolved),
-                )),
                 Err(err) => tracing::warn!(
                     error = %err,
                     "memory config resolution failed during reload; keeping previous settings view",
                 ),
+                Ok(resolved) => settings_view.store(Arc::new(
+                    crate::admin::SettingsView::from_config(&cfg, &resolved),
+                )),
             }
             log_rebuild_failure(
                 "agents",
@@ -559,11 +559,12 @@ fn build_judges(
 /// its own. Looks up the matching top-level provider entry so users who
 /// already configured `OpenAI` for completions don't have to repeat the key.
 fn embedder_fallback_key(config: &Config, memory_config: &MemoryConfig) -> Option<String> {
+    // WHY: hash and voyage are not completion providers — no fallback
+    // applies. For Voyage, the user must set
+    // `memory.user_state.embed_with.api_key` explicitly.
     let kind = match &memory_config.embedder {
-        EmbedderConfig::Openai { .. } => ProviderKind::Openai,
-        // Hash and Voyage are not completion providers — no fallback applies.
-        // For Voyage, the user must set memory.user_state.embed_with.api_key explicitly.
         EmbedderConfig::Hash { .. } | EmbedderConfig::Voyage { .. } => return None,
+        EmbedderConfig::Openai { .. } => ProviderKind::Openai,
     };
     config.providers.get(&kind).map(|p| p.api_key.clone())
 }

@@ -85,24 +85,29 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
 
     let stream_span = turn_span.clone();
     let body = stream! {
-        // Hold the flush guard inside the stream so Drop fires on either
-        // normal completion or client disconnect.
+        // WHY: hold the flush guard inside the stream so Drop fires on
+        // either normal completion or client disconnect.
         let _flush = flush;
 
         yield Ok::<_, Infallible>(meta.role_event());
 
         let mut inner = inner;
         let mut errored = false;
-        // Tool-call observability is owned by the agents-side wrappers
-        // (which emit `tool_call` spans the SqliteLayer mirrors into
-        // events / tool_calls). The streaming path only needs to forward
-        // SSE deltas and the terminal stop chunk to the client.
+        // NOTE: tool-call observability is owned by the agents-side
+        // wrappers (which emit `tool_call` spans the SqliteLayer mirrors
+        // into events / tool_calls). The streaming path only needs to
+        // forward SSE deltas and the terminal stop chunk to the client.
         // Each `inner.next()` poll runs inside `stream_span` so any
         // `tool_call` spans rig drives during that poll nest under it.
         loop {
             let event = inner.next().instrument(stream_span.clone()).await;
             let Some(event) = event else { break };
             match event {
+                Err(err) => {
+                    yield Ok(meta.error_event(&err.to_string()));
+                    errored = true;
+                    break;
+                }
                 Ok(StreamEvent::Delta(text)) => {
                     if !text.is_empty() {
                         accumulated.lock().unwrap().push_str(&text);
@@ -113,11 +118,6 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                     *final_usage.lock().unwrap() = usage;
                 }
                 Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
-                Err(err) => {
-                    yield Ok(meta.error_event(&err.to_string()));
-                    errored = true;
-                    break;
-                }
             }
         }
 
@@ -254,17 +254,6 @@ impl StreamMeta {
             .expect("chunk serializes")
     }
 
-    fn role_event(&self) -> Event {
-        self.chunk(
-            ChunkDelta {
-                content: None,
-                role: Some(Role::Assistant),
-            },
-            None,
-            None,
-        )
-    }
-
     fn content_event(&self, text: &str) -> Event {
         self.chunk(
             ChunkDelta {
@@ -274,10 +263,6 @@ impl StreamMeta {
             None,
             None,
         )
-    }
-
-    fn stop_event(&self, usage: Option<Usage>) -> Event {
-        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
     }
 
     /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
@@ -299,6 +284,21 @@ impl StreamMeta {
                 "object": "chat.completion.chunk",
             }))
             .expect("error chunk serializes")
+    }
+
+    fn role_event(&self) -> Event {
+        self.chunk(
+            ChunkDelta {
+                content: None,
+                role: Some(Role::Assistant),
+            },
+            None,
+            None,
+        )
+    }
+
+    fn stop_event(&self, usage: Option<Usage>) -> Event {
+        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
     }
 }
 

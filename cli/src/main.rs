@@ -13,18 +13,20 @@ const DEFAULT_CONFIG: &str = "coulisse.yaml";
 #[derive(Parser)]
 #[command(name = "coulisse", version, about, long_about = None)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to the YAML config. Defaults to ./coulisse.yaml in the
     /// current directory. State files (PID, log) are written to
     /// `<dir>/.coulisse/` next to this path.
     #[arg(short, long, global = true, env = "COULISSE_CONFIG")]
     config: Option<PathBuf>,
-
-    #[command(subcommand)]
-    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Validate the YAML config without starting the server.
+    Check,
     /// Write a starter coulisse.yaml in the working directory.
     Init {
         /// Overwrite the file if it already exists.
@@ -34,27 +36,25 @@ enum Command {
         #[arg(long)]
         from_example: bool,
     },
+    /// Restart the running server (stop, then start detached).
+    Restart,
     /// Start the server, detached. Use --foreground to run attached.
     Start {
-        /// Run in the foreground instead of detaching.
-        #[arg(short = 'F', long)]
-        foreground: bool,
         /// Internal: marker that we are the re-spawned detached child.
         #[arg(long, hide = true)]
         detached_child: bool,
+        /// Run in the foreground instead of detaching.
+        #[arg(short = 'F', long)]
+        foreground: bool,
     },
+    /// Report whether a detached server is running.
+    Status,
     /// Stop a running detached server (reads .coulisse/coulisse.pid).
     Stop {
         /// SIGKILL instead of SIGTERM if the server doesn't exit promptly.
         #[arg(long)]
         force: bool,
     },
-    /// Restart the running server (stop, then start detached).
-    Restart,
-    /// Report whether a detached server is running.
-    Status,
-    /// Validate the YAML config without starting the server.
-    Check,
     /// Download and install the latest release from GitHub.
     Update,
 }
@@ -64,10 +64,9 @@ fn main() -> ExitCode {
     let config = cli.config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG));
 
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
-        None => {
-            // `coulisse` with no subcommand → run foreground.
-            run_foreground(&config)
-        }
+        // NOTE: `coulisse` with no subcommand → run foreground.
+        None => run_foreground(&config),
+        Some(Command::Check) => check::run(&config),
         Some(Command::Init {
             force,
             from_example,
@@ -79,9 +78,10 @@ fn main() -> ExitCode {
             },
         )
         .map_err(std::convert::Into::into),
+        Some(Command::Restart) => restart::run(&config),
         Some(Command::Start {
-            foreground,
             detached_child,
+            foreground,
         }) => start::run(
             &config,
             &start::Options {
@@ -90,21 +90,19 @@ fn main() -> ExitCode {
             },
         )
         .map_err(std::convert::Into::into),
+        Some(Command::Status) => status::run(&config),
         Some(Command::Stop { force }) => {
             stop::run(&config, &stop::Options { force }).map_err(std::convert::Into::into)
         }
-        Some(Command::Restart) => restart::run(&config),
-        Some(Command::Status) => status::run(&config),
-        Some(Command::Check) => check::run(&config),
         Some(Command::Update) => update::run().map_err(std::convert::Into::into),
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+        Ok(()) => ExitCode::SUCCESS,
     }
 }
 

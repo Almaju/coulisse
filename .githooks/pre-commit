@@ -16,5 +16,8 @@ cargo machete --with-metadata
 echo "==> cargo clippy"
 cargo clippy --all-targets --all-features --locked -- -D warnings
 
+echo "==> cargo dylint (oneway-lints)"
+cargo dylint --all
+
 echo "==> cargo test"
 cargo test --all --locked

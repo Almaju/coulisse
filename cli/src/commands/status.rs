@@ -15,6 +15,9 @@ use crate::paths::StatePaths;
 pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let paths = StatePaths::for_config(config_path);
     match read_pid(&paths.pid) {
+        None => {
+            println!("not running");
+        }
         Some(pid) if pid_alive(pid) => {
             println!("running (pid {pid})");
             println!("  config: {}", paths.config.display());
@@ -25,9 +28,6 @@ pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 "not running (stale pid file at {} held pid {pid})",
                 paths.pid.display()
             );
-        }
-        None => {
-            println!("not running");
         }
     }
     Ok(())
@@ -44,7 +44,7 @@ pub fn read_pid(path: &Path) -> Option<i32> {
 #[must_use]
 pub fn pid_alive(pid: i32) -> bool {
     match signal::kill(Pid::from_raw(pid), None) {
-        Ok(()) | Err(Errno::EPERM) => true,
-        Err(_) => false,
+        Err(e) => matches!(e, Errno::EPERM),
+        Ok(()) => true,
     }
 }

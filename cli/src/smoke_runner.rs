@@ -180,12 +180,12 @@ async fn resolve_target<P: Agents + OneShotPrompt>(
     user_id: UserId,
 ) -> ResolvedTarget {
     let bandit_scores = match state.experiments.bandit_query(target) {
+        None => Vec::new(),
         Some((judge, criterion, since)) => state
             .judge_store
             .mean_scores_by_agent(&judge, &criterion, since)
             .await
             .unwrap_or_default(),
-        None => Vec::new(),
     };
     let resolved = state
         .experiments
@@ -217,8 +217,8 @@ async fn persona_turn<P: Agents + OneShotPrompt>(
             content: m.content.clone(),
             role: match m.role {
                 AgentRole::Assistant => AgentRole::User,
-                AgentRole::User => AgentRole::Assistant,
                 AgentRole::System => AgentRole::System,
+                AgentRole::User => AgentRole::Assistant,
             },
         })
         .collect();

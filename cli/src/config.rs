@@ -114,37 +114,6 @@ impl Config {
         Ok(())
     }
 
-    fn validate_judges(&self) -> Result<HashSet<&str>, ConfigError> {
-        let mut judge_names = HashSet::new();
-        for judge in &self.judges {
-            if !judge_names.insert(judge.name.as_str()) {
-                return Err(ConfigError::DuplicateJudge(judge.name.clone()));
-            }
-            if judge.rubrics.is_empty() {
-                return Err(ConfigError::JudgeWithoutRubrics(judge.name.clone()));
-            }
-            if !(0.0..=1.0).contains(&judge.sampling_rate) {
-                return Err(ConfigError::InvalidSamplingRate {
-                    judge: judge.name.clone(),
-                    value: judge.sampling_rate,
-                });
-            }
-            let provider = ProviderKind::parse(&judge.provider).ok_or_else(|| {
-                ConfigError::JudgeUnknownProvider {
-                    judge: judge.name.clone(),
-                    provider: judge.provider.clone(),
-                }
-            })?;
-            if !self.providers.contains_key(&provider) {
-                return Err(ConfigError::JudgeProviderNotConfigured {
-                    judge: judge.name.clone(),
-                    provider,
-                });
-            }
-        }
-        Ok(judge_names)
-    }
-
     fn validate_agents(&self, judge_names: &HashSet<&str>) -> Result<HashSet<&str>, ConfigError> {
         let mut agent_names = HashSet::new();
         for agent in &self.agents {
@@ -223,6 +192,37 @@ impl Config {
             validate_experiment_strategy_fields(self, experiment)?;
         }
         Ok(experiment_names)
+    }
+
+    fn validate_judges(&self) -> Result<HashSet<&str>, ConfigError> {
+        let mut judge_names = HashSet::new();
+        for judge in &self.judges {
+            if !judge_names.insert(judge.name.as_str()) {
+                return Err(ConfigError::DuplicateJudge(judge.name.clone()));
+            }
+            if judge.rubrics.is_empty() {
+                return Err(ConfigError::JudgeWithoutRubrics(judge.name.clone()));
+            }
+            if !(0.0..=1.0).contains(&judge.sampling_rate) {
+                return Err(ConfigError::InvalidSamplingRate {
+                    judge: judge.name.clone(),
+                    value: judge.sampling_rate,
+                });
+            }
+            let provider = ProviderKind::parse(&judge.provider).ok_or_else(|| {
+                ConfigError::JudgeUnknownProvider {
+                    judge: judge.name.clone(),
+                    provider: judge.provider.clone(),
+                }
+            })?;
+            if !self.providers.contains_key(&provider) {
+                return Err(ConfigError::JudgeProviderNotConfigured {
+                    judge: judge.name.clone(),
+                    provider,
+                });
+            }
+        }
+        Ok(judge_names)
     }
 
     fn validate_smoke_tests(
@@ -305,9 +305,9 @@ fn validate_experiment_strategy_fields(
     experiment: &ExperimentConfig,
 ) -> Result<(), ConfigError> {
     match experiment.strategy {
-        Strategy::Split => validate_split_fields(experiment),
-        Strategy::Shadow => validate_shadow_fields(experiment),
         Strategy::Bandit => validate_bandit_fields(config, experiment),
+        Strategy::Shadow => validate_shadow_fields(experiment),
+        Strategy::Split => validate_split_fields(experiment),
     }
 }
 
@@ -465,12 +465,16 @@ fn reject_field(
 pub enum ConfigError {
     #[error(transparent)]
     Auth(auth::ConfigError),
+    #[error("experiment '{0}' uses strategy 'bandit' but does not declare a metric")]
+    BanditWithoutMetric(String),
     #[error("default_user_id must be non-empty when set")]
     BlankDefaultUserId,
     #[error("duplicate agent name in config: {0}")]
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
     DuplicateJudge(String),
+    #[error("duplicate smoke test name in config: {0}")]
+    DuplicateSmokeTest(String),
     #[error("agent '{agent}' lists subagent '{subagent}' more than once")]
     DuplicateSubagent { agent: String, subagent: String },
     #[error(
@@ -479,20 +483,6 @@ pub enum ConfigError {
     ExperimentAgentNameCollision(String),
     #[error("experiment '{experiment}' lists variant agent '{agent}' more than once")]
     ExperimentDuplicateVariant { agent: String, experiment: String },
-    #[error("experiment '{experiment}' has variant '{agent}' with non-positive weight {weight}")]
-    ExperimentInvalidWeight {
-        agent: String,
-        experiment: String,
-        weight: f32,
-    },
-    #[error("duplicate experiment name in config: {0}")]
-    ExperimentNameCollision(String),
-    #[error(
-        "experiment '{experiment}' references variant agent '{agent}' which is not defined under `agents:`"
-    )]
-    ExperimentUnknownVariant { agent: String, experiment: String },
-    #[error("experiment '{0}' must declare at least one variant")]
-    ExperimentWithoutVariants(String),
     #[error(
         "experiment '{experiment}' uses strategy '{strategy}' but sets '{field}', which is only valid for {valid_for}"
     )]
@@ -506,6 +496,12 @@ pub enum ConfigError {
     ExperimentInvalidEpsilon { experiment: String, value: f32 },
     #[error("experiment '{experiment}' has sampling_rate={value}, must be in [0.0, 1.0]")]
     ExperimentInvalidSamplingRate { experiment: String, value: f32 },
+    #[error("experiment '{experiment}' has variant '{agent}' with non-positive weight {weight}")]
+    ExperimentInvalidWeight {
+        agent: String,
+        experiment: String,
+        weight: f32,
+    },
     #[error("experiment '{experiment}' metric '{metric}' must look like 'judge.criterion'")]
     ExperimentMetricMalformed { experiment: String, metric: String },
     #[error(
@@ -527,12 +523,16 @@ pub enum ConfigError {
         judge: String,
         metric: String,
     },
+    #[error("duplicate experiment name in config: {0}")]
+    ExperimentNameCollision(String),
     #[error("experiment '{experiment}' has primary '{primary}' which is not one of its variants")]
     ExperimentPrimaryNotVariant { experiment: String, primary: String },
-    #[error("experiment '{0}' uses strategy 'shadow' but does not declare a primary variant")]
-    ShadowWithoutPrimary(String),
-    #[error("experiment '{0}' uses strategy 'bandit' but does not declare a metric")]
-    BanditWithoutMetric(String),
+    #[error(
+        "experiment '{experiment}' references variant agent '{agent}' which is not defined under `agents:`"
+    )]
+    ExperimentUnknownVariant { agent: String, experiment: String },
+    #[error("experiment '{0}' must declare at least one variant")]
+    ExperimentWithoutVariants(String),
     #[error("judge '{judge}' has sampling_rate={value}, must be in [0.0, 1.0]")]
     InvalidSamplingRate { judge: String, value: f32 },
     #[error("agent '{agent}' references judge '{judge}' which is not configured")]
@@ -569,8 +569,8 @@ pub enum ConfigError {
     },
     #[error("agent '{0}' cannot list itself as a subagent")]
     SelfSubagent(String),
-    #[error("duplicate smoke test name in config: {0}")]
-    DuplicateSmokeTest(String),
+    #[error("experiment '{0}' uses strategy 'shadow' but does not declare a primary variant")]
+    ShadowWithoutPrimary(String),
     #[error("smoke test '{0}' has max_turns=0; set it to at least 1")]
     SmokeMaxTurnsZero(String),
     #[error(

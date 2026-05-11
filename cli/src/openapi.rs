@@ -568,18 +568,18 @@ mod tests {
         let s = spec();
         assert_eq!(s["openapi"], "3.1.0");
         assert!(s["info"]["title"].as_str().unwrap().contains("Coulisse"));
-        // Smoke-test that every advertised path has at least one method.
+        // NOTE: smoke-test that every advertised path has at least one method.
         for (path, ops) in s["paths"].as_object().unwrap() {
             let methods = ["get", "post", "put", "delete", "patch"];
             let has_op = methods.iter().any(|m| ops.get(m).is_some());
             assert!(has_op, "path {path} has no operations");
         }
-        // Every $ref must resolve to a defined schema.
+        // NOTE: every $ref must resolve to a defined schema.
         let schemas = s["components"]["schemas"].as_object().unwrap();
         let serialized = serde_json::to_string(&s).unwrap();
         for known in schemas.keys() {
-            // No-op check: the schema is present, and any ref to it
-            // will resolve. We just confirm the names are in the spec.
+            // NOTE: confirm the schema name appears anywhere in the spec —
+            // any ref to it will resolve through that.
             assert!(serialized.contains(known));
         }
     }

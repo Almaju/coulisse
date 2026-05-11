@@ -148,12 +148,12 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(
     prepared: &PreparedRequest,
 ) -> Routing {
     let bandit_scores = match state.experiments.bandit_query(&request.model) {
+        None => Vec::new(),
         Some((judge, criterion, since)) => state
             .judge_store
             .mean_scores_by_agent(&judge, &criterion, since)
             .await
             .unwrap_or_default(),
-        None => Vec::new(),
     };
     let resolved =
         state
@@ -162,14 +162,15 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(
     let agent_name = resolved.agent.clone().into_owned();
     let experiment_name = resolved.experiment.map(str::to_owned);
 
-    // Reuse the assistant message UUID as the telemetry turn correlation id
-    // so the stored message and its event tree share one identifier.
+    // WHY: reuse the assistant message UUID as the telemetry turn
+    // correlation id so the stored message and its event tree share one
+    // identifier.
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
     let turn_span = build_turn_span(&agent_name, experiment_name.as_deref(), turn_id, prepared);
 
-    // Clone inputs for shadow variants so they run against the same context
-    // the primary consumed. No-op for non-shadow strategies.
+    // WHY: clone inputs for shadow variants so they run against the same
+    // context the primary consumed. No-op for non-shadow strategies.
     let shadow_inputs = state
         .experiments
         .get(&request.model)
