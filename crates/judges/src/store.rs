@@ -91,33 +91,6 @@ impl Judges {
         Ok(Self { pool })
     }
 
-    /// Persist one judge score row. Called from background tasks spawned
-    /// off the response path so the client is never blocked.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn append_score(&self, score: Score) -> Result<ScoreId, JudgeStoreError> {
-        sqlx::query(
-            "INSERT INTO scores (agent_name, created_at, criterion, id, judge_model, judge_name, \
-             message_id, reasoning, score, user_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&score.agent_name)
-        .bind(u64_to_i64(score.created_at))
-        .bind(&score.criterion)
-        .bind(score.id.0.to_string())
-        .bind(&score.judge_model)
-        .bind(&score.judge_name)
-        .bind(score.message_id.0.to_string())
-        .bind(&score.reasoning)
-        .bind(score.score)
-        .bind(score.user_id.0.to_string())
-        .execute(&self.pool)
-        .await?;
-        Ok(score.id)
-    }
-
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -146,7 +119,8 @@ impl Judges {
             out.push(AgentCriterionCell {
                 agent_name,
                 criterion,
-                #[allow(clippy::cast_possible_truncation)] // score means are bounded 0..10
+                // WHY: score means are bounded 0..10
+                #[allow(clippy::cast_possible_truncation)]
                 mean: mean as f32,
                 samples: i64_to_u32(samples),
             });
@@ -175,6 +149,33 @@ impl Judges {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_score).collect()
+    }
+
+    /// Persist one judge score row. Called from background tasks spawned
+    /// off the response path so the client is never blocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn append_score(&self, score: Score) -> Result<ScoreId, JudgeStoreError> {
+        sqlx::query(
+            "INSERT INTO scores (agent_name, created_at, criterion, id, judge_model, judge_name, \
+             message_id, reasoning, score, user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&score.agent_name)
+        .bind(u64_to_i64(score.created_at))
+        .bind(&score.criterion)
+        .bind(score.id.0.to_string())
+        .bind(&score.judge_model)
+        .bind(&score.judge_name)
+        .bind(score.message_id.0.to_string())
+        .bind(&score.reasoning)
+        .bind(score.score)
+        .bind(score.user_id.0.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(score.id)
     }
 
     /// All judge scores recorded for `user_id`, chronological.
@@ -302,7 +303,8 @@ impl Judges {
             let samples: i64 = row.try_get("samples")?;
             out.push(AgentScoreSummary {
                 agent_name,
-                #[allow(clippy::cast_possible_truncation)] // score means are bounded 0..10
+                // WHY: score means are bounded 0..10
+                #[allow(clippy::cast_possible_truncation)]
                 mean: mean as f32,
                 samples: i64_to_u32(samples),
             });
@@ -330,6 +332,19 @@ impl Judges {
     /// Upsert an active row (override or dynamic). `created_at` is preserved
     /// across updates; `updated_at` is bumped to now.
     ///
+    /// Physically remove the row. Returns true if a row was deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, JudgeStoreError> {
+        let result = sqlx::query("DELETE FROM dynamic_judges WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -380,19 +395,6 @@ impl Judges {
         .execute(&self.pool)
         .await?;
         Ok(())
-    }
-
-    /// Physically remove the row. Returns true if a row was deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, JudgeStoreError> {
-        let result = sqlx::query("DELETE FROM dynamic_judges WHERE name = ?")
-            .bind(name)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
     }
 
     /// Read every dynamic row, merge against `yaml_judges`, and atomically
@@ -467,11 +469,11 @@ fn row_to_dynamic_judge(row: &SqliteRow) -> Result<DynamicJudgeRow, JudgeStoreEr
     let name: String = row.try_get("name")?;
     let updated_at: i64 = row.try_get("updated_at")?;
     let config = match config_json {
+        None => None,
         Some(s) => Some(
             serde_json::from_str::<JudgeConfig>(&s)
                 .map_err(|e| JudgeStoreError::RowDecode(format!("config_json: {e}")))?,
         ),
-        None => None,
     };
     Ok(DynamicJudgeRow {
         config,

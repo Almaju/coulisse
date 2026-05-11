@@ -91,7 +91,11 @@ lto = "thin"
 # oneway-lints crate enforces the "one way to write it" rules — sorted
 # fields/variants/match arms, no .unwrap() outside tests, newtype-first,
 # etc. See https://github.com/Almaju/oneway/tree/main/oneway-lints.
+#
+# Pointed at a local sibling checkout so changes to the lint rules can be
+# iterated on without push/pull. Swap back to a git source (with a pinned
+# rev) before publishing.
 [workspace.metadata.dylint]
 libraries = [
-    { git = "https://github.com/Almaju/oneway", pattern = "oneway-lints" },
+    { path = "../oneway/oneway-lints" },
 ]

@@ -95,8 +95,8 @@ async fn test_detail(
         .ok_or(AdminError::NotFound)?;
     if matches!(fmt, ResponseFormat::Json) {
         return match &row.config {
-            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
             None => Err(AdminError::NotFound),
+            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
         };
     }
     let runs = state
@@ -233,8 +233,8 @@ async fn run_test(
 ) -> Result<Response, AdminError> {
     let ids = state.dispatcher.dispatch(&name).await?;
     let target = match ids.first() {
-        Some(id) => format!("/admin/smoke/runs/{}", id.0),
         None => format!("/admin/smoke/{name}"),
+        Some(id) => format!("/admin/smoke/runs/{}", id.0),
     };
     if headers.contains_key("hx-request") {
         let mut resp = StatusCode::NO_CONTENT.into_response();

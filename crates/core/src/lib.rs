@@ -12,15 +12,13 @@ mod config_store;
 pub mod migrate;
 mod web;
 
+pub use config_store::{ConfigPersistError, ConfigPersister};
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-pub use config_store::{ConfigPersistError, ConfigPersister};
-pub use web::{BodyRejection, EitherFormOrJson, ResponseFormat, redirect_to};
-
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub use web::{BodyRejection, EitherFormOrJson, ResponseFormat, redirect_to};
 
 /// Seconds since the Unix epoch. Saturates to 0 if the system clock is
 /// before 1970 (impossible in normal operation, but the call is
@@ -99,19 +97,19 @@ impl Default for MessageId {
 pub struct UserId(pub Uuid);
 
 impl UserId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-
     /// Parse `s` as a UUID if well-formed; otherwise derive a stable UUID from it.
     /// Accepts arbitrary caller-supplied strings without losing partitioning guarantees.
     #[must_use]
     pub fn from_string(s: &str) -> Self {
         match Uuid::parse_str(s) {
-            Ok(uuid) => Self(uuid),
             Err(_) => Self(Uuid::new_v5(&Uuid::NAMESPACE_OID, s.as_bytes())),
+            Ok(uuid) => Self(uuid),
         }
+    }
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
     }
 }
 

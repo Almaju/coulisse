@@ -81,13 +81,10 @@ async fn detail(
         .ok_or(AdminError::NotFound)?;
     if matches!(fmt, ResponseFormat::Json) {
         return match &row.config {
-            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
             None => Err(AdminError::NotFound),
+            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
         };
     }
-    // No bespoke detail page; the list page already renders everything
-    // compactly. For HTML we redirect into the list anchored at the
-    // experiment so users can read its block without losing context.
     let mut resp = (
         StatusCode::SEE_OTHER,
         [("location", format!("/admin/experiments#{name}"))],

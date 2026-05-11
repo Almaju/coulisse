@@ -101,8 +101,8 @@ fn walk(
         let label = label_for(kind, &e.payload);
         let cost = format_cost(&e.payload);
         let kind_class = match kind {
-            "tool_call" => "bg-amber-950/60 text-amber-300 border-amber-900/60",
             "llm_call" => "bg-sky-950/60 text-sky-300 border-sky-900/60",
+            "tool_call" => "bg-amber-950/60 text-amber-300 border-amber-900/60",
             _ => "bg-slate-900 text-slate-300 border-slate-800",
         };
         out.push(EventRow {

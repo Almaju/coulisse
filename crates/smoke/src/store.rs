@@ -73,71 +73,6 @@ impl SmokeStore {
         Ok(Self { pool })
     }
 
-    /// Insert a fresh `running` run. Returns the freshly-minted id so
-    /// the caller can persist messages and finalise it later.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn start_run(&self, test_name: &str) -> Result<RunId, SmokeStoreError> {
-        let id = RunId::new();
-        sqlx::query(
-            "INSERT INTO smoke_runs (id, started_at, status, test_name, total_turns) \
-             VALUES (?, ?, ?, ?, 0)",
-        )
-        .bind(id.0.to_string())
-        .bind(u64_to_i64(now_secs()))
-        .bind(RunStatus::Running.as_str())
-        .bind(test_name)
-        .execute(&self.pool)
-        .await?;
-        Ok(id)
-    }
-
-    /// Record which agent name the experiment router resolved to, plus
-    /// the experiment name (when applicable). Called once per run after
-    /// the first agent turn.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn set_resolution(
-        &self,
-        run_id: RunId,
-        agent_resolved: &str,
-        experiment: Option<&str>,
-    ) -> Result<(), SmokeStoreError> {
-        sqlx::query("UPDATE smoke_runs SET agent_resolved = ?, experiment = ? WHERE id = ?")
-            .bind(agent_resolved)
-            .bind(experiment)
-            .bind(run_id.0.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn record_persona_turn(
-        &self,
-        run_id: RunId,
-        turn_index: u32,
-        content: &str,
-    ) -> Result<(), SmokeStoreError> {
-        sqlx::query(
-            "INSERT INTO smoke_messages (content, message_id, role, run_id, turn_index) \
-             VALUES (?, NULL, ?, ?, ?)",
-        )
-        .bind(content)
-        .bind(TurnRole::Persona.as_str())
-        .bind(run_id.0.to_string())
-        .bind(i64::from(turn_index))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -167,6 +102,71 @@ impl SmokeStore {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn record_persona_turn(
+        &self,
+        run_id: RunId,
+        turn_index: u32,
+        content: &str,
+    ) -> Result<(), SmokeStoreError> {
+        sqlx::query(
+            "INSERT INTO smoke_messages (content, message_id, role, run_id, turn_index) \
+             VALUES (?, NULL, ?, ?, ?)",
+        )
+        .bind(content)
+        .bind(TurnRole::Persona.as_str())
+        .bind(run_id.0.to_string())
+        .bind(i64::from(turn_index))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record which agent name the experiment router resolved to, plus
+    /// the experiment name (when applicable). Called once per run after
+    /// the first agent turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn set_resolution(
+        &self,
+        run_id: RunId,
+        agent_resolved: &str,
+        experiment: Option<&str>,
+    ) -> Result<(), SmokeStoreError> {
+        sqlx::query("UPDATE smoke_runs SET agent_resolved = ?, experiment = ? WHERE id = ?")
+            .bind(agent_resolved)
+            .bind(experiment)
+            .bind(run_id.0.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Insert a fresh `running` run. Returns the freshly-minted id so
+    /// the caller can persist messages and finalise it later.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn start_run(&self, test_name: &str) -> Result<RunId, SmokeStoreError> {
+        let id = RunId::new();
+        sqlx::query(
+            "INSERT INTO smoke_runs (id, started_at, status, test_name, total_turns) \
+             VALUES (?, ?, ?, ?, 0)",
+        )
+        .bind(id.0.to_string())
+        .bind(u64_to_i64(now_secs()))
+        .bind(RunStatus::Running.as_str())
+        .bind(test_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
     }
 
     /// # Errors
@@ -381,8 +381,8 @@ fn row_to_message(row: &SqliteRow) -> Result<StoredMessage, SmokeStoreError> {
     let role = TurnRole::parse(&role)
         .ok_or_else(|| SmokeStoreError::RowDecode(format!("invalid role: {role}")))?;
     let message_id = match message_id {
-        Some(s) => Some(MessageId(parse_uuid(&s, "message id")?)),
         None => None,
+        Some(s) => Some(MessageId(parse_uuid(&s, "message id")?)),
     };
     Ok(StoredMessage {
         content,
@@ -404,11 +404,11 @@ fn row_to_dynamic_smoke(row: &SqliteRow) -> Result<DynamicSmokeRow, SmokeStoreEr
     let name: String = row.try_get("name")?;
     let updated_at: i64 = row.try_get("updated_at")?;
     let config = match config_json {
+        None => None,
         Some(s) => Some(
             serde_json::from_str::<SmokeTestConfig>(&s)
                 .map_err(|e| SmokeStoreError::RowDecode(format!("config_json: {e}")))?,
         ),
-        None => None,
     };
     Ok(DynamicSmokeRow {
         config,

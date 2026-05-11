@@ -187,21 +187,6 @@ where
         }
     }
 
-    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
-        let mut extensions = span.extensions_mut();
-        let Some(span_ext) = extensions.get_mut::<SpanExt>() else {
-            return;
-        };
-        let mut visitor = FieldVisitor {
-            fields: std::mem::take(&mut span_ext.fields),
-        };
-        values.record(&mut visitor);
-        span_ext.fields = visitor.fields;
-    }
-
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else {
             return;
@@ -220,15 +205,15 @@ where
         let started_at_ms = span_ext.started_at_ms;
         let fields = &span_ext.fields;
 
-        // Walk to the parent that this layer also recorded; tracing already
-        // skips spans we don't care about.
+        // NOTE: walk to the parent we recorded; tracing already skips spans
+        // we don't care about.
         let parent_event_id = span
             .scope()
             .skip(1)
             .find_map(|s| s.extensions().get::<SpanExt>().map(|e| e.event_id));
 
-        // Walk to the root `turn` span to inherit user/turn ids and bump the
-        // shared ordinal counter for tool_calls.
+        // NOTE: walk to the root `turn` span to inherit user/turn ids and
+        // bump the shared ordinal counter for tool_calls.
         let turn_ctx = span.scope().find_map(|s| {
             s.extensions()
                 .get::<TurnExt>()
@@ -236,9 +221,8 @@ where
         });
 
         let (user_id, turn_id) = match (turn_ctx, name) {
-            (Some((u, t, _)), _) => (u, t),
-            // A `turn` span itself carries its ids in fields, but TurnExt
-            // wasn't installed because parsing failed. Recover from fields.
+            // WHY: a `turn` span carries its ids in fields, but TurnExt wasn't
+            // installed because parsing failed. Recover from fields.
             (None, "turn") => {
                 let user_id = fields
                     .get("user_id")
@@ -252,6 +236,7 @@ where
                 }
             }
             (None, _) => return,
+            (Some((u, t, _)), _) => (u, t),
         };
 
         let payload = build_payload(name, fields);
@@ -300,6 +285,21 @@ where
             let _ = self.tx.send(WriteJob::ToolCall(row));
         }
     }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+        let mut extensions = span.extensions_mut();
+        let Some(span_ext) = extensions.get_mut::<SpanExt>() else {
+            return;
+        };
+        let mut visitor = FieldVisitor {
+            fields: std::mem::take(&mut span_ext.fields),
+        };
+        values.record(&mut visitor);
+        span_ext.fields = visitor.fields;
+    }
 }
 
 fn is_recorded_span(name: &str) -> bool {
@@ -311,16 +311,15 @@ fn is_recorded_span(name: &str) -> bool {
 fn build_payload(name: &str, fields: &HashMap<&'static str, String>) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     let interesting: &[&str] = match name {
-        "turn" => &["agent", "experiment", "user_message"],
-        "tool_call" => &["args", "error", "kind", "result", "tool_name"],
         "llm_call" => &[
             "cost_usd", "error", "model", "prompt", "provider", "response", "usage",
         ],
+        "tool_call" => &["args", "error", "kind", "result", "tool_name"],
+        "turn" => &["agent", "experiment", "user_message"],
         _ => &[],
     };
     for &key in interesting {
         if let Some(value) = fields.get(key).filter(|s| !s.is_empty()) {
-            // Try to parse JSON-shaped values back to JSON; fall back to string.
             let parsed = serde_json::Value::from_str(value)
                 .unwrap_or_else(|_| serde_json::Value::String(value.clone()));
             obj.insert(key.to_string(), parsed);
@@ -331,7 +330,6 @@ fn build_payload(name: &str, fields: &HashMap<&'static str, String>) -> serde_js
 
 async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error> {
     match job {
-        WriteJob::Flush(_) => {}
         WriteJob::Event(row) => {
             sqlx::query(
                 "INSERT INTO events (correlation_id, created_at, duration_ms, id, kind, \
@@ -349,6 +347,7 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
             .execute(pool)
             .await?;
         }
+        WriteJob::Flush(_) => {}
         WriteJob::ToolCall(row) => {
             sqlx::query(
                 "INSERT INTO tool_calls (args, created_at, error, id, kind, ordinal, result, \
@@ -386,11 +385,11 @@ struct FieldVisitor {
 }
 
 impl Visit for FieldVisitor {
-    fn record_str(&mut self, field: &Field, value: &str) {
+    fn record_bool(&mut self, field: &Field, value: bool) {
         self.fields.insert(field.name(), value.to_string());
     }
 
-    fn record_bool(&mut self, field: &Field, value: bool) {
+    fn record_str(&mut self, field: &Field, value: &str) {
         self.fields.insert(field.name(), value.to_string());
     }
 

@@ -50,7 +50,6 @@ impl ExperimentRow {
     pub(super) fn from_admin(row: &AdminExperiment) -> Self {
         let label = SourceLabel::from_admin(row.source);
         match &row.config {
-            Some(exp) => Self::from_config(exp, label, row.yaml_backed),
             None => Self {
                 epsilon: None,
                 means_url: None,
@@ -66,6 +65,7 @@ impl ExperimentRow {
                 variants: Vec::new(),
                 yaml_backed: row.yaml_backed,
             },
+            Some(exp) => Self::from_config(exp, label, row.yaml_backed),
         }
     }
 

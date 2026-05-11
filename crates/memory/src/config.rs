@@ -35,8 +35,8 @@ pub struct MemoryYaml {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum UserStateYaml {
-    OnOff(bool),
     Configured(UserStateConfig),
+    OnOff(bool),
 }
 
 impl Default for UserStateYaml {
@@ -51,9 +51,9 @@ impl UserStateYaml {
     #[must_use]
     pub fn parts(&self) -> (bool, Option<&UserStateConfig>) {
         match self {
+            Self::Configured(cfg) => (true, Some(cfg)),
             Self::OnOff(false) => (false, None),
             Self::OnOff(true) => (true, None),
-            Self::Configured(cfg) => (true, Some(cfg)),
         }
     }
 }

@@ -60,7 +60,8 @@ impl Credentials {
         let Some((user, pass)) = pair.split_once(':') else {
             return false;
         };
-        // Bitwise `&` (not `&&`) so both comparisons always run.
+        // SAFETY: bitwise `&` (not `&&`) keeps both branches constant-time —
+        // short-circuiting would leak via timing which credential failed.
         constant_time_eq(user.as_bytes(), self.username.as_bytes())
             & constant_time_eq(pass.as_bytes(), self.password.as_bytes())
     }
@@ -108,39 +109,22 @@ impl Auth {
     /// Returns an error if the underlying operation fails.
     pub async fn from_config(config: Config) -> Result<Self, BuildError> {
         let admin = match config.admin {
-            Some(scope) => Some(Scheme::from_config(scope).await?),
             None => None,
+            Some(scope) => Some(Scheme::from_config(scope).await?),
         };
         let proxy = match config.proxy {
-            Some(scope) => Some(Scheme::from_config(scope).await?),
             None => None,
+            Some(scope) => Some(Scheme::from_config(scope).await?),
         };
         Ok(Self { admin, proxy })
     }
 
-    /// Wrap the `/v1/*` proxy router in the configured proxy-scope auth
-    /// layers, or return it unchanged when no proxy auth is configured.
-    pub fn wrap_proxy(&self, router: Router) -> Router {
-        match &self.proxy {
-            Some(scheme) => apply(router, scheme),
-            None => router,
+    fn summary(scheme: Option<&Scheme>) -> &'static str {
+        match scheme {
+            None => "unauthenticated",
+            Some(Scheme::Basic(_)) => "basic auth enabled",
+            Some(Scheme::Oidc(_)) => "OIDC login enabled",
         }
-    }
-
-    /// Wrap the `/admin/*` router in the configured admin-scope auth
-    /// layers, or return it unchanged when no admin auth is configured.
-    pub fn wrap_admin(&self, router: Router) -> Router {
-        match &self.admin {
-            Some(scheme) => apply(router, scheme),
-            None => router,
-        }
-    }
-
-    /// One-line description of the proxy-scope auth posture, for the
-    /// startup banner.
-    #[must_use]
-    pub fn proxy_summary(&self) -> &'static str {
-        Self::summary(self.proxy.as_ref())
     }
 
     /// One-line description of the admin-scope auth posture, for the
@@ -150,11 +134,28 @@ impl Auth {
         Self::summary(self.admin.as_ref())
     }
 
-    fn summary(scheme: Option<&Scheme>) -> &'static str {
-        match scheme {
-            None => "unauthenticated",
-            Some(Scheme::Basic(_)) => "basic auth enabled",
-            Some(Scheme::Oidc(_)) => "OIDC login enabled",
+    /// One-line description of the proxy-scope auth posture, for the
+    /// startup banner.
+    #[must_use]
+    pub fn proxy_summary(&self) -> &'static str {
+        Self::summary(self.proxy.as_ref())
+    }
+
+    /// Wrap the `/admin/*` router in the configured admin-scope auth
+    /// layers, or return it unchanged when no admin auth is configured.
+    pub fn wrap_admin(&self, router: Router) -> Router {
+        match &self.admin {
+            None => router,
+            Some(scheme) => apply(router, scheme),
+        }
+    }
+
+    /// Wrap the `/v1/*` proxy router in the configured proxy-scope auth
+    /// layers, or return it unchanged when no proxy auth is configured.
+    pub fn wrap_proxy(&self, router: Router) -> Router {
+        match &self.proxy {
+            None => router,
+            Some(scheme) => apply(router, scheme),
         }
     }
 }
@@ -171,7 +172,7 @@ impl Scheme {
             let runtime = OidcRuntime::discover(&oidc).await?;
             return Ok(Scheme::Oidc(Box::new(runtime)));
         }
-        // Validation is the caller's contract; reaching here means the
+        // WHY: validation is the caller's contract — reaching here means the
         // caller skipped `Config::validate`.
         Err(BuildError::ScopeWithoutAuth)
     }
@@ -187,13 +188,11 @@ fn apply(router: Router, scheme: &Scheme) -> Router {
             }))
         }
         Scheme::Oidc(runtime) => {
-            // Session → auth (reads session, sets extensions) → login
-            // (forces redirect when no valid ID token). `.layer()` calls
-            // are applied outermost-last; session must wrap everything so
-            // the OIDC layers find it in request extensions.
+            // WHY: layer order is session → auth → login. `.layer()` calls
+            // are applied outermost-last, so session must wrap everything for
+            // the OIDC layers to find it in request extensions.
             // `HandleErrorLayer` converts the OIDC middlewares'
-            // `MiddlewareError` into axum-compatible `Infallible`
-            // responses.
+            // `MiddlewareError` into axum-compatible `Infallible` responses.
             let session = SessionManagerLayer::new(MemoryStore::default())
                 .with_same_site(SameSite::Lax)
                 .with_expiry(Expiry::OnInactivity(Duration::hours(8)));
@@ -315,7 +314,7 @@ mod tests {
 
     #[test]
     fn lowercase_basic_scheme_accepted() {
-        // RFC 7235 makes the scheme case-insensitive; some clients lowercase it.
+        // NOTE: RFC 7235 makes the scheme case-insensitive; some clients lowercase it.
         let creds = Credentials::new("admin".into(), "s3cret".into());
         let encoded = base64::engine::general_purpose::STANDARD.encode("admin:s3cret");
         assert!(creds.verify_header(&format!("basic {encoded}")));

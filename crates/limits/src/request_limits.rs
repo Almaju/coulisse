@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use crate::LimitError;
+use std::collections::HashMap;
 
 const KEY_DAY: &str = "tokens_per_day";
 const KEY_HOUR: &str = "tokens_per_hour";

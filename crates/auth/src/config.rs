@@ -81,22 +81,6 @@ impl ScopeConfig {
     fn validate(&self, scope: &'static str) -> Result<(), ConfigError> {
         match (&self.basic, &self.oidc) {
             (None, None) => Err(ConfigError::ScopeWithoutAuth(scope)),
-            (Some(_), Some(_)) => Err(ConfigError::ScopeBothAuthMethods(scope)),
-            (Some(basic), None) => {
-                if basic.password.is_empty() {
-                    return Err(ConfigError::BlankBasicField {
-                        scope,
-                        field: "password",
-                    });
-                }
-                if basic.username.is_empty() {
-                    return Err(ConfigError::BlankBasicField {
-                        scope,
-                        field: "username",
-                    });
-                }
-                Ok(())
-            }
             (None, Some(oidc)) => {
                 if oidc.client_id.is_empty() {
                     return Err(ConfigError::BlankOidcField {
@@ -114,6 +98,22 @@ impl ScopeConfig {
                     return Err(ConfigError::BlankOidcField {
                         scope,
                         field: "redirect_url",
+                    });
+                }
+                Ok(())
+            }
+            (Some(_), Some(_)) => Err(ConfigError::ScopeBothAuthMethods(scope)),
+            (Some(basic), None) => {
+                if basic.password.is_empty() {
+                    return Err(ConfigError::BlankBasicField {
+                        scope,
+                        field: "password",
+                    });
+                }
+                if basic.username.is_empty() {
+                    return Err(ConfigError::BlankBasicField {
+                        scope,
+                        field: "username",
                     });
                 }
                 Ok(())

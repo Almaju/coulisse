@@ -62,8 +62,8 @@ impl ChatCompletionRequest {
     /// Returns an error if the underlying operation fails.
     pub fn language(&self) -> Result<Option<LanguageTag>, LanguageTagError> {
         match self.metadata.get(METADATA_LANGUAGE) {
-            Some(raw) => LanguageTag::parse(raw).map(Some),
             None => Ok(None),
+            Some(raw) => LanguageTag::parse(raw).map(Some),
         }
     }
 

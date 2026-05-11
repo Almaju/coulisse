@@ -86,6 +86,30 @@ impl Sink {
         rows.iter().map(row_to_event).collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn recent_activity_counts(
+        &self,
+        since: u64,
+    ) -> Result<ActivityCounts, TelemetryError> {
+        let row = sqlx::query(
+            "SELECT COUNT(DISTINCT user_id) AS user_count, \
+             COUNT(DISTINCT correlation_id) AS turn_count \
+             FROM events \
+             WHERE created_at >= ?",
+        )
+        .bind(u64_to_i64(since))
+        .fetch_one(&self.pool)
+        .await?;
+        let turn_count: i64 = row.try_get("turn_count")?;
+        let user_count: i64 = row.try_get("user_count")?;
+        Ok(ActivityCounts {
+            turn_count: i64_to_u32(turn_count),
+            user_count: i64_to_u32(user_count),
+        })
+    }
+
     /// Turn ids for `user_id`, most recently active first, capped at `limit`.
     /// Used by the studio UI to list a user's recent turns without loading
     /// the full event stream.
@@ -140,30 +164,6 @@ impl Sink {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_tool_call).collect()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn recent_activity_counts(
-        &self,
-        since: u64,
-    ) -> Result<ActivityCounts, TelemetryError> {
-        let row = sqlx::query(
-            "SELECT COUNT(DISTINCT user_id) AS user_count, \
-             COUNT(DISTINCT correlation_id) AS turn_count \
-             FROM events \
-             WHERE created_at >= ?",
-        )
-        .bind(u64_to_i64(since))
-        .fetch_one(&self.pool)
-        .await?;
-        let turn_count: i64 = row.try_get("turn_count")?;
-        let user_count: i64 = row.try_get("user_count")?;
-        Ok(ActivityCounts {
-            turn_count: i64_to_u32(turn_count),
-            user_count: i64_to_u32(user_count),
-        })
     }
 
     /// # Errors

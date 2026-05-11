@@ -45,8 +45,6 @@ pub(super) struct ScoresPanel {
 impl ScoresPanel {
     pub(super) fn build(scores: Vec<Score>) -> Self {
         let averages = average_by_criterion(&scores);
-        // Most recent first, top 5 — same posture as the legacy SPA so
-        // operators recognize the surface.
         let mut recent: Vec<ScoreRow> = scores
             .into_iter()
             .rev()
@@ -89,6 +87,15 @@ impl JudgeDetailRow {
     pub(super) fn from_admin(row: &AdminJudge) -> Self {
         let label = SourceLabel::from_admin(row.source);
         match &row.config {
+            None => Self {
+                model: String::new(),
+                name: row.name.clone(),
+                provider: String::new(),
+                rubrics: Vec::new(),
+                sampling_rate: String::new(),
+                source: label,
+                yaml_backed: row.yaml_backed,
+            },
             Some(cfg) => {
                 let rubrics = cfg
                     .rubrics
@@ -108,15 +115,6 @@ impl JudgeDetailRow {
                     yaml_backed: row.yaml_backed,
                 }
             }
-            None => Self {
-                model: String::new(),
-                name: row.name.clone(),
-                provider: String::new(),
-                rubrics: Vec::new(),
-                sampling_rate: String::new(),
-                source: label,
-                yaml_backed: row.yaml_backed,
-            },
         }
     }
 }
@@ -140,16 +138,6 @@ impl JudgeListRow {
             .find(|v| v.judge_name == row.name)
             .map_or(0, |v| v.count);
         match &row.config {
-            Some(cfg) => Self {
-                criteria_count: cfg.rubrics.len(),
-                model: cfg.model.clone(),
-                name: cfg.name.clone(),
-                provider: cfg.provider.clone(),
-                sampling_rate: format!("{:.0}%", cfg.sampling_rate * 100.0),
-                score_count_7d,
-                source: label,
-                tombstoned: false,
-            },
             None => Self {
                 criteria_count: 0,
                 model: String::new(),
@@ -159,6 +147,16 @@ impl JudgeListRow {
                 score_count_7d,
                 source: label,
                 tombstoned: true,
+            },
+            Some(cfg) => Self {
+                criteria_count: cfg.rubrics.len(),
+                model: cfg.model.clone(),
+                name: cfg.name.clone(),
+                provider: cfg.provider.clone(),
+                sampling_rate: format!("{:.0}%", cfg.sampling_rate * 100.0),
+                score_count_7d,
+                source: label,
+                tombstoned: false,
             },
         }
     }
@@ -213,6 +211,11 @@ pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix
             let cells = criteria
                 .iter()
                 .map(|crit| match cell_map.get(crit.as_str()) {
+                    None => MatrixCell {
+                        color_class: "text-slate-500",
+                        mean: "—".into(),
+                        samples: 0,
+                    },
                     Some(c) => {
                         let color_class = if c.mean >= 7.0 {
                             "text-emerald-300"
@@ -227,11 +230,6 @@ pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix
                             samples: c.samples,
                         }
                     }
-                    None => MatrixCell {
-                        color_class: "text-slate-500",
-                        mean: "—".into(),
-                        samples: 0,
-                    },
                 })
                 .collect();
             MatrixRow { agent_name, cells }

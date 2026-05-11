@@ -6,10 +6,11 @@
 //! that captures that decision so handlers can branch once at the end.
 //! [`EitherFormOrJson`] does the symmetric job for request bodies.
 
+use axum::Form;
+use axum::Json;
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::{HeaderValue, StatusCode, header, request::Parts};
 use axum::response::{IntoResponse, Response};
-use axum::{Form, Json};
 use serde::de::DeserializeOwned;
 
 /// Build a response that redirects browser navigations (`303 See Other`)
@@ -145,8 +146,6 @@ where
                 .map_err(|err| BodyRejection::Form(err.to_string()))?;
             return Ok(Self(value));
         }
-        // Default to JSON: `application/json`, missing header, or
-        // anything else.
         let Json(value) = Json::<T>::from_request(req, state)
             .await
             .map_err(|err| BodyRejection::Json(err.to_string()))?;

@@ -12,9 +12,8 @@
 //! that's one int per database, but Coulisse shares one database across
 //! crates.
 
-use std::future::Future;
-
 use sqlx::{Executor, SqliteConnection, SqlitePool};
+use std::future::Future;
 
 /// Migration contract for a feature crate's slice of the database.
 ///
@@ -61,14 +60,14 @@ pub enum MigrateError {
     EmptyVersions(&'static str),
     #[error("schema migrator '{0}' has invalid SemVer in VERSIONS: '{1}'")]
     InvalidVersion(&'static str, String),
-    #[error("schema migrator '{0}' has unsorted or duplicate VERSIONS")]
-    UnsortedVersions(&'static str),
+    #[error("sqlx: {0}")]
+    Sqlx(#[from] sqlx::Error),
     #[error(
         "schema migrator '{name}' stored version '{stored}' is not in VERSIONS — downgrade across a schema bump?"
     )]
     UnknownStoredVersion { name: &'static str, stored: String },
-    #[error("sqlx: {0}")]
-    Sqlx(#[from] sqlx::Error),
+    #[error("schema migrator '{0}' has unsorted or duplicate VERSIONS")]
+    UnsortedVersions(&'static str),
 }
 
 /// Bring the slice of `pool` owned by `M` up to its latest version.
@@ -169,8 +168,8 @@ fn split_sql(sql: &str) -> Vec<String> {
     let stripped: String = sql
         .lines()
         .map(|line| match line.find("--") {
-            Some(i) => &line[..i],
             None => line,
+            Some(i) => &line[..i],
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -268,7 +267,6 @@ mod tests {
     #[tokio::test]
     async fn walks_upgrade_chain_from_old_version() {
         let pool = pool().await;
-        // Simulate an older deployment: schema at v0.1.0 (no `color` column).
         sqlx::query("CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
             .execute(&pool)
             .await

@@ -21,11 +21,11 @@ use crate::sqlite_layer::{SqliteLayer, SqliteLayerGuard};
 /// (best-effort drain) and shuts down the OTLP exporter so in-flight
 /// spans land before the process exits.
 pub struct TelemetryGuard {
-    /// `Some` when the `SQLite` layer is enabled; `None` otherwise.
-    pub sqlite: Option<SqliteLayerGuard>,
     /// `Some` when OTLP is enabled; flushes the exporter on drop.
     #[allow(dead_code)]
     otlp: Option<OtlpGuard>,
+    /// `Some` when the `SQLite` layer is enabled; `None` otherwise.
+    pub sqlite: Option<SqliteLayerGuard>,
 }
 
 struct OtlpGuard {
@@ -34,9 +34,8 @@ struct OtlpGuard {
 
 impl Drop for OtlpGuard {
     fn drop(&mut self) {
-        // Best-effort flush of pending spans on shutdown. Errors are
-        // ignored — the process is already going away and there's
-        // nowhere useful to report a failed flush.
+        // WHY: errors are ignored on shutdown — the process is already
+        // going away and there's nowhere useful to report them.
         let _ = self.provider.shutdown();
     }
 }
@@ -66,11 +65,10 @@ pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGua
         (None, None)
     };
 
-    // OTLP path is built inline so the OpenTelemetryLayer's `S`
-    // generic infers from the stacked subscriber type. Splitting the
-    // call into two branches avoids the layer's type leaking into a
-    // helper signature, which doesn't compose cleanly with the
-    // already-stacked `Layered<...>` chain.
+    // WHY: OTLP path is built inline so OpenTelemetryLayer's `S` generic
+    // infers from the stacked subscriber type. Extracting to a helper
+    // leaks the layer's type and doesn't compose with the existing
+    // `Layered<...>` chain.
     if let Some(cfg) = config.otlp.as_ref() {
         let provider = build_otlp_provider(cfg)?;
         let tracer = provider.tracer("coulisse");
@@ -161,6 +159,6 @@ impl TelemetryGuard {
         if let Some(g) = self.sqlite.as_ref() {
             g.flush().await;
         }
-        // OTLP batches are flushed by the exporter on drop.
+        // NOTE: OTLP batches are flushed by the exporter on drop.
     }
 }

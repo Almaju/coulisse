@@ -50,11 +50,6 @@ impl ExperimentRouter {
         self.by_name.values()
     }
 
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&ExperimentConfig> {
-        self.by_name.get(name)
-    }
-
     /// For a bandit experiment, return the score-query inputs the
     /// caller needs to fetch from memory before resolving:
     /// `(judge, criterion, since_seconds)`. Returns `None` for
@@ -75,6 +70,11 @@ impl ExperimentRouter {
             .map_or(0, |d| d.as_secs());
         let since = now.saturating_sub(window);
         Some((judge.to_string(), criterion.to_string(), since))
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&ExperimentConfig> {
+        self.by_name.get(name)
     }
 
     /// Resolve `name` to a concrete agent for `user_id`. If `name` is
@@ -102,6 +102,10 @@ impl ExperimentRouter {
         scores: &[AgentScoreSummary],
     ) -> Resolved<'a> {
         match self.by_name.get(name) {
+            None => Resolved {
+                agent: Cow::Borrowed(name),
+                experiment: None,
+            },
             Some(experiment) => {
                 let variant = pick_variant(experiment, user_id, scores);
                 Resolved {
@@ -109,10 +113,6 @@ impl ExperimentRouter {
                     experiment: Some(experiment.name.as_str()),
                 }
             }
-            None => Resolved {
-                agent: Cow::Borrowed(name),
-                experiment: None,
-            },
         }
     }
 
@@ -149,9 +149,9 @@ impl ExperimentRouter {
         if rate <= 0.0 {
             return false;
         }
-        // Hash a per-turn seed (user + experiment + nanoseconds) and
-        // compare against the rate. Avoids pulling in `rand` for what
-        // is effectively a coin flip on the request hot path.
+        // WHY: avoid pulling in `rand` for what is effectively a coin flip
+        // on the request hot path — hash a per-turn seed and compare against
+        // the rate.
         let seed = per_request_seed(user_id, &experiment.name);
         seed_to_unit_f32(seed) < rate
     }
@@ -171,15 +171,15 @@ fn pick_variant<'a>(
     scores: &[AgentScoreSummary],
 ) -> &'a Variant {
     match experiment.strategy {
-        Strategy::Split => weighted_pick(experiment, user_id),
-        Strategy::Shadow => shadow_pick(experiment),
         Strategy::Bandit => bandit_pick(experiment, user_id, scores),
+        Strategy::Shadow => shadow_pick(experiment),
+        Strategy::Split => weighted_pick(experiment, user_id),
     }
 }
 
 fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
-    // Validation guarantees `primary` is present and references one of
-    // the variants for shadow strategy.
+    // NOTE: validation guarantees `primary` is present and references one
+    // of the variants for shadow strategy.
     let primary = experiment
         .primary
         .as_deref()
@@ -246,7 +246,7 @@ fn bandit_pick<'a>(
 
 fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &'a Variant {
     let seed = sticky_seed(user_id, name);
-    // `seed % arms.len()` is bounded by `arms.len()` (a usize), so the
+    // WHY: `seed % arms.len()` is bounded by `arms.len()` (a usize), so the
     // narrowing is exact on every platform.
     #[allow(clippy::cast_possible_truncation)]
     let idx = (seed % arms.len() as u64) as usize;
@@ -254,9 +254,9 @@ fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &
 }
 
 fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
-    // Validation guarantees at least one variant with strictly positive
-    // weight, so the cumulative total is finite and `> 0.0` and the
-    // index lookup below cannot fall off the end.
+    // NOTE: validation guarantees at least one variant with strictly
+    // positive weight, so the cumulative total is finite and `> 0.0` and
+    // the index lookup below cannot fall off the end.
     let total: f32 = experiment.variants.iter().map(|v| v.weight).sum();
     let seed = if experiment.sticky_by_user {
         sticky_seed(user_id, &experiment.name)
@@ -308,15 +308,15 @@ impl Fnv64 {
         }
     }
 
+    fn finish(self) -> u64 {
+        self.state
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.state ^= u64::from(b);
             self.state = self.state.wrapping_mul(0x0000_0100_0000_01b3);
         }
-    }
-
-    fn finish(self) -> u64 {
-        self.state
     }
 }
 
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn split_distribution_respects_weights_in_aggregate() {
-        // Heavy skew so the test is robust to UUID hash bias on small N.
+        // NOTE: heavy skew so the test is robust to UUID hash bias on small N.
         let router = ExperimentRouter::new(vec![experiment(true, &[("v1", 9.0), ("v2", 1.0)])]);
         let mut v1 = 0;
         let mut v2 = 0;
@@ -429,7 +429,6 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        // Expect roughly 90/10. Allow a generous band around the mean.
         assert!(v1 > v2 * 4, "expected v1 to dominate, got v1={v1} v2={v2}");
     }
 
@@ -468,7 +467,7 @@ mod tests {
     fn bandit_forces_arms_below_min_samples() {
         let exp = bandit_experiment(30, 0.0, &["v1", "v2"]);
         let router = ExperimentRouter::new(vec![exp]);
-        // Both arms have fewer than 30 samples — the picker must
+        // NOTE: both arms have fewer than 30 samples — the picker must
         // choose one of them, not panic.
         let scores = vec![
             AgentScoreSummary {
@@ -488,7 +487,7 @@ mod tests {
 
     #[test]
     fn bandit_exploits_leader_when_above_min_samples() {
-        // epsilon=0.0 so we never explore — pure exploitation.
+        // NOTE: epsilon=0.0 so we never explore — pure exploitation.
         let exp = bandit_experiment(10, 0.0, &["v1", "v2"]);
         let router = ExperimentRouter::new(vec![exp]);
         let scores = vec![
@@ -511,7 +510,7 @@ mod tests {
 
     #[test]
     fn bandit_explores_with_high_epsilon() {
-        // epsilon=1.0 — never exploit, always explore (uniform across arms).
+        // NOTE: epsilon=1.0 — never exploit, always explore (uniform across arms).
         let exp = bandit_experiment(10, 1.0, &["v1", "v2"]);
         let router = ExperimentRouter::new(vec![exp]);
         let scores = vec![
@@ -539,7 +538,7 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        // Uniform exploration over 2 arms — each should be ~50%. Use a
+        // NOTE: uniform exploration over 2 arms — each should be ~50%. Use a
         // generous band to absorb hash skew on a small sample size.
         assert!(
             v1 > v2 / 3 && v2 > v1 / 3,

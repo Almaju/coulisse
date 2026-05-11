@@ -65,17 +65,6 @@ impl SmokeTestRow {
     pub(super) fn from_admin(row: &AdminSmoke, last_run: Option<&StoredRun>) -> Self {
         let label = SourceLabel::from_admin(row.source);
         match &row.config {
-            Some(cfg) => Self {
-                last_run: last_run.map(RunRow::build),
-                max_turns: cfg.max_turns,
-                name: cfg.name.clone(),
-                persona_model: format!("{} / {}", cfg.persona.provider, cfg.persona.model),
-                repetitions: cfg.repetitions,
-                source: label,
-                target: cfg.target.clone(),
-                tombstoned: false,
-                yaml_backed: row.yaml_backed,
-            },
             None => Self {
                 last_run: None,
                 max_turns: 0,
@@ -85,6 +74,17 @@ impl SmokeTestRow {
                 source: label,
                 target: String::new(),
                 tombstoned: true,
+                yaml_backed: row.yaml_backed,
+            },
+            Some(cfg) => Self {
+                last_run: last_run.map(RunRow::build),
+                max_turns: cfg.max_turns,
+                name: cfg.name.clone(),
+                persona_model: format!("{} / {}", cfg.persona.provider, cfg.persona.model),
+                repetitions: cfg.repetitions,
+                source: label,
+                target: cfg.target.clone(),
+                tombstoned: false,
                 yaml_backed: row.yaml_backed,
             },
         }
@@ -121,9 +121,6 @@ impl RunDetailView {
                 turn_index: m.turn_index,
             })
             .collect();
-        // Within a turn pair, persona comes before assistant. messages_for_run
-        // orders by (turn_index ASC, role ASC) — "assistant" sorts before
-        // "persona" alphabetically, so we re-sort here for the desired display.
         turns.sort_by(|a, b| {
             a.turn_index
                 .cmp(&b.turn_index)

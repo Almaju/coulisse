@@ -14,14 +14,14 @@ pub struct Config {
     /// Stderr fmt layer. Defaults: enabled, level inherited from
     /// `RUST_LOG` if set, otherwise `info,sqlx=warn`.
     pub fmt: FmtConfig,
-    /// `SQLite` layer that mirrors spans into the `events` and
-    /// `tool_calls` tables for the studio UI. Defaults: enabled.
-    /// Disable only if you don't need the studio's per-turn event tree.
-    pub sqlite: SqliteConfig,
     /// OpenTelemetry OTLP exporter. Absent (the default) = no
     /// external traces shipped. Set `endpoint` to point at a Grafana,
     /// `SigNoz`, Jaeger or any OTLP-compatible collector.
     pub otlp: Option<OtlpConfig>,
+    /// `SQLite` layer that mirrors spans into the `events` and
+    /// `tool_calls` tables for the studio UI. Defaults: enabled.
+    /// Disable only if you don't need the studio's per-turn event tree.
+    pub sqlite: SqliteConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -56,14 +56,14 @@ pub struct OtlpConfig {
     /// Collector URL — e.g. `http://localhost:4317` for grpc,
     /// `http://localhost:4318/v1/traces` for http/protobuf.
     pub endpoint: String,
-    /// Wire protocol. Defaults to `grpc` (port 4317).
-    #[serde(default)]
-    pub protocol: OtlpProtocol,
     /// Static headers (e.g. `authorization: Bearer ...`) attached to
     /// every export request. Useful for managed backends like `SigNoz`
     /// Cloud or Honeycomb.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Wire protocol. Defaults to `grpc` (port 4317).
+    #[serde(default)]
+    pub protocol: OtlpProtocol,
     /// Resource attribute `service.name`. Defaults to `coulisse`.
     #[serde(default = "default_service_name")]
     pub service_name: String,

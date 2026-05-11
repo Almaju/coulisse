@@ -95,8 +95,8 @@ async fn judge_detail(
         .ok_or(AdminError::NotFound)?;
     if matches!(fmt, ResponseFormat::Json) {
         return match &row.config {
-            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
             None => Err(AdminError::NotFound),
+            Some(cfg) => Ok(Json(cfg.clone()).into_response()),
         };
     }
     let since = now_secs().saturating_sub(7 * 86_400);

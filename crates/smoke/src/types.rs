@@ -33,21 +33,21 @@ pub enum RunStatus {
 
 impl RunStatus {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Running => "running",
-        }
-    }
-
-    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
             "running" => Some(Self::Running),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Running => "running",
         }
     }
 }
@@ -63,19 +63,19 @@ pub enum TurnRole {
 
 impl TurnRole {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Assistant => "assistant",
-            Self::Persona => "persona",
-        }
-    }
-
-    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "assistant" => Some(Self::Assistant),
             "persona" => Some(Self::Persona),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Assistant => "assistant",
+            Self::Persona => "persona",
         }
     }
 }

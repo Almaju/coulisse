@@ -1,9 +1,8 @@
+use crate::error::WindowKind;
+use crate::{LimitError, RequestLimits};
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{now_secs, u64_to_i64};
 use sqlx::{SqliteConnection, SqlitePool};
-
-use crate::error::WindowKind;
-use crate::{LimitError, RequestLimits};
 
 struct Schema;
 
@@ -194,9 +193,6 @@ mod tests {
 
     #[tokio::test]
     async fn survives_process_restart() {
-        // Share one backing database file between two tracker instances, just
-        // like Coulisse would across a restart. Verifies that the UPSERT path
-        // and the count lookup both see persisted rows.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("limits.db");
         let options = SqliteConnectOptions::new()

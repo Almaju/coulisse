@@ -54,6 +54,17 @@ impl Experiments {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
+    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, ExperimentsError> {
+        let result = sqlx::query("DELETE FROM dynamic_experiments WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
     pub async fn list_dynamic(&self) -> Result<Vec<DynamicExperimentRow>, ExperimentsError> {
         let rows = sqlx::query(
             "SELECT config_json, created_at, disabled, name, updated_at \
@@ -113,17 +124,6 @@ impl Experiments {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn delete_dynamic(&self, name: &str) -> Result<bool, ExperimentsError> {
-        let result = sqlx::query("DELETE FROM dynamic_experiments WHERE name = ?")
-            .bind(name)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
     /// Read every dynamic row, merge against `yaml_experiments`, and atomically
     /// swap the effective list into `list`.
     ///
@@ -150,11 +150,11 @@ fn row_to_dynamic_experiment(row: &SqliteRow) -> Result<DynamicExperimentRow, Ex
     let name: String = row.try_get("name")?;
     let updated_at: i64 = row.try_get("updated_at")?;
     let config = match config_json {
+        None => None,
         Some(s) => Some(
             serde_json::from_str::<ExperimentConfig>(&s)
                 .map_err(|e| ExperimentsError::RowDecode(format!("config_json: {e}")))?,
         ),
-        None => None,
     };
     Ok(DynamicExperimentRow {
         config,

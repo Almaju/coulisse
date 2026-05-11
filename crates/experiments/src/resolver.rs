@@ -26,6 +26,10 @@ impl ExperimentResolver {
 }
 
 impl AgentResolver for ExperimentResolver {
+    fn purpose(&self, name: &str) -> Option<String> {
+        self.router.get(name).and_then(|exp| exp.purpose.clone())
+    }
+
     fn resolve<'a>(
         &'a self,
         name: &'a str,
@@ -45,9 +49,5 @@ impl AgentResolver for ExperimentResolver {
             let resolved = self.router.resolve_with_scores(name, user_id, &scores);
             resolved.agent.into_owned()
         })
-    }
-
-    fn purpose(&self, name: &str) -> Option<String> {
-        self.router.get(name).and_then(|exp| exp.purpose.clone())
     }
 }
