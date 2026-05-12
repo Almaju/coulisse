@@ -102,6 +102,12 @@ struct RunOnce<P: Agents + OneShotPrompt> {
     store: Arc<SmokeStore>,
 }
 
+// WHY: the smoke loop legitimately strings together resolve → persona →
+// agent → record per turn, plus the per-turn span and bookkeeping. The
+// stages are tightly coupled by the loop's shared state; splitting them
+// across helpers would push that state into another args struct without
+// improving readability.
+#[allow(clippy::too_many_lines)]
 async fn run_once<P: Agents + OneShotPrompt + 'static>(inputs: RunOnce<P>) -> Result<(), RunError> {
     let RunOnce {
         config,

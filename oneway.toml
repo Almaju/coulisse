@@ -26,4 +26,13 @@ disable = [
     # CLAUDE.md does not require one-type-per-file. Splitting ~191
     # sites into ~150 new files would dilute cohesion without payoff.
     "one_public_type_per_file",
+
+    # `if/else chain — prefer match for exhaustive case analysis` —
+    # fires on EVERY `if/else`, including binary booleans like
+    # `if tools.is_empty() { ... } else { ... }` where the type
+    # system already proves exhaustiveness. Forcing `match` on a
+    # bool is non-idiomatic Rust. CLAUDE.md doesn't mandate match
+    # over if/else; the legitimate "silent fall-through" cases this
+    # could catch are rare enough to be reviewed by eye.
+    "no_if_else",
 ]
