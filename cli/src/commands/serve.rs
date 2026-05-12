@@ -19,7 +19,7 @@ use experiments::{ExperimentResolver, ExperimentRouter, Experiments, RebuildExpe
 use judges::{Judge, JudgeConfig, Judges, RebuildJudges};
 use limits::Tracker;
 use mcp::McpServers;
-use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
+use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, StoreInputs, UserId};
 use providers::ProviderKind;
 use smoke::{RebuildSmoke, RunDispatcher, SmokeStore};
 use telemetry::Sink as TelemetrySink;
@@ -197,11 +197,11 @@ async fn boot_stores(
     log_agents_merge(&report);
 
     let memory = Arc::new(
-        Store::open(
-            pool.clone(),
-            memory_config.clone(),
-            embedder_fallback_key(config, memory_config).as_deref(),
-        )
+        Store::open(StoreInputs {
+            config: memory_config.clone(),
+            fallback_api_key: embedder_fallback_key(config, memory_config).as_deref(),
+            pool: pool.clone(),
+        })
         .await?,
     );
 

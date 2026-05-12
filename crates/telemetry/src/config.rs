@@ -74,7 +74,7 @@ fn default_service_name() -> String {
     "coulisse".to_string()
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, schemars::JsonSchema, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OtlpProtocol {
     #[default]

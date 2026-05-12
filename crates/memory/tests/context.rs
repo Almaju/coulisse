@@ -1,7 +1,8 @@
 //! Behavioral tests for context assembly: recall, ordering, budgeting.
 
 use memory::{
-    BackendConfig, EmbedderConfig, MemoryConfig, MemoryKind, Role, Store, TokenCount, UserId,
+    AppendMessage, BackendConfig, ContextRequest, EmbedderConfig, MemoryConfig, MemoryKind,
+    RecallQuery, RememberInput, Role, Store, StoreInputs, TokenCount, UserId,
 };
 
 async fn new_store() -> Store {
@@ -10,13 +11,35 @@ async fn new_store() -> Store {
         embedder: EmbedderConfig::Hash { dims: 128 },
         ..MemoryConfig::default()
     };
-    Store::open(
-        memory::open_pool(&config.backend).await.unwrap(),
-        config,
-        None,
-    )
+    Store::open(StoreInputs {
+        config: config.clone(),
+        fallback_api_key: None,
+        pool: memory::open_pool(&config.backend).await.unwrap(),
+    })
     .await
     .unwrap()
+}
+
+fn fact(content: impl Into<String>) -> RememberInput {
+    RememberInput {
+        content: content.into(),
+        kind: MemoryKind::Fact,
+    }
+}
+
+fn pref(content: impl Into<String>) -> RememberInput {
+    RememberInput {
+        content: content.into(),
+        kind: MemoryKind::Preference,
+    }
+}
+
+fn msg(role: Role, content: impl Into<String>) -> AppendMessage {
+    AppendMessage {
+        content: content.into(),
+        id: None,
+        role,
+    }
 }
 
 #[tokio::test]
@@ -25,20 +48,21 @@ async fn recall_ranks_semantically_similar_content_first() {
     let user = UserId::new();
     let um = store.for_user(user);
 
-    um.remember(
-        MemoryKind::Fact,
-        "user loves italian food pasta pizza".into(),
-    )
-    .await
-    .unwrap();
-    um.remember(MemoryKind::Fact, "user drives a red tesla car".into())
+    um.remember(fact("user loves italian food pasta pizza"))
         .await
         .unwrap();
-    um.remember(MemoryKind::Preference, "user enjoys jazz music".into())
+    um.remember(fact("user drives a red tesla car"))
         .await
         .unwrap();
+    um.remember(pref("user enjoys jazz music")).await.unwrap();
 
-    let top = um.recall("pizza pasta italian", 1).await.unwrap();
+    let top = um
+        .recall(RecallQuery {
+            k: 1,
+            query: "pizza pasta italian",
+        })
+        .await
+        .unwrap();
     assert_eq!(top.len(), 1);
     assert!(
         top[0].content.contains("pasta"),
@@ -52,14 +76,17 @@ async fn assemble_context_returns_messages_chronologically() {
     let user = UserId::new();
     let um = store.for_user(user);
 
-    um.append_message(Role::User, "first".into()).await.unwrap();
-    um.append_message(Role::Assistant, "second".into())
+    um.append_message(msg(Role::User, "first")).await.unwrap();
+    um.append_message(msg(Role::Assistant, "second"))
         .await
         .unwrap();
-    um.append_message(Role::User, "third".into()).await.unwrap();
+    um.append_message(msg(Role::User, "third")).await.unwrap();
 
     let ctx = um
-        .assemble_context("anything", TokenCount(1_000))
+        .assemble_context(ContextRequest {
+            budget: TokenCount(1_000),
+            new_user_message: "anything",
+        })
         .await
         .unwrap();
     let contents: Vec<_> = ctx.messages.iter().map(|m| m.content.clone()).collect();
@@ -75,12 +102,18 @@ async fn assemble_context_drops_oldest_when_over_budget() {
     // Each message ~= 25 tokens (100 chars / 4). Budget of 60 tokens fits ~2 messages.
     let long = "a".repeat(100);
     for i in 0..5 {
-        um.append_message(Role::User, format!("{long}-{i}"))
+        um.append_message(msg(Role::User, format!("{long}-{i}")))
             .await
             .unwrap();
     }
 
-    let ctx = um.assemble_context("q", TokenCount(60)).await.unwrap();
+    let ctx = um
+        .assemble_context(ContextRequest {
+            budget: TokenCount(60),
+            new_user_message: "q",
+        })
+        .await
+        .unwrap();
     // The most recent messages should be kept; oldest dropped.
     assert!(
         ctx.messages.len() < 5,
@@ -101,15 +134,14 @@ async fn assemble_context_includes_recalled_memories() {
     let user = UserId::new();
     let um = store.for_user(user);
 
-    um.remember(MemoryKind::Preference, "prefers dark mode".into())
-        .await
-        .unwrap();
-    um.remember(MemoryKind::Fact, "lives in Paris".into())
-        .await
-        .unwrap();
+    um.remember(pref("prefers dark mode")).await.unwrap();
+    um.remember(fact("lives in Paris")).await.unwrap();
 
     let ctx = um
-        .assemble_context("dark mode settings", TokenCount(1_000))
+        .assemble_context(ContextRequest {
+            budget: TokenCount(1_000),
+            new_user_message: "dark mode settings",
+        })
         .await
         .unwrap();
     assert!(!ctx.memories.is_empty());

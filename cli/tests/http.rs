@@ -23,7 +23,8 @@ use http_body_util::BodyExt;
 use judges::{Judge, JudgeConfig, Judges, Score};
 use limits::Tracker;
 use memory::{
-    BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Store, UserId,
+    BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Store, StoreInputs,
+    UserId,
 };
 use providers::ProviderKind;
 use tower::ServiceExt;
@@ -92,7 +93,15 @@ async fn make_app_with_experiments(
         ..MemoryConfig::default()
     };
     let pool = memory::open_pool(&config.backend).await.unwrap();
-    let memory = Arc::new(Store::open(pool.clone(), config, None).await.unwrap());
+    let memory = Arc::new(
+        Store::open(StoreInputs {
+            config,
+            fallback_api_key: None,
+            pool: pool.clone(),
+        })
+        .await
+        .unwrap(),
+    );
     let tracker = Tracker::open(pool.clone()).await.unwrap();
     let sink = Arc::new(telemetry::Sink::open(pool.clone()).await.unwrap());
     let (sqlite_layer, telemetry_guard) = telemetry::SqliteLayer::spawn(pool.clone());

@@ -11,7 +11,10 @@ use coulisse_core::{OneShotPrompt, ScoreQuery};
 use experiments::{ExperimentRouter, ResolveQuery, Strategy};
 use judges::{Judge, Judges, spawn_score};
 use limits::{CheckRequest, RecordUsage, RequestLimits, Tracker};
-use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
+use memory::{
+    AppendMessage, ContextRequest, ExtractInputs, Extractor, Memory, MemoryKind, MessageId,
+    Role as MemRole, Store, UserId,
+};
 use telemetry::TurnId;
 use tracing::{Instrument, Span, info_span};
 
@@ -299,22 +302,26 @@ async fn finalize_non_streaming<P: Agents + OneShotPrompt + 'static>(
     );
 
     let um = state.memory.for_user(prepared.user_id);
-    um.append_message(MemRole::User, prepared.user_message.clone())
-        .await?;
-    um.append_message_with_id(
-        MemRole::Assistant,
-        completion.text.clone(),
-        routing.assistant_message_id,
-    )
+    um.append_message(AppendMessage {
+        content: prepared.user_message.clone(),
+        id: None,
+        role: MemRole::User,
+    })
+    .await?;
+    um.append_message(AppendMessage {
+        content: completion.text.clone(),
+        id: Some(routing.assistant_message_id),
+        role: MemRole::Assistant,
+    })
     .await?;
 
     if let Some(extractor) = state.extractor.as_ref() {
-        extractor.spawn(
-            Arc::clone(&state.memory),
-            prepared.user_id,
-            prepared.user_message.clone(),
-            completion.text.clone(),
-        );
+        extractor.spawn(ExtractInputs {
+            assistant_message: completion.text.clone(),
+            memory: Arc::clone(&state.memory),
+            user_id: prepared.user_id,
+            user_message: prepared.user_message.clone(),
+        });
     }
 
     let judges = judges_for_agent(state, &routing.agent_name);
@@ -392,7 +399,12 @@ async fn prepare_request<P: Agents + OneShotPrompt>(
     let user_message = last_user.content_or_empty().to_string();
     let um = state.memory.for_user(user_id);
     let budget = state.memory.config().context_budget;
-    let assembled = um.assemble_context(&user_message, budget).await?;
+    let assembled = um
+        .assemble_context(ContextRequest {
+            budget,
+            new_user_message: &user_message,
+        })
+        .await?;
 
     let mut messages: Vec<agents::Message> = Vec::new();
     if let Some(tag) = language {

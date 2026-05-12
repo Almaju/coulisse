@@ -1,7 +1,10 @@
 //! Verifies that a file-backed Store retains data across restarts and that
 //! the dedup path skips near-duplicates.
 
-use memory::{BackendConfig, EmbedderConfig, MemoryConfig, MemoryKind, Role, Store, UserId};
+use memory::{
+    AppendMessage, BackendConfig, EmbedderConfig, MemoryConfig, MemoryKind, RecallQuery,
+    RememberIfNovel, RememberInput, Role, Store, StoreInputs, UserId,
+};
 
 fn config_at(path: std::path::PathBuf) -> MemoryConfig {
     MemoryConfig {
@@ -17,34 +20,41 @@ async fn data_survives_process_restart() {
     let db = dir.path().join("coulisse.db");
     let user = UserId::new();
 
-    let store = Store::open(
-        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+    let store = Store::open(StoreInputs {
+        config: config_at(db.clone()),
+        fallback_api_key: None,
+        pool: memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
             .await
             .unwrap(),
-        config_at(db.clone()),
-        None,
-    )
+    })
     .await
     .unwrap();
     store
         .for_user(user)
-        .remember(MemoryKind::Fact, "user lives in Paris".into())
+        .remember(RememberInput {
+            content: "user lives in Paris".into(),
+            kind: MemoryKind::Fact,
+        })
         .await
         .unwrap();
     store
         .for_user(user)
-        .append_message(Role::User, "hello".into())
+        .append_message(AppendMessage {
+            content: "hello".into(),
+            id: None,
+            role: Role::User,
+        })
         .await
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(
-        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+    let reopened = Store::open(StoreInputs {
+        config: config_at(db.clone()),
+        fallback_api_key: None,
+        pool: memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
             .await
             .unwrap(),
-        config_at(db),
-        None,
-    )
+    })
     .await
     .unwrap();
     let memories = reopened.for_user(user).memories().await.unwrap();
@@ -61,25 +71,33 @@ async fn remember_if_novel_skips_duplicates() {
     let db = dir.path().join("coulisse.db");
     let user = UserId::new();
 
-    let store = Store::open(
-        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+    let store = Store::open(StoreInputs {
+        config: config_at(db.clone()),
+        fallback_api_key: None,
+        pool: memory::open_pool(&BackendConfig::Sqlite { path: db })
             .await
             .unwrap(),
-        config_at(db),
-        None,
-    )
+    })
     .await
     .unwrap();
     let um = store.for_user(user);
 
     let first = um
-        .remember_if_novel(MemoryKind::Fact, "user lives in Paris".into(), 0.9)
+        .remember_if_novel(RememberIfNovel {
+            content: "user lives in Paris".into(),
+            kind: MemoryKind::Fact,
+            threshold: 0.9,
+        })
         .await
         .unwrap();
     assert!(first.is_some());
 
     let duplicate = um
-        .remember_if_novel(MemoryKind::Fact, "user lives in Paris".into(), 0.9)
+        .remember_if_novel(RememberIfNovel {
+            content: "user lives in Paris".into(),
+            kind: MemoryKind::Fact,
+            threshold: 0.9,
+        })
         .await
         .unwrap();
     assert!(
@@ -88,7 +106,11 @@ async fn remember_if_novel_skips_duplicates() {
     );
 
     let different = um
-        .remember_if_novel(MemoryKind::Fact, "user drives a tesla".into(), 0.9)
+        .remember_if_novel(RememberIfNovel {
+            content: "user drives a tesla".into(),
+            kind: MemoryKind::Fact,
+            threshold: 0.9,
+        })
         .await
         .unwrap();
     assert!(different.is_some(), "unrelated fact should be stored");
@@ -108,10 +130,19 @@ async fn recall_ignores_memories_from_different_embedder_model() {
         ..MemoryConfig::default()
     };
     let pool_a = memory::open_pool(&cfg_a.backend).await.unwrap();
-    let store_a = Store::open(pool_a, cfg_a, None).await.unwrap();
+    let store_a = Store::open(StoreInputs {
+        config: cfg_a,
+        fallback_api_key: None,
+        pool: pool_a,
+    })
+    .await
+    .unwrap();
     store_a
         .for_user(user)
-        .remember(MemoryKind::Fact, "written by embedder A".into())
+        .remember(RememberInput {
+            content: "written by embedder A".into(),
+            kind: MemoryKind::Fact,
+        })
         .await
         .unwrap();
     drop(store_a);
@@ -124,9 +155,22 @@ async fn recall_ignores_memories_from_different_embedder_model() {
         ..MemoryConfig::default()
     };
     let pool_b = memory::open_pool(&cfg_b.backend).await.unwrap();
-    let store_b = Store::open(pool_b, cfg_b, None).await.unwrap();
+    let store_b = Store::open(StoreInputs {
+        config: cfg_b,
+        fallback_api_key: None,
+        pool: pool_b,
+    })
+    .await
+    .unwrap();
 
-    let recalled = store_b.for_user(user).recall("anything", 10).await.unwrap();
+    let recalled = store_b
+        .for_user(user)
+        .recall(RecallQuery {
+            k: 10,
+            query: "anything",
+        })
+        .await
+        .unwrap();
     assert!(
         recalled.is_empty(),
         "memories from a different embedder should not be recalled, got {recalled:?}"

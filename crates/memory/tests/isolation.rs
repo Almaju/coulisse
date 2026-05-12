@@ -2,7 +2,8 @@
 //! to other users. If any assertion here fails, user isolation has broken.
 
 use memory::{
-    BackendConfig, EmbedderConfig, MemoryConfig, MemoryKind, Role, Store, TokenCount, UserId,
+    AppendMessage, BackendConfig, ContextRequest, EmbedderConfig, MemoryConfig, MemoryKind,
+    RecallQuery, RememberInput, Role, Store, StoreInputs, TokenCount, UserId,
 };
 
 async fn new_store() -> Store {
@@ -11,11 +12,11 @@ async fn new_store() -> Store {
         embedder: EmbedderConfig::Hash { dims: 64 },
         ..MemoryConfig::default()
     };
-    Store::open(
-        memory::open_pool(&config.backend).await.unwrap(),
-        config,
-        None,
-    )
+    Store::open(StoreInputs {
+        config: config.clone(),
+        fallback_api_key: None,
+        pool: memory::open_pool(&config.backend).await.unwrap(),
+    })
     .await
     .unwrap()
 }
@@ -28,17 +29,37 @@ async fn memories_are_not_visible_across_users() {
 
     store
         .for_user(alice)
-        .remember(MemoryKind::Fact, "alice likes pizza".into())
+        .remember(RememberInput {
+            content: "alice likes pizza".into(),
+            kind: MemoryKind::Fact,
+        })
         .await
         .unwrap();
     store
         .for_user(bob)
-        .remember(MemoryKind::Fact, "bob hates pineapple".into())
+        .remember(RememberInput {
+            content: "bob hates pineapple".into(),
+            kind: MemoryKind::Fact,
+        })
         .await
         .unwrap();
 
-    let alice_recall = store.for_user(alice).recall("food", 10).await.unwrap();
-    let bob_recall = store.for_user(bob).recall("food", 10).await.unwrap();
+    let alice_recall = store
+        .for_user(alice)
+        .recall(RecallQuery {
+            k: 10,
+            query: "food",
+        })
+        .await
+        .unwrap();
+    let bob_recall = store
+        .for_user(bob)
+        .recall(RecallQuery {
+            k: 10,
+            query: "food",
+        })
+        .await
+        .unwrap();
 
     assert_eq!(alice_recall.len(), 1);
     assert_eq!(bob_recall.len(), 1);
@@ -56,23 +77,37 @@ async fn messages_are_not_visible_across_users() {
 
     store
         .for_user(alice)
-        .append_message(Role::User, "alice says hi".into())
+        .append_message(AppendMessage {
+            content: "alice says hi".into(),
+            id: None,
+            role: Role::User,
+        })
         .await
         .unwrap();
     store
         .for_user(bob)
-        .append_message(Role::User, "bob says hello".into())
+        .append_message(AppendMessage {
+            content: "bob says hello".into(),
+            id: None,
+            role: Role::User,
+        })
         .await
         .unwrap();
 
     let alice_ctx = store
         .for_user(alice)
-        .assemble_context("hi", TokenCount(1_000))
+        .assemble_context(ContextRequest {
+            budget: TokenCount(1_000),
+            new_user_message: "hi",
+        })
         .await
         .unwrap();
     let bob_ctx = store
         .for_user(bob)
-        .assemble_context("hi", TokenCount(1_000))
+        .assemble_context(ContextRequest {
+            budget: TokenCount(1_000),
+            new_user_message: "hi",
+        })
         .await
         .unwrap();
 
@@ -89,7 +124,10 @@ async fn empty_user_sees_empty_context() {
 
     let ctx = store
         .for_user(ghost)
-        .assemble_context("anything", TokenCount(1_000))
+        .assemble_context(ContextRequest {
+            budget: TokenCount(1_000),
+            new_user_message: "anything",
+        })
         .await
         .unwrap();
 
@@ -106,14 +144,22 @@ async fn counts_are_per_user() {
     for i in 0..5 {
         store
             .for_user(alice)
-            .append_message(Role::User, format!("alice msg {i}"))
+            .append_message(AppendMessage {
+                content: format!("alice msg {i}"),
+                id: None,
+                role: Role::User,
+            })
             .await
             .unwrap();
     }
     for i in 0..2 {
         store
             .for_user(bob)
-            .append_message(Role::User, format!("bob msg {i}"))
+            .append_message(AppendMessage {
+                content: format!("bob msg {i}"),
+                id: None,
+                role: Role::User,
+            })
             .await
             .unwrap();
     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// against an agent (or experiment) for evaluation. Each repetition uses
 /// a fresh synthetic `user_id`, so split/bandit experiments sample variants
 /// naturally across reps.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SmokeTestConfig {
     /// Optional opening message from the synthetic user. When omitted,
     /// the persona produces the first turn itself from its preamble.
@@ -34,7 +34,7 @@ pub struct SmokeTestConfig {
     pub target: String,
 }
 
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct PersonaConfig {
     pub model: String,
     pub preamble: String,

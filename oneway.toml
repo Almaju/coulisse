@@ -10,4 +10,12 @@ disable = [
     # triggered chained `step: MigrationStep` → `migration_step:
     # MigrationStep` renames that added length without information.
     "type_derived_naming",
+
+    # `public method calls public method` — wants every internal
+    # composition extracted into a use-case struct (Service-layer
+    # pattern). CLAUDE.md is explicit that data and operations belong
+    # together (`url.parse()`, not `UrlParser.parse(url)`) and that the
+    # codebase should NOT have `TodoController`/`TodoService` shaped
+    # types. The rule pushes in the opposite direction.
+    "no_self_orchestration",
 ]

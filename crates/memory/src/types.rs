@@ -1,8 +1,3 @@
-// WHY: a handful of constructors take many fields that naturally belong
-// together (a stored message row). Bundling them into a struct merely
-// duplicates the struct that already holds them. Deferred refactor.
-#![allow(clippy::too_many_arguments)]
-
 use std::ops::{Add, AddAssign};
 
 use coulisse_core::{Message, MessageId, Role, UserId, now_secs};
@@ -68,21 +63,29 @@ pub struct StoredMessage {
     pub user_id: UserId,
 }
 
+/// Inputs to [`StoredMessage::new`]. When `id` is `None` the constructor
+/// mints a fresh `MessageId`; pass `Some` so the chat handler can reuse
+/// the assistant message id as the telemetry turn correlation id.
+pub struct NewStoredMessage {
+    pub content: String,
+    pub id: Option<MessageId>,
+    pub role: Role,
+    pub user_id: UserId,
+}
+
 impl StoredMessage {
     #[must_use]
-    pub fn new(user_id: UserId, role: Role, content: String) -> Self {
-        Self::new_with_id(user_id, role, content, MessageId::new())
-    }
-
-    /// Build a `StoredMessage` with a caller-supplied id. Used by the chat
-    /// handler so the assistant message's id can be generated before the
-    /// prompter runs and reused as the telemetry turn correlation id.
-    #[must_use]
-    pub fn new_with_id(user_id: UserId, role: Role, content: String, id: MessageId) -> Self {
+    pub fn new(input: NewStoredMessage) -> Self {
+        let NewStoredMessage {
+            content,
+            id,
+            role,
+            user_id,
+        } = input;
         let token_count = TokenCount::estimate(&content);
         Self {
             created_at: now_secs(),
-            id,
+            id: id.unwrap_or_else(MessageId::new),
             role,
             token_count,
             user_id,
@@ -142,9 +145,24 @@ pub struct Memory {
     pub user_id: UserId,
 }
 
+/// Inputs to [`Memory::new`]: the owning user, the memory kind, the
+/// text content, and its precomputed embedding.
+pub struct NewMemory {
+    pub content: String,
+    pub embedding: Vec<f32>,
+    pub kind: MemoryKind,
+    pub user_id: UserId,
+}
+
 impl Memory {
     #[must_use]
-    pub fn new(user_id: UserId, kind: MemoryKind, content: String, embedding: Vec<f32>) -> Self {
+    pub fn new(input: NewMemory) -> Self {
+        let NewMemory {
+            content,
+            embedding,
+            kind,
+            user_id,
+        } = input;
         Self {
             created_at: now_secs(),
             embedding,

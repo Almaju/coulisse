@@ -16,7 +16,7 @@ use crate::TokenCount;
 /// Resolved into a [`MemoryConfig`] by the orchestrator (cli) before being
 /// handed to [`Store::open`]. Resolution looks at the configured `providers:`
 /// map to fill in any auto-derived choices.
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryYaml {
     #[serde(default)]
@@ -32,7 +32,7 @@ pub struct MemoryYaml {
 /// - `user_state: true` — enabled with auto-derived defaults.
 /// - `user_state: { learn_from: ..., embed_with: ..., ... }` — enabled with
 ///   explicit overrides.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum UserStateYaml {
     Configured(UserStateConfig),
@@ -60,7 +60,7 @@ impl UserStateYaml {
 
 /// Explicit overrides for long-term user state. Every field is optional —
 /// resolution fills in the rest from sensible defaults.
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UserStateConfig {
     /// Cosine similarity threshold above which an extracted fact is considered
@@ -84,7 +84,7 @@ pub struct UserStateConfig {
 }
 
 /// Generic `{provider, model}` pair used by overrides.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderModel {
     pub model: String,
@@ -93,7 +93,7 @@ pub struct ProviderModel {
 
 /// Embedder override. Mirrors [`EmbedderConfig`] but lives on the YAML side
 /// so the resolved type can stay free of optional fields.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(tag = "provider", rename_all = "lowercase", deny_unknown_fields)]
 pub enum EmbedderYaml {
     Hash {

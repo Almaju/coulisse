@@ -9,7 +9,7 @@ use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
 use judges::spawn_score;
 use limits::RecordUsage;
-use memory::{MessageId, Role as MemRole, UserId};
+use memory::{AppendMessage, ExtractInputs, MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
 use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
@@ -182,30 +182,37 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                 }
                 record_llm_call(&state, &agent_name, usage, &llm_call_span);
                 let um = state.memory.for_user(user_id);
-                if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
+                if let Err(err) = um
+                    .append_message(AppendMessage {
+                        content: user_message.clone(),
+                        id: None,
+                        role: MemRole::User,
+                    })
+                    .await
+                {
                     warn_memory_append_failed("user", &err);
                 }
                 if accumulated.is_empty() {
                     return;
                 }
                 let assistant_append = um
-                    .append_message_with_id(
-                        MemRole::Assistant,
-                        accumulated.clone(),
-                        assistant_message_id,
-                    )
+                    .append_message(AppendMessage {
+                        content: accumulated.clone(),
+                        id: Some(assistant_message_id),
+                        role: MemRole::Assistant,
+                    })
                     .await;
                 if let Err(err) = assistant_append {
                     warn_memory_append_failed("assistant", &err);
                     return;
                 }
                 if let Some(extractor) = state.extractor.as_ref() {
-                    extractor.spawn(
-                        Arc::clone(&state.memory),
+                    extractor.spawn(ExtractInputs {
+                        assistant_message: accumulated.clone(),
+                        memory: Arc::clone(&state.memory),
                         user_id,
-                        user_message.clone(),
-                        accumulated.clone(),
-                    );
+                        user_message: user_message.clone(),
+                    });
                 }
                 let judges = judges_for_agent(&state, &agent_name);
                 spawn_score(
