@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agents::Agents;
+use agents::{Agents, CompletionRequest};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -119,7 +119,11 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     let messages = std::mem::take(&mut prepared.messages);
     let completion = state
         .agents
-        .complete(&routing.agent_name, messages, prepared.user_id)
+        .complete(CompletionRequest {
+            agent_name: &routing.agent_name,
+            messages,
+            user_id: prepared.user_id,
+        })
         .instrument(routing.turn_span.clone())
         .await?;
     finalize_non_streaming(&state, &prepared, &routing, &completion).await?;
@@ -239,7 +243,11 @@ async fn stream_response<P: Agents + OneShotPrompt + 'static>(
     }
     let inner = state
         .agents
-        .complete_streaming(&routing.agent_name, prepared.messages, prepared.user_id)
+        .complete_streaming(CompletionRequest {
+            agent_name: &routing.agent_name,
+            messages: prepared.messages,
+            user_id: prepared.user_id,
+        })
         .instrument(routing.turn_span.clone())
         .await?;
     Ok(sse_response(StreamContext {

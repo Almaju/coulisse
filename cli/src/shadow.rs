@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use agents::{Agents, Message as AgentMessage};
+use agents::{Agents, CompletionRequest, Message as AgentMessage};
 use coulisse_core::OneShotPrompt;
 use experiments::ExperimentConfig;
 use judges::{Judge, spawn_score};
@@ -82,7 +82,11 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
     );
     let outcome = state
         .agents
-        .complete(&agent_name, messages, user_id)
+        .complete(CompletionRequest {
+            agent_name: &agent_name,
+            messages,
+            user_id,
+        })
         .instrument(span)
         .await;
     match outcome {

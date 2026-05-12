@@ -17,7 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use agents::{Agents, Message as AgentMessage, Role as AgentRole};
+use agents::{Agents, CompletionRequest, Message as AgentMessage, PromptInput, Role as AgentRole};
 use coulisse_core::{MessageId, OneShotPrompt, ScoreQuery, UserId};
 use judges::spawn_score;
 use providers::ProviderKind;
@@ -130,7 +130,11 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         );
         let completion = state
             .agents
-            .complete(&resolved.agent, messages.clone(), synthetic_user)
+            .complete(CompletionRequest {
+                agent_name: &resolved.agent,
+                messages: messages.clone(),
+                user_id: synthetic_user,
+            })
             .instrument(span)
             .await
             .map_err(|e| RunError::Agent(e.to_string()))?;
@@ -237,7 +241,12 @@ async fn persona_turn<P: Agents + OneShotPrompt>(
     };
     let completion = state
         .agents
-        .prompt_with(provider, &persona.model, &persona.preamble, messages)
+        .prompt_with(PromptInput {
+            messages,
+            model: &persona.model,
+            preamble: &persona.preamble,
+            provider,
+        })
         .await
         .map_err(|e| RunError::Persona(e.to_string()))?;
     Ok(completion.text)

@@ -12,12 +12,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_stream::stream;
-use coulisse_core::{OneShotError, OneShotPrompt, OneShotRequest, UserId};
+use coulisse_core::{OneShotError, OneShotPrompt, OneShotRequest};
 use providers::ProviderKind;
 
 use crate::{
-    AgentConfig, Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent,
-    ToolCallKind, Usage,
+    AgentConfig, Agents, AgentsError, Completion, CompletionRequest, CompletionStream, Message,
+    PromptInput, Role, StreamEvent, ToolCallKind, Usage,
 };
 
 /// A `Agents` that replays a scripted reply. Each call to `complete` or
@@ -171,12 +171,12 @@ impl Agents for ScriptedAgents {
         Arc::clone(&self.agents)
     }
 
-    async fn complete(
-        &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        _user_id: UserId,
-    ) -> Result<Completion, AgentsError> {
+    async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, AgentsError> {
+        let CompletionRequest {
+            agent_name,
+            messages,
+            user_id: _,
+        } = request;
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         Ok(Completion {
@@ -187,10 +187,13 @@ impl Agents for ScriptedAgents {
 
     async fn complete_streaming(
         &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        _user_id: UserId,
+        request: CompletionRequest<'_>,
     ) -> Result<CompletionStream, AgentsError> {
+        let CompletionRequest {
+            agent_name,
+            messages,
+            user_id: _,
+        } = request;
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
@@ -239,14 +242,8 @@ impl Agents for ScriptedAgents {
         Ok(Box::pin(s))
     }
 
-    async fn prompt_with(
-        &self,
-        _provider: ProviderKind,
-        _model: &str,
-        _preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
-        self.calls.lock().unwrap().push(messages);
+    async fn prompt_with(&self, input: PromptInput<'_>) -> Result<Completion, AgentsError> {
+        self.calls.lock().unwrap().push(input.messages);
         let reply = {
             let mut replies = self.replies.lock().unwrap();
             match replies.len() {
@@ -276,10 +273,15 @@ impl OneShotPrompt for ScriptedAgents {
                 content: request.user_text.to_string(),
                 role: Role::User,
             }];
-            self.prompt_with(ProviderKind::Openai, "scripted", "", messages)
-                .await
-                .map(|c| c.text)
-                .map_err(|e| OneShotError::new(e.to_string()))
+            self.prompt_with(PromptInput {
+                messages,
+                model: "scripted",
+                preamble: "",
+                provider: ProviderKind::Openai,
+            })
+            .await
+            .map(|c| c.text)
+            .map_err(|e| OneShotError::new(e.to_string()))
         })
     }
 }
