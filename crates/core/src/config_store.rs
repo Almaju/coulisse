@@ -10,6 +10,14 @@
 use std::future::Future;
 use std::pin::Pin;
 
+/// One named slice of `coulisse.yaml` to persist via
+/// [`ConfigPersister::write_section`]. `name` is the top-level YAML key
+/// (`agents`, `judges`, …); `value` is the new payload for that key.
+pub struct ConfigSection<'a> {
+    pub name: &'a str,
+    pub value: serde_yaml::Value,
+}
+
 /// Persists edits to the on-disk YAML config. Implementations are
 /// responsible for: serializing concurrent writes, deserialize-merging
 /// the section into the full config, running cross-feature validation,
@@ -22,8 +30,7 @@ use std::pin::Pin;
 pub trait ConfigPersister: Send + Sync {
     fn write_section<'a>(
         &'a self,
-        section: &'a str,
-        value: serde_yaml::Value,
+        section: ConfigSection<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>;
 
     fn write_all<'a>(

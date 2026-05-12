@@ -1,10 +1,12 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::migrate::{self, SchemaMigrator};
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
 use thiserror::Error;
 
 use crate::merge::{MergeReport, merge};
@@ -16,14 +18,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "experiments";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("experiments has only one schema version")
-    }
 }
 
 /// One row in `dynamic_experiments`. `config` is `Some` for active rows

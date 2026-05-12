@@ -1,6 +1,8 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 
-use coulisse_core::{OneShotPrompt, UserId};
+use coulisse_core::{OneShotPrompt, OneShotRequest, UserId};
 use serde::Deserialize;
 
 use crate::{ExtractorConfig, MemoryKind, Store};
@@ -96,7 +98,12 @@ impl Extractor {
         );
         let raw_text = self
             .completer
-            .one_shot(&self.provider, &self.model, PREAMBLE, &user_text)
+            .one_shot(OneShotRequest {
+                model: &self.model,
+                preamble: PREAMBLE,
+                provider: &self.provider,
+                user_text: &user_text,
+            })
             .await
             .map_err(|e| format!("prompt: {e}"))?;
 
@@ -140,7 +147,7 @@ fn parse_facts(text: &str) -> Result<Vec<ParsedFact>, String> {
             other => {
                 tracing::debug!(kind = other, "skipping extracted entry with unknown kind");
                 continue;
-            }
+            },
         };
         let content = r.content.trim().to_string();
         if content.is_empty() {

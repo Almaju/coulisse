@@ -1,9 +1,15 @@
+// WHY: AgentsInner threads agent name + messages + depth + user_id +
+// (sometimes) span through every subagent dispatch. Restructuring the
+// runtime to carry a request context struct is a meaningful refactor;
+// deferred.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, UserId};
-use mcp::McpServers;
+use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, OneShotRequest, UserId};
+use mcp::{McpServers, ToolsRequest};
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
     ToolCallKind,
@@ -178,12 +184,15 @@ impl Agents for RigAgents {
 impl OneShotPrompt for RigAgents {
     fn one_shot<'a>(
         &'a self,
-        provider: &'a str,
-        model: &'a str,
-        preamble: &'a str,
-        user_text: &'a str,
+        request: OneShotRequest<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
         Box::pin(async move {
+            let OneShotRequest {
+                model,
+                preamble,
+                provider,
+                user_text,
+            } = request;
             let provider_kind = ProviderKind::parse(provider)
                 .ok_or_else(|| OneShotError::new(format!("unknown provider '{provider}'")))?;
             let messages = vec![Message {
@@ -241,7 +250,10 @@ impl AgentsInner {
         depth: usize,
         user_id: UserId,
     ) -> Result<BuiltTools, AgentsError> {
-        let raw_mcp_tools = self.mcp.tools_for(&agent.name, &agent.mcp_tools)?;
+        let raw_mcp_tools = self.mcp.tools_for(ToolsRequest {
+            accesses: &agent.mcp_tools,
+            agent: &agent.name,
+        })?;
         let mut tools: Vec<Box<dyn ToolDyn>> = raw_mcp_tools
             .into_iter()
             .map(|inner| -> Box<dyn ToolDyn> {

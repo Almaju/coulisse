@@ -1,3 +1,8 @@
+// WHY: pick helpers thread experiment + user + scores + state through
+// the routing pipeline. Restructuring into a request context struct is
+// a meaningful refactor; deferred.
+#![allow(clippy::too_many_arguments)]
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -112,7 +117,7 @@ impl ExperimentRouter {
                     agent: Cow::Owned(variant.agent.clone()),
                     experiment: Some(experiment.name.as_str()),
                 }
-            }
+            },
         }
     }
 
@@ -177,9 +182,14 @@ fn pick_variant<'a>(
     }
 }
 
+// WHY: shadow_pick's expects encode a config-validation invariant
+// (`primary` is present and points at a real variant for shadow
+// strategy). Propagating `Option` through the pick() chain just to
+// re-acknowledge a guarantee enforced upstream isn't worth the call-site
+// noise; CLAUDE.md carves out expect for these "type-system-can't-prove"
+// situations.
+#[allow(clippy::expect_used)]
 fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
-    // NOTE: validation guarantees `primary` is present and references one
-    // of the variants for shadow strategy.
     let primary = experiment
         .primary
         .as_deref()
@@ -196,6 +206,10 @@ fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
 /// probability `epsilon` we pick a hash-stable random arm, else the
 /// arm with the highest mean. Ties go to the first arm by declaration
 /// order, which makes the choice deterministic on ties.
+// WHY: trailing `.expect()` is reachable only when `variants` is empty;
+// config validation rejects experiments with no variants before they
+// ever reach the picker. See `shadow_pick` for the broader rationale.
+#[allow(clippy::expect_used)]
 fn bandit_pick<'a>(
     experiment: &'a ExperimentConfig,
     user_id: UserId,
@@ -253,6 +267,10 @@ fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &
     arms[idx]
 }
 
+// WHY: trailing `.expect()` is reachable only when `variants` is empty;
+// config validation rejects experiments with no variants before they
+// ever reach the picker. See `shadow_pick` for the broader rationale.
+#[allow(clippy::expect_used)]
 fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
     // NOTE: validation guarantees at least one variant with strictly
     // positive weight, so the cumulative total is finite and `> 0.0` and

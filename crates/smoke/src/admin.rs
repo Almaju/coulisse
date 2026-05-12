@@ -1,3 +1,8 @@
+// WHY: axum handlers' arity is dictated by the framework's extractors,
+// not our design. Bundling extractors into a struct isn't compatible
+// with `#[axum::handler]`, so this lint can't pay off in this module.
+#![allow(clippy::too_many_arguments)]
+
 //! Admin/studio HTTP surface for the smoke crate. Pages: list of
 //! configured tests, per-test detail, run viewer, plus CRUD endpoints.
 //!
@@ -103,7 +108,7 @@ async fn test_detail(
         .store
         .list_runs_for_test(&name, RECENT_RUNS_LIMIT)
         .await?;
-    let recent_runs: Vec<RunRow> = runs.iter().map(RunRow::build).collect();
+    let recent_runs: Vec<RunRow> = runs.iter().map(RunRow::from_run).collect();
     let test = SmokeTestRow::from_admin(row, runs.first());
     Ok(Html(SmokeTestDetailPage { recent_runs, test }.render()?).into_response())
 }
@@ -259,7 +264,7 @@ async fn run_page(
         .await?
         .ok_or(AdminError::NotFound)?;
     let messages = state.store.messages_for_run(run_id).await?;
-    let view = RunDetailView::build(&run, messages);
+    let view = RunDetailView::from_run(&run, messages);
     Ok(Html(SmokeRunPage { run: view }.render()?))
 }
 
@@ -323,7 +328,7 @@ impl IntoResponse for AdminError {
             ),
             Self::Dispatch(DispatchError::Other(m)) | Self::Internal(m) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, m)
-            }
+            },
             Self::InvalidRunId => (
                 StatusCode::BAD_REQUEST,
                 "run_id must be a valid UUID".to_string(),

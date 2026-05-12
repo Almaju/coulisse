@@ -133,7 +133,7 @@ fn resolve_extractor<S: BuildHasher>(
                 return Err(MemoryResolveError::LearnFromProviderNotConfigured { provider: kind });
             }
             (provider.clone(), model.clone())
-        }
+        },
     };
     Ok(ExtractorConfig {
         dedup_threshold: overrides

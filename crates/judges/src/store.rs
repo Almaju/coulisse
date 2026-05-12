@@ -1,15 +1,18 @@
+// WHY: store methods take well-grouped CRUD args. Deferred refactor.
+#![allow(clippy::too_many_arguments)]
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::migrate::{self, MigrationStep, SchemaMigrator};
 use coulisse_core::{
-    AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, UserId, i64_to_u32, i64_to_u64,
-    now_secs, u64_to_i64,
+    AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, ScoreQuery, UserId, i64_to_u32,
+    i64_to_u64, now_secs, u64_to_i64,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Executor, SqliteConnection, SqlitePool};
+use sqlx::{Executor, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -24,26 +27,25 @@ impl SchemaMigrator for Schema {
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0", "0.2.0"];
 
-    async fn upgrade_from(
-        &self,
-        from_version: &str,
-        conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        match from_version {
+    async fn upgrade_from(&self, step: MigrationStep<'_>) -> sqlx::Result<()> {
+        match step.from_version {
             "0.1.0" => {
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS dynamic_judges (\
-                        config_json TEXT,\
-                        created_at  INTEGER NOT NULL,\
-                        disabled    INTEGER NOT NULL DEFAULT 0,\
-                        name        TEXT    NOT NULL PRIMARY KEY,\
-                        updated_at  INTEGER NOT NULL\
-                    )",
-                )
-                .await?;
+                step.conn
+                    .execute(
+                        "CREATE TABLE IF NOT EXISTS dynamic_judges (\
+                            config_json TEXT,\
+                            created_at  INTEGER NOT NULL,\
+                            disabled    INTEGER NOT NULL DEFAULT 0,\
+                            name        TEXT    NOT NULL PRIMARY KEY,\
+                            updated_at  INTEGER NOT NULL\
+                        )",
+                    )
+                    .await?;
                 Ok(())
-            }
-            _ => unreachable!("unknown judges schema version: {from_version}"),
+            },
+            other => Err(sqlx::Error::Protocol(format!(
+                "judges: no upgrade path from '{other}'",
+            ))),
         }
     }
 }
@@ -191,10 +193,13 @@ impl Judges {
     /// Returns an error if the underlying operation fails.
     pub async fn mean_scores_by_agent(
         &self,
-        judge: &str,
-        criterion: &str,
-        since: u64,
+        query: ScoreQuery<'_>,
     ) -> Result<Vec<AgentScoreSummary>, JudgeStoreError> {
+        let ScoreQuery {
+            criterion,
+            judge,
+            since,
+        } = query;
         let rows = sqlx::query(
             "SELECT agent_name, AVG(score) AS mean, COUNT(*) AS samples \
              FROM scores \
@@ -417,13 +422,11 @@ impl Judges {
 impl ScoreLookup for Judges {
     fn mean_scores_by_agent<'a>(
         &'a self,
-        judge: &'a str,
-        criterion: &'a str,
-        since: u64,
+        query: ScoreQuery<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<AgentScoreSummary>, ScoreLookupError>> + Send + 'a>>
     {
         Box::pin(async move {
-            Judges::mean_scores_by_agent(self, judge, criterion, since)
+            Judges::mean_scores_by_agent(self, query)
                 .await
                 .map_err(|e| ScoreLookupError(e.to_string()))
         })

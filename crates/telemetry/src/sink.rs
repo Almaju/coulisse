@@ -1,8 +1,12 @@
+// WHY: telemetry insert functions take a flat event payload; bundling
+// into a struct duplicates the row shape. Deferred.
+#![allow(clippy::too_many_arguments)]
+
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{ToolCallKind, TurnId, UserId, i64_to_u32, u64_to_i64};
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::TelemetryError;
@@ -16,14 +20,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "telemetry";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("telemetry has only one schema version")
-    }
 }
 
 pub struct ActivityCounts {

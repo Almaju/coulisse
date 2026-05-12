@@ -99,7 +99,7 @@ fn main() -> ExitCode {
         Some(Command::Status) => status::run(&config),
         Some(Command::Stop { force }) => {
             stop::run(&config, &stop::Options { force }).map_err(std::convert::Into::into)
-        }
+        },
         Some(Command::Update) => update::run().map_err(std::convert::Into::into),
     };
 
@@ -107,7 +107,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
-        }
+        },
         Ok(()) => ExitCode::SUCCESS,
     }
 }

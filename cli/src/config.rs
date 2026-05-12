@@ -681,7 +681,7 @@ providers:
             Err(ConfigError::UnknownSubagent { agent, subagent }) => {
                 assert_eq!(agent, "coach");
                 assert_eq!(subagent, "ghost");
-            }
+            },
             other => panic!("expected UnknownSubagent error, got {other:?}"),
         }
     }
@@ -782,7 +782,7 @@ experiments:
             Err(ConfigError::ExperimentUnknownVariant { agent, experiment }) => {
                 assert_eq!(agent, "ghost");
                 assert_eq!(experiment, "alice");
-            }
+            },
             other => panic!("expected ExperimentUnknownVariant, got {other:?}"),
         }
     }
@@ -808,7 +808,7 @@ experiments:
             }) => {
                 assert_eq!(agent, "alice-v1");
                 assert_eq!(experiment, "alice");
-            }
+            },
             other => panic!("expected ExperimentInvalidWeight, got {other:?}"),
         }
     }
@@ -899,7 +899,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentPrimaryNotVariant { primary, .. }) => {
                 assert_eq!(primary, "alice-v2");
-            }
+            },
             other => panic!("expected ExperimentPrimaryNotVariant, got {other:?}"),
         }
     }
@@ -922,7 +922,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentFieldStrategyMismatch { field, .. }) => {
                 assert_eq!(field, "primary");
-            }
+            },
             other => panic!("expected ExperimentFieldStrategyMismatch, got {other:?}"),
         }
     }
@@ -991,7 +991,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricUnknownJudge { judge, .. }) => {
                 assert_eq!(judge, "ghost");
-            }
+            },
             other => panic!("expected ExperimentMetricUnknownJudge, got {other:?}"),
         }
     }
@@ -1021,7 +1021,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricUnknownCriterion { criterion, .. }) => {
                 assert_eq!(criterion, "tone");
-            }
+            },
             other => panic!("expected ExperimentMetricUnknownCriterion, got {other:?}"),
         }
     }
@@ -1055,7 +1055,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricVariantMissingJudge { agent, .. }) => {
                 assert_eq!(agent, "alice-v2");
-            }
+            },
             other => panic!("expected ExperimentMetricVariantMissingJudge, got {other:?}"),
         }
     }
@@ -1121,7 +1121,7 @@ experiments:
             Err(ConfigError::DuplicateSubagent { agent, subagent }) => {
                 assert_eq!(agent, "coach");
                 assert_eq!(subagent, "helper");
-            }
+            },
             other => panic!("expected DuplicateSubagent error, got {other:?}"),
         }
     }
@@ -1195,7 +1195,7 @@ smoke_tests:
             Err(ConfigError::SmokeUnknownTarget { target, test }) => {
                 assert_eq!(target, "missing");
                 assert_eq!(test, "ghost");
-            }
+            },
             other => panic!("expected SmokeUnknownTarget, got {other:?}"),
         }
     }
@@ -1216,7 +1216,7 @@ smoke_tests:
             Err(ConfigError::SmokePersonaProviderNotConfigured { provider, test }) => {
                 assert_eq!(provider, ProviderKind::Anthropic);
                 assert_eq!(test, "missing_provider");
-            }
+            },
             other => panic!("expected SmokePersonaProviderNotConfigured, got {other:?}"),
         }
     }
@@ -1237,7 +1237,7 @@ smoke_tests:
             Err(ConfigError::SmokePersonaUnknownProvider { provider, test }) => {
                 assert_eq!(provider, "not-a-provider");
                 assert_eq!(test, "bogus_provider");
-            }
+            },
             other => panic!("expected SmokePersonaUnknownProvider, got {other:?}"),
         }
     }

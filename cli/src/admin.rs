@@ -61,7 +61,7 @@ pub async fn shell(request: Request, next: Next) -> Response {
                 format!("failed to buffer admin response: {err}"),
             )
                 .into_response();
-        }
+        },
         Ok(b) => b,
     };
     let inner = String::from_utf8_lossy(&bytes);
@@ -72,7 +72,7 @@ pub async fn shell(request: Request, next: Next) -> Response {
                 format!("base layout render failed: {err}"),
             )
                 .into_response();
-        }
+        },
         Ok(s) => s,
     };
     parts.headers.remove(header::CONTENT_LENGTH);
@@ -280,6 +280,6 @@ fn auth_summary(scope: Option<&auth::ScopeConfig>) -> String {
             } else {
                 "Unconfigured".to_string()
             }
-        }
+        },
     }
 }

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{AgentResolver, ScoreLookup, UserId};
+use coulisse_core::{AgentResolver, ResolveRequest, ScoreLookup, ScoreQuery};
 
 use crate::ExperimentRouter;
 
@@ -32,15 +32,19 @@ impl AgentResolver for ExperimentResolver {
 
     fn resolve<'a>(
         &'a self,
-        name: &'a str,
-        user_id: UserId,
+        request: ResolveRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        let ResolveRequest { name, user_id } = request;
         Box::pin(async move {
             let scores = if let (Some(store), Some((judge, criterion, since))) =
                 (self.scores.as_ref(), self.router.bandit_query(name))
             {
                 store
-                    .mean_scores_by_agent(&judge, &criterion, since)
+                    .mean_scores_by_agent(ScoreQuery {
+                        criterion: &criterion,
+                        judge: &judge,
+                        since,
+                    })
                     .await
                     .unwrap_or_default()
             } else {

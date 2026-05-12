@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Display-oriented view models built from `Sink` records.
 
 use std::collections::HashMap;
@@ -137,7 +139,7 @@ fn label_for(kind: &str, payload: &serde_json::Value) -> String {
             } else {
                 format!("{provider}/{model}")
             }
-        }
+        },
         _ => payload
             .get("tool_name")
             .and_then(|v| v.as_str())

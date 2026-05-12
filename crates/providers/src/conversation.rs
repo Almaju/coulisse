@@ -1,3 +1,8 @@
+// WHY: prompt_with / stream_with carry provider + model + preamble +
+// messages + (optionally) tools through the dispatch path. The
+// natural bundle is a `CompletionRequest` struct; deferred.
+#![allow(clippy::too_many_arguments)]
+
 //! Provider-agnostic conversation dispatch.
 //!
 //! `Conversation` packs a turn's messages into the shape rig wants
@@ -139,7 +144,7 @@ impl Conversation {
                     if !m.content.is_empty() {
                         preamble_parts.push(m.content);
                     }
-                }
+                },
                 Role::User => turns.push(RigMessage::user(m.content)),
             }
         }
@@ -194,11 +199,11 @@ impl Provider {
         match self {
             Provider::Anthropic(c) => {
                 stream_with(c, conversation, model, tools, subagent_names).await
-            }
+            },
             Provider::Cohere(c) => stream_with(c, conversation, model, tools, subagent_names).await,
             Provider::Deepseek(c) => {
                 stream_with(c, conversation, model, tools, subagent_names).await
-            }
+            },
             Provider::Gemini(c) => stream_with(c, conversation, model, tools, subagent_names).await,
             Provider::Groq(c) => stream_with(c, conversation, model, tools, subagent_names).await,
             Provider::Openai(c) => stream_with(c, conversation, model, tools, subagent_names).await,
@@ -289,10 +294,10 @@ where
                         kind,
                         tool_name,
                     }))
-                }
+                },
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
                     Some(Ok(StreamEvent::Delta(t.text)))
-                }
+                },
                 Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
                     tool_result,
                     internal_call_id,
@@ -303,7 +308,7 @@ where
                         error: None,
                         result: Some(result),
                     }))
-                }
+                },
                 Ok(_) => None,
             }
         }

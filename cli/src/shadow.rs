@@ -93,7 +93,7 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
                 error = %err,
                 "shadow run failed",
             );
-        }
+        },
         Ok(completion) => {
             let judges: Vec<Arc<Judge>> = judges_for_agent(&state, &agent_name);
             spawn_score(
@@ -108,6 +108,6 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
                     user_message,
                 },
             );
-        }
+        },
     }
 }

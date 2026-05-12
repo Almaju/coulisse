@@ -16,10 +16,10 @@ install:
     cargo install cargo-watch --locked
     cargo install mdbook --locked
     cargo install cargo-dylint dylint-link --locked
-    cargo install cargo-oneway --git https://github.com/Almaju/oneway
+    cargo install cargo-oneway
 
-lint:
-    cargo oneway lint
+lint *args:
+    cargo oneway {{ args }}
 
 refresh-prices:
     curl -fsSL \

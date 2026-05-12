@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::merge::{AdminExperiment, AdminSource};
@@ -139,10 +141,10 @@ fn urlencode(s: &str) -> String {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
-            }
+            },
             _ => {
                 let _ = write!(out, "%{b:02X}");
-            }
+            },
         }
     }
     out

@@ -1,3 +1,6 @@
+// WHY: axum handler arity is dictated by the framework's extractors.
+#![allow(clippy::too_many_arguments)]
+
 //! Admin/studio HTTP surface for the experiments crate. Per-experiment
 //! bandit metrics load via htmx from the judges admin router
 //! (`/admin/scores/means`), so this module never depends on `judges`.
@@ -85,16 +88,11 @@ async fn detail(
             Some(cfg) => Ok(Json(cfg.clone()).into_response()),
         };
     }
-    let mut resp = (
-        StatusCode::SEE_OTHER,
-        [("location", format!("/admin/experiments#{name}"))],
-    )
-        .into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        axum::http::HeaderValue::from_str(&format!("/admin/experiments#{name}"))
-            .expect("valid header value"),
-    );
+    let location = format!("/admin/experiments#{name}");
+    let mut resp = (StatusCode::SEE_OTHER, [("location", location.clone())]).into_response();
+    if let Ok(value) = axum::http::HeaderValue::try_from(location) {
+        resp.headers_mut().insert("hx-redirect", value);
+    }
     Ok(resp)
 }
 

@@ -102,7 +102,7 @@ impl ScopeConfig {
                     });
                 }
                 Ok(())
-            }
+            },
             (Some(_), Some(_)) => Err(ConfigError::ScopeBothAuthMethods(scope)),
             (Some(basic), None) => {
                 if basic.password.is_empty() {
@@ -118,7 +118,7 @@ impl ScopeConfig {
                     });
                 }
                 Ok(())
-            }
+            },
         }
     }
 }

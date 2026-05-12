@@ -182,11 +182,22 @@ fn apply(router: Router, scheme: &Scheme) -> Router {
     match scheme {
         Scheme::Basic(creds) => {
             let creds = creds.clone();
-            router.layer(from_fn(move |req: Request, next: Next| {
+            router.layer(from_fn(move |request: Request, next: Next| {
                 let creds = creds.clone();
-                async move { basic_check(creds, req, next).await }
+                async move {
+                    let ok = request
+                        .headers()
+                        .get(header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|h| creds.verify_header(h));
+                    if ok {
+                        next.run(request).await
+                    } else {
+                        unauthorized()
+                    }
+                }
             }))
-        }
+        },
         Scheme::Oidc(runtime) => {
             // WHY: layer order is session → auth → login. `.layer()` calls
             // are applied outermost-last, so session must wrap everything for
@@ -205,20 +216,7 @@ fn apply(router: Router, scheme: &Scheme) -> Router {
                     runtime.client.clone(),
                 ));
             router.layer(oidc_login).layer(oidc_auth).layer(session)
-        }
-    }
-}
-
-async fn basic_check(creds: Credentials, request: Request, next: Next) -> Response {
-    let ok = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|h| creds.verify_header(h));
-    if ok {
-        next.run(request).await
-    } else {
-        unauthorized()
+        },
     }
 }
 
@@ -234,9 +232,7 @@ fn unauthorized() -> Response {
     *response.status_mut() = StatusCode::UNAUTHORIZED;
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        r#"Basic realm="Coulisse", charset="UTF-8""#
-            .parse()
-            .expect("static header value"),
+        http::HeaderValue::from_static(r#"Basic realm="Coulisse", charset="UTF-8""#),
     );
     response.into_response()
 }

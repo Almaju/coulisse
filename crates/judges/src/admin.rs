@@ -1,3 +1,6 @@
+// WHY: axum handler arity is dictated by the framework's extractors.
+#![allow(clippy::too_many_arguments)]
+
 //! Admin/studio HTTP surface for the judges crate. Exposes per-user score
 //! panels (loaded into the conversation sidebar via htmx), per-(judge,
 //! criterion) bandit summaries, and CRUD over the judge configs.
@@ -16,7 +19,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use coulisse_core::{EitherFormOrJson, ResponseFormat, UserId, now_secs, redirect_to};
+use coulisse_core::{EitherFormOrJson, ResponseFormat, ScoreQuery, UserId, now_secs, redirect_to};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -61,7 +64,7 @@ async fn agent_scores(
     Path(name): Path<String>,
 ) -> Result<Html<String>, AdminError> {
     let scores = state.store.scores_for_agent(&name).await?;
-    let panel = ScoresPanel::build(scores);
+    let panel = ScoresPanel::from_scores(scores);
     render(ScoresFragment { scores: panel })
 }
 
@@ -252,7 +255,7 @@ async fn user_scores(
     Path(user_id): Path<String>,
 ) -> Result<Html<String>, AdminError> {
     let user_id = parse_user_id(&user_id)?;
-    let panel = ScoresPanel::build(state.store.scores(user_id).await?);
+    let panel = ScoresPanel::from_scores(state.store.scores(user_id).await?);
     render(ScoresFragment { scores: panel })
 }
 
@@ -273,7 +276,11 @@ async fn scores_means(
     let since = q.since.unwrap_or(0);
     let scores = state
         .store
-        .mean_scores_by_agent(&q.judge, &q.criterion, since)
+        .mean_scores_by_agent(ScoreQuery {
+            criterion: &q.criterion,
+            judge: &q.judge,
+            since,
+        })
         .await?;
     let mut rows: Vec<ScoreRowMean> = scores
         .into_iter()

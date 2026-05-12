@@ -130,12 +130,12 @@ impl SqliteLayer {
                 match job {
                     WriteJob::Flush(notify) => {
                         let _ = notify.send(());
-                    }
+                    },
                     other => {
                         if let Err(err) = write_job(&pool, &other).await {
                             error!(error = %err, "telemetry sqlite write failed");
                         }
-                    }
+                    },
                 }
             }
         });
@@ -194,7 +194,7 @@ where
                     (Some(u), Some(t)) => (u, t),
                     _ => return,
                 }
-            }
+            },
             (None, _) => return,
             (Some((u, t, _)), _) => (u, t),
         };
@@ -346,8 +346,8 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
             .bind(&row.user_id)
             .execute(pool)
             .await?;
-        }
-        WriteJob::Flush(_) => {}
+        },
+        WriteJob::Flush(_) => {},
         WriteJob::ToolCall(row) => {
             sqlx::query(
                 "INSERT INTO tool_calls (args, created_at, error, id, kind, ordinal, result, \
@@ -366,7 +366,7 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
             .bind(&row.user_id)
             .execute(pool)
             .await?;
-        }
+        },
     }
     Ok(())
 }

@@ -8,6 +8,7 @@ use axum::response::sse::{Event, KeepAlive};
 use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
 use judges::spawn_score;
+use limits::RecordUsage;
 use memory::{MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
@@ -169,7 +170,14 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
         let user_message = std::mem::take(&mut self.user_message);
         tokio::spawn(
             async move {
-                if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
+                if let Err(err) = state
+                    .tracker
+                    .record(RecordUsage {
+                        tokens: usage.total_tokens,
+                        user: &tracker_key,
+                    })
+                    .await
+                {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
                 record_llm_call(&state, &agent_name, usage, &llm_call_span);

@@ -5,7 +5,7 @@ use mcp::McpToolAccess;
 use providers::ProviderKind;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AgentConfig {
     /// Names of judges (defined at the top level under `judges:`) that should
     /// evaluate this agent's replies. Empty = no automatic evaluation.

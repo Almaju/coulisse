@@ -1,7 +1,9 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use coulisse_core::OneShotPrompt;
+use coulisse_core::{OneShotPrompt, OneShotRequest};
 use serde::Deserialize;
 
 use crate::JudgeConfig;
@@ -111,7 +113,12 @@ async fn run_score(
         exchange.user_message, exchange.assistant_message,
     );
     let raw_text = completer
-        .one_shot(&judge.provider, &judge.model, &judge.preamble, &user_text)
+        .one_shot(OneShotRequest {
+            model: &judge.model,
+            preamble: &judge.preamble,
+            provider: &judge.provider,
+            user_text: &user_text,
+        })
         .await
         .map_err(|e| JudgeRunError::Prompt(e.to_string()))?;
     let raw = parse_scores(&raw_text).map_err(JudgeRunError::Parse)?;

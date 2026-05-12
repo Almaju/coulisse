@@ -580,7 +580,7 @@ fn memory_summary(config: &MemoryConfig) -> String {
     let embedder = match &config.embedder {
         EmbedderConfig::Hash { dims } => {
             format!("hash (dims={dims}, OFFLINE — no semantic understanding)")
-        }
+        },
         EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
         EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
     };

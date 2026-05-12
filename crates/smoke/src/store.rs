@@ -1,10 +1,16 @@
+// WHY: store methods take well-grouped CRUD args (id + per-column
+// values). Bundling each into a request struct would add types whose
+// only purpose is to satisfy the lint — see PR description for the
+// full rationale.
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 
-use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::migrate::{self, MigrationStep, SchemaMigrator};
 use coulisse_core::{MessageId, i64_to_u32, i64_to_u64, now_secs, u64_to_i64};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Executor, SqliteConnection, SqlitePool};
+use sqlx::{Executor, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -20,26 +26,25 @@ impl SchemaMigrator for Schema {
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0", "0.2.0"];
 
-    async fn upgrade_from(
-        &self,
-        from_version: &str,
-        conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        match from_version {
+    async fn upgrade_from(&self, step: MigrationStep<'_>) -> sqlx::Result<()> {
+        match step.from_version {
             "0.1.0" => {
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS dynamic_smoke_tests (\
-                        config_json TEXT,\
-                        created_at  INTEGER NOT NULL,\
-                        disabled    INTEGER NOT NULL DEFAULT 0,\
-                        name        TEXT    NOT NULL PRIMARY KEY,\
-                        updated_at  INTEGER NOT NULL\
-                    )",
-                )
-                .await?;
+                step.conn
+                    .execute(
+                        "CREATE TABLE IF NOT EXISTS dynamic_smoke_tests (\
+                            config_json TEXT,\
+                            created_at  INTEGER NOT NULL,\
+                            disabled    INTEGER NOT NULL DEFAULT 0,\
+                            name        TEXT    NOT NULL PRIMARY KEY,\
+                            updated_at  INTEGER NOT NULL\
+                        )",
+                    )
+                    .await?;
                 Ok(())
-            }
-            _ => unreachable!("unknown smoke schema version: {from_version}"),
+            },
+            other => Err(sqlx::Error::Protocol(format!(
+                "smoke: no upgrade path from '{other}'",
+            ))),
         }
     }
 }

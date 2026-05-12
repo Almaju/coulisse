@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use coulisse_core::{ConfigPersistError, ConfigPersister};
+use coulisse_core::{ConfigPersistError, ConfigPersister, ConfigSection};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::Mutex;
 
@@ -216,14 +216,14 @@ impl ConfigPersister for ConfigStore {
 
     fn write_section<'a>(
         &'a self,
-        section: &'a str,
-        value: serde_yaml::Value,
+        section: ConfigSection<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>
     {
         Box::pin(async move {
+            let ConfigSection { name, value } = section;
             let _guard = self.write_lock.lock().await;
             let mut root = self.read_root()?;
-            root.insert(serde_yaml::Value::String(section.to_string()), value);
+            root.insert(serde_yaml::Value::String(name.to_string()), value);
             let config = self.validate_and_write(root)?;
             (self.on_reload)(config).await;
             Ok(())

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coulisse_core::UserId;
+use coulisse_core::{ResolveRequest, UserId};
 use providers::{Message, Role};
 use rig::completion::ToolDefinition;
 use rig::tool::{ToolDyn, ToolError};
@@ -69,7 +69,13 @@ impl ToolDyn for SubagentTool {
                 // to the runtime's resolver so the variant is picked at call
                 // time, consistent with the sticky-by-user hashing the proxy
                 // applies at the top level.
-                let agent_name = inner.resolver.resolve(&target, user_id).await;
+                let agent_name = inner
+                    .resolver
+                    .resolve(ResolveRequest {
+                        name: &target,
+                        user_id,
+                    })
+                    .await;
                 let outcome = AgentsInner::complete_with_depth(
                     &inner,
                     &agent_name,

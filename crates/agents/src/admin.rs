@@ -1,3 +1,6 @@
+// WHY: axum handler arity is dictated by the framework's extractors.
+#![allow(clippy::too_many_arguments)]
+
 mod templates;
 mod views;
 

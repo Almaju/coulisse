@@ -1,0 +1,13 @@
+# `cargo oneway` (https://github.com/Almaju/oneway-lints) — per-project
+# rules that don't fit this codebase as written. Adding entries here is
+# the right move when the rule's signal-to-noise is poor here, not when
+# you just want quick green: prefer fixing the code first.
+
+disable = [
+    # `binding name should match type` — produced cascading renames whose
+    # only payoff was binding-vs-type symmetry the type system already
+    # gives us. Args structs added to satisfy `too_many_arguments` then
+    # triggered chained `step: MigrationStep` → `migration_step:
+    # MigrationStep` renames that added length without information.
+    "type_derived_naming",
+]

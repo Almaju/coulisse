@@ -1,3 +1,8 @@
+// WHY: store methods take well-grouped CRUD args (id + per-column
+// values). See PR description for the rationale on deferring these
+// refactors.
+#![allow(clippy::too_many_arguments)]
+
 use std::path::Path;
 use std::str::FromStr;
 
@@ -6,7 +11,7 @@ use coulisse_core::{UnknownRole, i64_to_u32, i64_to_u64, u64_to_i64};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{SqliteConnection, SqlitePool, sqlite::SqliteRow};
+use sqlx::{SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
 use crate::types::UnknownMemoryKind;
@@ -21,14 +26,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "memory";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("memory has only one schema version")
-    }
 }
 
 /// Top-level memory infrastructure. Owns the embedder and the `SQLite` pool
@@ -468,7 +465,7 @@ pub async fn open_pool(backend: &BackendConfig) -> Result<SqlitePool, ConfigErro
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(SqliteSynchronous::Normal)
                 .foreign_keys(true)
-        }
+        },
     };
     let max_connections = if matches!(backend, BackendConfig::InMemory) {
         1

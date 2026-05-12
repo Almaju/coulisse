@@ -18,7 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use agents::{Agents, Message as AgentMessage, Role as AgentRole};
-use coulisse_core::{MessageId, OneShotPrompt, UserId};
+use coulisse_core::{MessageId, OneShotPrompt, ScoreQuery, UserId};
 use judges::spawn_score;
 use providers::ProviderKind;
 use smoke::{
@@ -183,7 +183,11 @@ async fn resolve_target<P: Agents + OneShotPrompt>(
         None => Vec::new(),
         Some((judge, criterion, since)) => state
             .judge_store
-            .mean_scores_by_agent(&judge, &criterion, since)
+            .mean_scores_by_agent(ScoreQuery {
+                criterion: &criterion,
+                judge: &judge,
+                since,
+            })
             .await
             .unwrap_or_default(),
     };

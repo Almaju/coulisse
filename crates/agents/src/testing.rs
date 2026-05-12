@@ -1,3 +1,10 @@
+// WHY: testing-only module. `unwrap` on `Mutex::lock` is the standard
+// pattern; panicking on poison surfaces the original test failure
+// rather than masking it. `expect` policy in CLAUDE.md carves test
+// code out from the workspace's blanket lints.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::unwrap_used)]
+
 //! Real in-memory `Agents` implementation for tests. Drives handlers
 //! deterministically without talking to a provider.
 
@@ -5,7 +12,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_stream::stream;
-use coulisse_core::{OneShotError, OneShotPrompt, UserId};
+use coulisse_core::{OneShotError, OneShotPrompt, OneShotRequest, UserId};
 use providers::ProviderKind;
 
 use crate::{
@@ -247,7 +254,7 @@ impl Agents for ScriptedAgents {
                     return Err(AgentsError::Provider(providers::CallError::Streaming(
                         "scripted prompter has no replies left".into(),
                     )));
-                }
+                },
                 1 => replies[0].clone(),
                 _ => replies.remove(0),
             }
@@ -262,14 +269,11 @@ impl Agents for ScriptedAgents {
 impl OneShotPrompt for ScriptedAgents {
     fn one_shot<'a>(
         &'a self,
-        _provider: &'a str,
-        _model: &'a str,
-        _preamble: &'a str,
-        user_text: &'a str,
+        request: OneShotRequest<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
         Box::pin(async move {
             let messages = vec![Message {
-                content: user_text.to_string(),
+                content: request.user_text.to_string(),
                 role: Role::User,
             }];
             self.prompt_with(ProviderKind::Openai, "scripted", "", messages)

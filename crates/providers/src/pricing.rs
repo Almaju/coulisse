@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Per-token cost lookup, sourced from a vendored `LiteLLM` snapshot.
 //!
 //! The pricing table is a snapshot of `LiteLLM`'s `model_prices_and_context_window.json`,
@@ -98,7 +100,7 @@ fn pricing_matches_provider(p: &ModelPricing, provider: ProviderKind) -> bool {
         None => true,
         Some(name) => {
             name.starts_with(provider.as_str()) || alternate_provider_names(provider).contains(name)
-        }
+        },
     }
 }
 
@@ -121,6 +123,11 @@ pub fn warm() {
 
 fn table() -> &'static std::collections::HashMap<String, ModelPricing> {
     static TABLE: OnceLock<std::collections::HashMap<String, ModelPricing>> = OnceLock::new();
+    // WHY: parsing a vendored, compile-time-embedded JSON blob at process
+    // start. A parse failure means the bundled file was malformed at
+    // release-build time — unrecoverable; per CLAUDE.md, `expect` is the
+    // right call here.
+    #[allow(clippy::expect_used)]
     TABLE.get_or_init(|| {
         // WHY: the vendored file has one non-pricing entry (`sample_spec`)
         // used by LiteLLM as schema documentation; deserializing it as

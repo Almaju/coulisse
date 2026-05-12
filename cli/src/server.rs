@@ -7,10 +7,10 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use coulisse_core::OneShotPrompt;
+use coulisse_core::{OneShotPrompt, ScoreQuery};
 use experiments::{ExperimentRouter, Strategy};
 use judges::{Judge, Judges, spawn_score};
-use limits::{RequestLimits, Tracker};
+use limits::{CheckRequest, RecordUsage, RequestLimits, Tracker};
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
 use telemetry::TurnId;
 use tracing::{Instrument, Span, info_span};
@@ -151,7 +151,11 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(
         None => Vec::new(),
         Some((judge, criterion, since)) => state
             .judge_store
-            .mean_scores_by_agent(&judge, &criterion, since)
+            .mean_scores_by_agent(ScoreQuery {
+                criterion: &criterion,
+                judge: &judge,
+                since,
+            })
             .await
             .unwrap_or_default(),
     };
@@ -270,7 +274,10 @@ async fn finalize_non_streaming<P: Agents + OneShotPrompt + 'static>(
     }
     if let Err(err) = state
         .tracker
-        .record(&prepared.tracker_key, completion.usage.total_tokens)
+        .record(RecordUsage {
+            tokens: completion.usage.total_tokens,
+            user: &prepared.tracker_key,
+        })
         .await
     {
         eprintln!("rate limit record failed: {err}");
@@ -362,7 +369,13 @@ async fn prepare_request<P: Agents + OneShotPrompt>(
     let limits = RequestLimits::from_metadata(&request.metadata)?;
     let language = request.language()?;
     let tracker_key = user_id.0.to_string();
-    state.tracker.check(&tracker_key, limits).await?;
+    state
+        .tracker
+        .check(CheckRequest {
+            limits,
+            user: &tracker_key,
+        })
+        .await?;
 
     let last_user: &ChatMessage = request
         .last_user_message()

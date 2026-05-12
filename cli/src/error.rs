@@ -37,7 +37,7 @@ impl IntoResponse for ApiError {
             Self::Agents(err) => match err {
                 AgentsError::Provider(CallError::EmptyConversation) => {
                     (StatusCode::BAD_REQUEST, "invalid_request")
-                }
+                },
                 AgentsError::UnknownAgent(_) => (StatusCode::NOT_FOUND, "not_found"),
                 _ => (StatusCode::BAD_GATEWAY, "upstream_error"),
             },
@@ -45,14 +45,14 @@ impl IntoResponse for ApiError {
             | Self::Language(_)
             | Self::Limit(LimitError::InvalidMetadata { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
-            }
+            },
             Self::Limit(LimitError::Database(_) | LimitError::Migrate(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "rate_limit_error")
-            }
+            },
             Self::Limit(LimitError::Exceeded { retry_after: s, .. }) => {
                 retry_after = Some(*s);
                 (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
-            }
+            },
             Self::Memory(_) => (StatusCode::INTERNAL_SERVER_ERROR, "memory_error"),
         };
         let body = Json(serde_json::json!({

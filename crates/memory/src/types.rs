@@ -1,3 +1,8 @@
+// WHY: a handful of constructors take many fields that naturally belong
+// together (a stored message row). Bundling them into a struct merely
+// duplicates the struct that already holds them. Deferred refactor.
+#![allow(clippy::too_many_arguments)]
+
 use std::ops::{Add, AddAssign};
 
 use coulisse_core::{Message, MessageId, Role, UserId, now_secs};
