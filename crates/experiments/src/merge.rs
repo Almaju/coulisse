@@ -43,10 +43,10 @@ pub fn merge(
                     source: Source::Yaml,
                 });
                 report.yaml_count += 1;
-            }
+            },
             Some(row) if row.disabled => {
                 report.tombstone_count += 1;
-            }
+            },
             Some(row) => {
                 if let Some(db_cfg) = &row.config {
                     merged.push(MergedExperiment {
@@ -55,7 +55,7 @@ pub fn merge(
                     });
                     report.override_count += 1;
                 }
-            }
+            },
         }
     }
 

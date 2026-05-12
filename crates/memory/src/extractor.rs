@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use coulisse_core::{OneShotPrompt, UserId};
+use coulisse_core::{OneShotPrompt, OneShotRequest, UserId};
 use serde::Deserialize;
 
-use crate::{ExtractorConfig, MemoryKind, Store};
+use crate::{ExtractorConfig, MemoryKind, RememberIfNovel, Store};
 
 const PREAMBLE: &str = "You extract durable facts about a user from a single \
 conversation exchange. You return ONLY a JSON array — no prose, no markdown, \
@@ -66,37 +66,34 @@ impl Extractor {
     /// Spawn a background task that extracts durable facts from the last
     /// exchange and writes any novel ones into the user's memory. Never
     /// blocks the response; failures are logged and swallowed.
-    pub fn spawn(
-        self: &Arc<Self>,
-        memory: Arc<Store>,
-        user_id: UserId,
-        user_message: String,
-        assistant_message: String,
-    ) {
+    pub fn spawn(self: &Arc<Self>, inputs: ExtractInputs) {
         let extractor = Arc::clone(self);
+        let user_id = inputs.user_id;
         tokio::spawn(async move {
-            if let Err(err) = extractor
-                .run(&memory, user_id, &user_message, &assistant_message)
-                .await
-            {
+            if let Err(err) = extractor.run(inputs).await {
                 tracing::warn!(user = %user_id.0, error = %err, "memory extraction failed");
             }
         });
     }
 
-    async fn run(
-        &self,
-        memory: &Store,
-        user_id: UserId,
-        user_message: &str,
-        assistant_message: &str,
-    ) -> Result<(), String> {
+    async fn run(&self, inputs: ExtractInputs) -> Result<(), String> {
+        let ExtractInputs {
+            assistant_message,
+            memory,
+            user_id,
+            user_message,
+        } = inputs;
         let user_text = format!(
             "User: {user_message}\n\nAssistant: {assistant_message}\n\nReturn the JSON array now."
         );
         let raw_text = self
             .completer
-            .one_shot(&self.provider, &self.model, PREAMBLE, &user_text)
+            .one_shot(OneShotRequest {
+                model: &self.model,
+                preamble: PREAMBLE,
+                provider: &self.provider,
+                user_text: &user_text,
+            })
             .await
             .map_err(|e| format!("prompt: {e}"))?;
 
@@ -104,7 +101,11 @@ impl Extractor {
         let scope = memory.for_user(user_id);
         for fact in facts.into_iter().take(self.max_facts_per_turn) {
             if let Err(err) = scope
-                .remember_if_novel(fact.kind, fact.content, self.dedup_threshold)
+                .remember_if_novel(RememberIfNovel {
+                    content: fact.content,
+                    kind: fact.kind,
+                    threshold: self.dedup_threshold,
+                })
                 .await
             {
                 tracing::warn!(user = %user_id.0, error = %err, "failed to store extracted fact");
@@ -112,6 +113,16 @@ impl Extractor {
         }
         Ok(())
     }
+}
+
+/// Inputs to [`Extractor::spawn`]. Owns the strings so the background
+/// task can move them across the await point; carries the `Store`
+/// handle the extractor writes through.
+pub struct ExtractInputs {
+    pub assistant_message: String,
+    pub memory: Arc<Store>,
+    pub user_id: UserId,
+    pub user_message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,7 +151,7 @@ fn parse_facts(text: &str) -> Result<Vec<ParsedFact>, String> {
             other => {
                 tracing::debug!(kind = other, "skipping extracted entry with unknown kind");
                 continue;
-            }
+            },
         };
         let content = r.content.trim().to_string();
         if content.is_empty() {

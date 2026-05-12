@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coulisse_core::UserId;
+use coulisse_core::{ResolveRequest, UserId};
 use providers::{Message, Role};
 use rig::completion::ToolDefinition;
 use rig::tool::{ToolDyn, ToolError};
@@ -8,7 +8,7 @@ use rig::wasm_compat::WasmBoxedFuture;
 use serde_json::json;
 use tracing::{Instrument, info_span};
 
-use crate::runtime::AgentsInner;
+use crate::runtime::{AgentsInner, CompletionRequest, DispatchContext};
 
 /// A rig tool that, when called, invokes another agent as a fresh
 /// conversation. The subagent runs under its own preamble, its own MCP tool
@@ -69,13 +69,23 @@ impl ToolDyn for SubagentTool {
                 // to the runtime's resolver so the variant is picked at call
                 // time, consistent with the sticky-by-user hashing the proxy
                 // applies at the top level.
-                let agent_name = inner.resolver.resolve(&target, user_id).await;
+                let agent_name = inner
+                    .resolver
+                    .resolve(ResolveRequest {
+                        name: &target,
+                        user_id,
+                    })
+                    .await;
                 let outcome = AgentsInner::complete_with_depth(
                     &inner,
-                    &agent_name,
-                    messages,
-                    next_depth,
-                    user_id,
+                    DispatchContext {
+                        depth: next_depth,
+                        request: CompletionRequest {
+                            agent_name: &agent_name,
+                            messages,
+                            user_id,
+                        },
+                    },
                 )
                 .await;
 

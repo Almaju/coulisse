@@ -1,3 +1,7 @@
+// WHY: axum handler arity is dictated by the framework's extractors —
+// same treatment as every other admin-handler module in the workspace.
+#![allow(clippy::too_many_arguments)]
+
 //! Cli-owned admin endpoints for sections that don't have a feature
 //! crate admin module today: providers and MCP servers. Same shape as
 //! the per-feature admin routers — content negotiation, JSON/YAML/form
@@ -17,7 +21,8 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
 use coulisse_core::{
-    ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat, redirect_to,
+    ConfigPersistError, ConfigPersister, ConfigSection, EitherFormOrJson, ResponseFormat,
+    redirect_to,
 };
 use mcp::McpServerConfig;
 use providers::{ProviderConfig, ProviderKind};
@@ -228,7 +233,10 @@ async fn persist_providers(
         serde_yaml::to_value(&providers).map_err(|err| AdminError::Internal(err.to_string()))?;
     state
         .store
-        .write_section("providers", value)
+        .write_section(ConfigSection {
+            name: "providers",
+            value,
+        })
         .await
         .map_err(AdminError::from)
 }
@@ -412,7 +420,7 @@ async fn persist_mcp(
     let value = serde_yaml::to_value(&mcp).map_err(|err| AdminError::Internal(err.to_string()))?;
     state
         .store
-        .write_section("mcp", value)
+        .write_section(ConfigSection { name: "mcp", value })
         .await
         .map_err(AdminError::from)
 }
@@ -426,7 +434,7 @@ fn mcp_summary(server: &McpServerConfig) -> String {
             } else {
                 format!("stdio · {command} {}", args.join(" "))
             }
-        }
+        },
     }
 }
 

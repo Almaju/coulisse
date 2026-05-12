@@ -1,0 +1,62 @@
+# `cargo oneway` (https://github.com/Almaju/oneway-lints) — per-project
+# rules that don't fit this codebase as written. Adding entries here is
+# the right move when the rule's signal-to-noise is poor here, not when
+# you just want quick green: prefer fixing the code first.
+
+disable = [
+    # `binding name should match type` — produced cascading renames whose
+    # only payoff was binding-vs-type symmetry the type system already
+    # gives us. Args structs added to satisfy `too_many_arguments` then
+    # triggered chained `step: MigrationStep` → `migration_step:
+    # MigrationStep` renames that added length without information.
+    "type_derived_naming",
+
+    # `public method calls public method` — wants every internal
+    # composition extracted into a use-case struct (Service-layer
+    # pattern). CLAUDE.md is explicit that data and operations belong
+    # together (`url.parse()`, not `UrlParser.parse(url)`) and that the
+    # codebase should NOT have `TodoController`/`TodoService` shaped
+    # types. The rule pushes in the opposite direction.
+    "no_self_orchestration",
+
+    # `second primary public type in this file` — wants every public
+    # type in its own file (Java-style). Idiomatic Rust groups
+    # closely-related types together (error enums next to the struct
+    # they describe, request/response pairs, sibling variants), and
+    # CLAUDE.md does not require one-type-per-file. Splitting ~191
+    # sites into ~150 new files would dilute cohesion without payoff.
+    "one_public_type_per_file",
+
+    # `if/else chain — prefer match for exhaustive case analysis` —
+    # fires on EVERY `if/else`, including binary booleans like
+    # `if tools.is_empty() { ... } else { ... }` where the type
+    # system already proves exhaustiveness. Forcing `match` on a
+    # bool is non-idiomatic Rust. CLAUDE.md doesn't mandate match
+    # over if/else; the legitimate "silent fall-through" cases this
+    # could catch are rare enough to be reviewed by eye.
+    "no_if_else",
+
+    # `raw_primitive_field` / `raw_primitive_param` — CLAUDE.md is
+    # explicit about wrapping domain primitives in newtypes (UserId,
+    # MessageId, TurnId, RunId, MemoryId, EventId, ScoreId,
+    # TokenCount, ToolCallId all exist for this reason). But the
+    # rule fires on every raw `String`/`bool`/integer field across
+    # the codebase, including categories where newtypes add friction
+    # without runtime value:
+    #
+    #   - Admin view rows rendered by askama templates (`RunRow`,
+    #     `ScoreRow`, `EventRow`): display data, the template would
+    #     just unwrap the newtype.
+    #   - SQL row mirrors (`StoredRun`, `Event`, `ToolCall`): every
+    #     `bind()` / `try_get()` would need newtype glue layers; the
+    #     primitives ARE the table columns.
+    #   - OpenAI / rig wire schemas (`proxy::chat`, `providers`):
+    #     types defined by external specs.
+    #
+    # ~596 sites across 76 files; the cost of retrofitting outweighs
+    # the payoff. Disabled here; CLAUDE.md remains the cultural
+    # guidance for *new* code (newtype domain primitives at the seam
+    # they live behind).
+    "raw_primitive_field",
+    "raw_primitive_param",
+]

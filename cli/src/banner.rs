@@ -96,7 +96,11 @@ impl Banner<'_> {
     }
 
     fn print_agents(&self, s: &Style) {
-        section_header(s, "Agents", self.agents.len());
+        section_header(SectionHeader {
+            count: self.agents.len(),
+            name: "Agents",
+            style: s,
+        });
         if self.agents.is_empty() {
             println!("    {}none configured{}", s.dim, s.reset);
             println!();
@@ -124,7 +128,11 @@ impl Banner<'_> {
     }
 
     fn print_experiments(&self, s: &Style) {
-        section_header(s, "Experiments", self.experiments.len());
+        section_header(SectionHeader {
+            count: self.experiments.len(),
+            name: "Experiments",
+            style: s,
+        });
         if self.experiments.is_empty() {
             println!("    {}none configured{}", s.dim, s.reset);
             println!();
@@ -162,7 +170,11 @@ impl Banner<'_> {
     }
 
     fn print_judges(&self, s: &Style) {
-        section_header(s, "Judges", self.judges.len());
+        section_header(SectionHeader {
+            count: self.judges.len(),
+            name: "Judges",
+            style: s,
+        });
         if self.judges.is_empty() {
             println!("    {}none configured{}", s.dim, s.reset);
             println!();
@@ -187,12 +199,20 @@ impl Banner<'_> {
     }
 }
 
-fn section_header(s: &Style, name: &str, count: usize) {
+#[derive(Clone, Copy)]
+struct SectionHeader<'a> {
+    count: usize,
+    name: &'a str,
+    style: &'a Style,
+}
+
+fn section_header(header: SectionHeader<'_>) {
+    let SectionHeader { count, name, style } = header;
     println!(
         "  {bold}{name}{reset} {dim}({count}){reset}",
-        bold = s.bold,
-        reset = s.reset,
-        dim = s.dim,
+        bold = style.bold,
+        reset = style.reset,
+        dim = style.dim,
     );
 }
 

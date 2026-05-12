@@ -52,7 +52,7 @@ impl BundledEmbedder {
                     model: openai::EmbeddingModel::new(client, model, dims),
                     dims,
                 })
-            }
+            },
             EmbedderConfig::Voyage { api_key, model } => {
                 let key = api_key.as_deref().or(fallback_api_key).ok_or_else(|| {
                     ConfigError::MissingApiKey {
@@ -69,7 +69,7 @@ impl BundledEmbedder {
                     model: voyageai::EmbeddingModel::new(client, model, dims),
                     dims,
                 })
-            }
+            },
         }
     }
 
@@ -82,11 +82,11 @@ impl BundledEmbedder {
             Self::Openai { model, .. } => {
                 let embedding = model.embed_text(text).await.map_err(EmbedError::from)?;
                 Ok(to_f32(embedding.vec))
-            }
+            },
             Self::Voyage { model, .. } => {
                 let embedding = model.embed_text(text).await.map_err(EmbedError::from)?;
                 Ok(to_f32(embedding.vec))
-            }
+            },
         }
     }
 

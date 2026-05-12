@@ -17,18 +17,18 @@ pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     match read_pid(&paths.pid) {
         None => {
             println!("not running");
-        }
+        },
         Some(pid) if pid_alive(pid) => {
             println!("running (pid {pid})");
             println!("  config: {}", paths.config.display());
             println!("  log:    {}", paths.log.display());
-        }
+        },
         Some(pid) => {
             println!(
                 "not running (stale pid file at {} held pid {pid})",
                 paths.pid.display()
             );
-        }
+        },
     }
     Ok(())
 }

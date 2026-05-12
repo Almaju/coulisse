@@ -107,6 +107,25 @@ pub enum CallError {
     Streaming(String),
 }
 
+/// Inputs to a synchronous [`Provider::send`] dispatch. The conversation
+/// is consumed; `model` is borrowed for the duration of the call;
+/// `tools` is moved into the underlying Rig agent.
+pub struct SendRequest<'a> {
+    pub conversation: Conversation,
+    pub model: &'a str,
+    pub tools: Vec<Box<dyn ToolDyn>>,
+}
+
+/// Inputs to a streaming [`Provider::stream`] dispatch. Adds
+/// `subagent_names` so tool calls can be tagged as MCP vs subagent on
+/// the fly without a second pass over the stream.
+pub struct StreamRequest<'a> {
+    pub conversation: Conversation,
+    pub model: &'a str,
+    pub subagent_names: Arc<HashSet<String>>,
+    pub tools: Vec<Box<dyn ToolDyn>>,
+}
+
 /// History + preamble + final prompt, ready to hand to a Rig agent.
 /// Build with `from_messages`, then dispatch via `Provider::send` or
 /// `Provider::stream`.
@@ -139,7 +158,7 @@ impl Conversation {
                     if !m.content.is_empty() {
                         preamble_parts.push(m.content);
                     }
-                }
+                },
                 Role::User => turns.push(RigMessage::user(m.content)),
             }
         }
@@ -160,62 +179,47 @@ impl Provider {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn send(
-        &self,
-        conversation: Conversation,
-        model: &str,
-        tools: Vec<Box<dyn ToolDyn>>,
-    ) -> Result<Completion, CallError> {
+    pub async fn send(&self, request: SendRequest<'_>) -> Result<Completion, CallError> {
         match self {
-            Provider::Anthropic(c) => send_with(c, conversation, model, tools).await,
-            Provider::Cohere(c) => send_with(c, conversation, model, tools).await,
-            Provider::Deepseek(c) => send_with(c, conversation, model, tools).await,
-            Provider::Gemini(c) => send_with(c, conversation, model, tools).await,
-            Provider::Groq(c) => send_with(c, conversation, model, tools).await,
-            Provider::Openai(c) => send_with(c, conversation, model, tools).await,
+            Provider::Anthropic(c) => send_with(c, request).await,
+            Provider::Cohere(c) => send_with(c, request).await,
+            Provider::Deepseek(c) => send_with(c, request).await,
+            Provider::Gemini(c) => send_with(c, request).await,
+            Provider::Groq(c) => send_with(c, request).await,
+            Provider::Openai(c) => send_with(c, request).await,
         }
     }
 
     /// Stream the conversation. Each `StreamEvent::ToolCall` is tagged
-    /// `Subagent` if its tool name appears in `subagent_names`,
+    /// `Subagent` if its tool name appears in `request.subagent_names`,
     /// otherwise `Mcp` — the classification lives here because it's
     /// trivial to do on the fly and saves callers a wrapping pass.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn stream(
-        &self,
-        conversation: Conversation,
-        model: &str,
-        tools: Vec<Box<dyn ToolDyn>>,
-        subagent_names: Arc<HashSet<String>>,
-    ) -> Result<CompletionStream, CallError> {
+    pub async fn stream(&self, request: StreamRequest<'_>) -> Result<CompletionStream, CallError> {
         match self {
-            Provider::Anthropic(c) => {
-                stream_with(c, conversation, model, tools, subagent_names).await
-            }
-            Provider::Cohere(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Provider::Deepseek(c) => {
-                stream_with(c, conversation, model, tools, subagent_names).await
-            }
-            Provider::Gemini(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Provider::Groq(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Provider::Openai(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Anthropic(c) => stream_with(c, request).await,
+            Provider::Cohere(c) => stream_with(c, request).await,
+            Provider::Deepseek(c) => stream_with(c, request).await,
+            Provider::Gemini(c) => stream_with(c, request).await,
+            Provider::Groq(c) => stream_with(c, request).await,
+            Provider::Openai(c) => stream_with(c, request).await,
         }
     }
 }
 
-async fn send_with<C>(
-    client: &C,
-    conversation: Conversation,
-    model: &str,
-    tools: Vec<Box<dyn ToolDyn>>,
-) -> Result<Completion, CallError>
+async fn send_with<C>(client: &C, request: SendRequest<'_>) -> Result<Completion, CallError>
 where
     C: CompletionClient,
     C::CompletionModel: 'static,
 {
+    let SendRequest {
+        conversation,
+        model,
+        tools,
+    } = request;
     let mut builder = client.agent(model);
     if !conversation.preamble.is_empty() {
         builder = builder.preamble(&conversation.preamble);
@@ -238,16 +242,19 @@ where
 
 async fn stream_with<C>(
     client: &C,
-    conversation: Conversation,
-    model: &str,
-    tools: Vec<Box<dyn ToolDyn>>,
-    subagent_names: Arc<HashSet<String>>,
+    request: StreamRequest<'_>,
 ) -> Result<CompletionStream, CallError>
 where
     C: CompletionClient,
     C::CompletionModel: 'static,
     <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
 {
+    let StreamRequest {
+        conversation,
+        model,
+        subagent_names,
+        tools,
+    } = request;
     let mut builder = client.agent(model);
     if !conversation.preamble.is_empty() {
         builder = builder.preamble(&conversation.preamble);
@@ -289,10 +296,10 @@ where
                         kind,
                         tool_name,
                     }))
-                }
+                },
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
                     Some(Ok(StreamEvent::Delta(t.text)))
-                }
+                },
                 Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
                     tool_result,
                     internal_call_id,
@@ -303,7 +310,7 @@ where
                         error: None,
                         result: Some(result),
                     }))
-                }
+                },
                 Ok(_) => None,
             }
         }

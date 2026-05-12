@@ -17,12 +17,12 @@ use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
 use serde::{Deserialize, Serialize};
 
 pub use conversation::{
-    CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, StreamEvent,
-    ToolCallKind, Usage,
+    CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, SendRequest,
+    StreamEvent, StreamRequest, ToolCallKind, Usage,
 };
 pub use pricing::{Cost, cost_for, warm as warm_pricing};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, schemars::JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Anthropic,
@@ -66,7 +66,7 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ProviderConfig {
     pub api_key: String,
 }

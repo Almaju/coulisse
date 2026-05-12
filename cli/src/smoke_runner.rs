@@ -17,13 +17,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use agents::{Agents, Message as AgentMessage, Role as AgentRole};
-use coulisse_core::{MessageId, OneShotPrompt, UserId};
+use agents::{Agents, CompletionRequest, Message as AgentMessage, PromptInput, Role as AgentRole};
+use coulisse_core::{MessageId, OneShotPrompt, ScoreQuery, UserId};
+use experiments::ResolveQuery;
 use judges::spawn_score;
 use providers::ProviderKind;
 use smoke::{
-    DispatchError, PersonaConfig, RunDispatcher, RunId, RunStatus, SmokeList, SmokeStore,
-    SmokeTestConfig,
+    AssistantTurn, DispatchError, FinishRun, PersonaConfig, PersonaTurn, Resolution, RunDispatcher,
+    RunId, RunStatus, SmokeList, SmokeStore, SmokeTestConfig,
 };
 use tracing::{Instrument, info_span};
 
@@ -64,11 +65,23 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
                 let store = Arc::clone(&self.store);
                 let cfg = config.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = run_once(state, store.clone(), cfg, id).await {
+                    if let Err(err) = run_once(RunOnce {
+                        config: cfg,
+                        run_id: id,
+                        state,
+                        store: store.clone(),
+                    })
+                    .await
+                    {
                         let msg = err.to_string();
                         tracing::warn!(run = %id.0, error = %msg, "smoke run failed");
-                        if let Err(store_err) =
-                            store.finish_run(id, RunStatus::Failed, Some(&msg)).await
+                        if let Err(store_err) = store
+                            .finish_run(FinishRun {
+                                error: Some(&msg),
+                                run_id: id,
+                                status: RunStatus::Failed,
+                            })
+                            .await
                         {
                             tracing::warn!(error = %store_err, "failed to persist smoke failure");
                         }
@@ -82,12 +95,26 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
 
 /// One synthetic conversation. Errors bubble up so the spawn wrapper
 /// can mark the run failed; success paths mark it completed inline.
-async fn run_once<P: Agents + OneShotPrompt + 'static>(
-    state: Arc<AppState<P>>,
-    store: Arc<SmokeStore>,
+struct RunOnce<P: Agents + OneShotPrompt> {
     config: SmokeTestConfig,
     run_id: RunId,
-) -> Result<(), RunError> {
+    state: Arc<AppState<P>>,
+    store: Arc<SmokeStore>,
+}
+
+// WHY: the smoke loop legitimately strings together resolve → persona →
+// agent → record per turn, plus the per-turn span and bookkeeping. The
+// stages are tightly coupled by the loop's shared state; splitting them
+// across helpers would push that state into another args struct without
+// improving readability.
+#[allow(clippy::too_many_lines)]
+async fn run_once<P: Agents + OneShotPrompt + 'static>(inputs: RunOnce<P>) -> Result<(), RunError> {
+    let RunOnce {
+        config,
+        run_id,
+        state,
+        store,
+    } = inputs;
     let synthetic_user = UserId::new();
     let mut messages: Vec<AgentMessage> = Vec::new();
     let mut resolved_recorded = false;
@@ -98,10 +125,19 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         {
             initial.clone()
         } else {
-            persona_turn(&state, &config.persona, &messages).await?
+            persona_turn(PersonaTurnInputs {
+                history: &messages,
+                persona: &config.persona,
+                state: &state,
+            })
+            .await?
         };
         store
-            .record_persona_turn(run_id, turn_index, &persona_text)
+            .record_persona_turn(PersonaTurn {
+                content: &persona_text,
+                run_id,
+                turn_index,
+            })
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
         messages.push(AgentMessage {
@@ -113,10 +149,19 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         }
 
         let assistant_message_id = MessageId::new();
-        let resolved = resolve_target(&state, &config.target, synthetic_user).await;
+        let resolved = resolve_target(ResolveTarget {
+            state: &state,
+            target: &config.target,
+            user_id: synthetic_user,
+        })
+        .await;
         if !resolved_recorded {
             store
-                .set_resolution(run_id, &resolved.agent, resolved.experiment.as_deref())
+                .set_resolution(Resolution {
+                    agent_resolved: &resolved.agent,
+                    experiment: resolved.experiment.as_deref(),
+                    run_id,
+                })
                 .await
                 .map_err(|e| RunError::Store(e.to_string()))?;
             resolved_recorded = true;
@@ -130,12 +175,21 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         );
         let completion = state
             .agents
-            .complete(&resolved.agent, messages.clone(), synthetic_user)
+            .complete(CompletionRequest {
+                agent_name: &resolved.agent,
+                messages: messages.clone(),
+                user_id: synthetic_user,
+            })
             .instrument(span)
             .await
             .map_err(|e| RunError::Agent(e.to_string()))?;
         store
-            .record_assistant_turn(run_id, turn_index, assistant_message_id, &completion.text)
+            .record_assistant_turn(AssistantTurn {
+                content: &completion.text,
+                message_id: assistant_message_id,
+                run_id,
+                turn_index,
+            })
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
         messages.push(AgentMessage {
@@ -163,7 +217,11 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
     }
 
     store
-        .finish_run(run_id, RunStatus::Completed, None)
+        .finish_run(FinishRun {
+            error: None,
+            run_id,
+            status: RunStatus::Completed,
+        })
         .await
         .map_err(|e| RunError::Store(e.to_string()))?;
     Ok(())
@@ -174,22 +232,35 @@ struct ResolvedTarget {
     experiment: Option<String>,
 }
 
-async fn resolve_target<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    target: &str,
+struct ResolveTarget<'a, P: Agents + OneShotPrompt> {
+    state: &'a AppState<P>,
+    target: &'a str,
     user_id: UserId,
-) -> ResolvedTarget {
+}
+
+async fn resolve_target<P: Agents + OneShotPrompt>(inputs: ResolveTarget<'_, P>) -> ResolvedTarget {
+    let ResolveTarget {
+        state,
+        target,
+        user_id,
+    } = inputs;
     let bandit_scores = match state.experiments.bandit_query(target) {
         None => Vec::new(),
         Some((judge, criterion, since)) => state
             .judge_store
-            .mean_scores_by_agent(&judge, &criterion, since)
+            .mean_scores_by_agent(ScoreQuery {
+                criterion: &criterion,
+                judge: &judge,
+                since,
+            })
             .await
             .unwrap_or_default(),
     };
-    let resolved = state
-        .experiments
-        .resolve_with_scores(target, user_id, &bandit_scores);
+    let resolved = state.experiments.resolve(ResolveQuery {
+        name: target,
+        scores: &bandit_scores,
+        user_id,
+    });
     ResolvedTarget {
         agent: resolved.agent.into_owned(),
         experiment: resolved.experiment.map(std::borrow::ToOwned::to_owned),
@@ -203,11 +274,20 @@ async fn resolve_target<P: Agents + OneShotPrompt>(
 /// user. Uses the unconfigured `prompt_with` path so the persona has
 /// no MCP tools, no subagents, no preamble merging — just its own
 /// system prompt.
+struct PersonaTurnInputs<'a, P: Agents + OneShotPrompt> {
+    history: &'a [AgentMessage],
+    persona: &'a PersonaConfig,
+    state: &'a AppState<P>,
+}
+
 async fn persona_turn<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    persona: &PersonaConfig,
-    history: &[AgentMessage],
+    inputs: PersonaTurnInputs<'_, P>,
 ) -> Result<String, RunError> {
+    let PersonaTurnInputs {
+        history,
+        persona,
+        state,
+    } = inputs;
     let provider = ProviderKind::parse(&persona.provider).ok_or_else(|| {
         RunError::Persona(format!("unknown persona provider '{}'", persona.provider))
     })?;
@@ -233,7 +313,12 @@ async fn persona_turn<P: Agents + OneShotPrompt>(
     };
     let completion = state
         .agents
-        .prompt_with(provider, &persona.model, &persona.preamble, messages)
+        .prompt_with(PromptInput {
+            messages,
+            model: &persona.model,
+            preamble: &persona.preamble,
+            provider,
+        })
         .await
         .map_err(|e| RunError::Persona(e.to_string()))?;
     Ok(completion.text)

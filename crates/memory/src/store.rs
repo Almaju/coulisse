@@ -6,13 +6,14 @@ use coulisse_core::{UnknownRole, i64_to_u32, i64_to_u64, u64_to_i64};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{SqliteConnection, SqlitePool, sqlite::SqliteRow};
+use sqlx::{SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
 use crate::types::UnknownMemoryKind;
 use crate::{
     BackendConfig, BundledEmbedder, ConfigError, Memory, MemoryConfig, MemoryError, MemoryId,
-    MemoryKind, Message, MessageId, Role, StoredMessage, TokenCount, UserId,
+    MemoryKind, Message, MessageId, NewMemory, NewStoredMessage, Role, StoredMessage, TokenCount,
+    UserId,
 };
 
 struct Schema;
@@ -21,14 +22,56 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "memory";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
+}
 
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("memory has only one schema version")
-    }
+/// Inputs to [`Store::open`]. `fallback_api_key` is tried when the
+/// embedder config doesn't carry its own key — caller passes the
+/// matching entry from `providers:`.
+pub struct StoreInputs<'a> {
+    pub config: MemoryConfig,
+    pub fallback_api_key: Option<&'a str>,
+    pub pool: SqlitePool,
+}
+
+/// Inputs to [`UserMemory::append_message`]. When `id` is `None` the
+/// store mints a fresh `MessageId`; pass `Some` to reuse a known id —
+/// the chat handler does this so the assistant message's id can double
+/// as the telemetry turn correlation id.
+pub struct AppendMessage {
+    pub content: String,
+    pub id: Option<MessageId>,
+    pub role: Role,
+}
+
+/// Inputs to [`UserMemory::assemble_context`]: the new user message
+/// (used for semantic recall) and the total token budget the assembled
+/// context must fit within.
+pub struct ContextRequest<'a> {
+    pub budget: TokenCount,
+    pub new_user_message: &'a str,
+}
+
+/// Inputs to [`UserMemory::recall`]: the query text to embed plus the
+/// top-`k` cap on returned memories.
+pub struct RecallQuery<'a> {
+    pub k: usize,
+    pub query: &'a str,
+}
+
+/// Inputs to [`UserMemory::remember`]: the memory kind and the text
+/// content to store.
+pub struct RememberInput {
+    pub content: String,
+    pub kind: MemoryKind,
+}
+
+/// Inputs to [`UserMemory::remember_if_novel`]: same as [`RememberInput`]
+/// plus a cosine-similarity threshold above which an existing memory
+/// counts as a near-duplicate (insert is skipped).
+pub struct RememberIfNovel {
+    pub content: String,
+    pub kind: MemoryKind,
+    pub threshold: f32,
 }
 
 /// Top-level memory infrastructure. Owns the embedder and the `SQLite` pool
@@ -57,11 +100,12 @@ impl Store {
     ///
     /// `fallback_api_key` is tried when the embedder config does not carry
     /// its own key — caller passes the matching entry from `providers:`.
-    pub async fn open(
-        pool: SqlitePool,
-        config: MemoryConfig,
-        fallback_api_key: Option<&str>,
-    ) -> Result<Self, ConfigError> {
+    pub async fn open(inputs: StoreInputs<'_>) -> Result<Self, ConfigError> {
+        let StoreInputs {
+            config,
+            fallback_api_key,
+            pool,
+        } = inputs;
         let embedder = BundledEmbedder::from_config(&config.embedder, fallback_api_key)?;
         migrate::run(&pool, &Schema).await?;
         Ok(Self {
@@ -190,30 +234,15 @@ impl UserMemory<'_> {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn append_message(
-        &self,
-        role: Role,
-        content: String,
-    ) -> Result<MessageId, MemoryError> {
-        self.append_message_with_id(role, content, MessageId::new())
-            .await
-    }
-
-    /// Same as [`append_message`], but lets the caller supply the row's id
-    /// up front. Used by the chat handler so the assistant message's id can
-    /// double as the telemetry turn correlation id — one value identifies
-    /// both the stored message and the event tree that produced it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn append_message_with_id(
-        &self,
-        role: Role,
-        content: String,
-        id: MessageId,
-    ) -> Result<MessageId, MemoryError> {
-        let stored = StoredMessage::new_with_id(self.user_id, role, content, id);
+    pub async fn append_message(&self, message: AppendMessage) -> Result<MessageId, MemoryError> {
+        let AppendMessage { content, id, role } = message;
+        let id = id.unwrap_or_else(MessageId::new);
+        let stored = StoredMessage::new(NewStoredMessage {
+            content,
+            id: Some(id),
+            role,
+            user_id: self.user_id,
+        });
         sqlx::query(
             "INSERT INTO messages (content, created_at, id, role, token_count, user_id) \
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -240,11 +269,17 @@ impl UserMemory<'_> {
     /// Returns an error if the underlying operation fails.
     pub async fn assemble_context(
         &self,
-        new_user_message: &str,
-        budget: TokenCount,
+        request: ContextRequest<'_>,
     ) -> Result<AssembledContext, MemoryError> {
+        let ContextRequest {
+            budget,
+            new_user_message,
+        } = request;
         let recalled = self
-            .recall(new_user_message, self.store.config.recall_k)
+            .recall(RecallQuery {
+                k: self.store.config.recall_k,
+                query: new_user_message,
+            })
             .await?;
 
         let scaled = f64::from(budget.0) * f64::from(self.store.config.memory_budget_fraction);
@@ -319,7 +354,8 @@ impl UserMemory<'_> {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<Memory>, MemoryError> {
+    pub async fn recall(&self, query: RecallQuery<'_>) -> Result<Vec<Memory>, MemoryError> {
+        let RecallQuery { k, query } = query;
         let query_embedding = self.store.embedder.embed(query).await?;
         check_dims(&query_embedding, self.store.embedder.ndims())?;
         let memories = self.load_memories().await?;
@@ -337,14 +373,16 @@ impl UserMemory<'_> {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn remember(
-        &self,
-        kind: MemoryKind,
-        content: String,
-    ) -> Result<MemoryId, MemoryError> {
+    pub async fn remember(&self, input: RememberInput) -> Result<MemoryId, MemoryError> {
+        let RememberInput { content, kind } = input;
         let embedding = self.store.embedder.embed(&content).await?;
         check_dims(&embedding, self.store.embedder.ndims())?;
-        let memory = Memory::new(self.user_id, kind, content, embedding);
+        let memory = Memory::new(NewMemory {
+            content,
+            embedding,
+            kind,
+            user_id: self.user_id,
+        });
         self.insert_memory(&memory).await?;
         Ok(memory.id)
     }
@@ -359,10 +397,13 @@ impl UserMemory<'_> {
     /// Returns an error if the underlying operation fails.
     pub async fn remember_if_novel(
         &self,
-        kind: MemoryKind,
-        content: String,
-        threshold: f32,
+        input: RememberIfNovel,
     ) -> Result<Option<MemoryId>, MemoryError> {
+        let RememberIfNovel {
+            content,
+            kind,
+            threshold,
+        } = input;
         let embedding = self.store.embedder.embed(&content).await?;
         check_dims(&embedding, self.store.embedder.ndims())?;
         let existing = self.load_memories().await?;
@@ -371,7 +412,12 @@ impl UserMemory<'_> {
                 return Ok(None);
             }
         }
-        let memory = Memory::new(self.user_id, kind, content, embedding);
+        let memory = Memory::new(NewMemory {
+            content,
+            embedding,
+            kind,
+            user_id: self.user_id,
+        });
         self.insert_memory(&memory).await?;
         Ok(Some(memory.id))
     }
@@ -468,7 +514,7 @@ pub async fn open_pool(backend: &BackendConfig) -> Result<SqlitePool, ConfigErro
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(SqliteSynchronous::Normal)
                 .foreign_keys(true)
-        }
+        },
     };
     let max_connections = if matches!(backend, BackendConfig::InMemory) {
         1

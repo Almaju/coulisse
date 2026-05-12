@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, UserId};
-use mcp::McpServers;
+use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, OneShotRequest, UserId};
+use mcp::{McpServers, ToolsRequest};
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
-    ToolCallKind,
+    SendRequest, StreamRequest, ToolCallKind,
 };
 use rig::tool::ToolDyn;
 
@@ -50,6 +50,46 @@ pub(crate) struct AgentsInner {
 /// `clippy::type_complexity` lint on the return type.
 type BuiltTools = (Vec<Box<dyn ToolDyn>>, Arc<HashSet<String>>);
 
+/// Public input to [`Agents::complete`] / [`Agents::complete_streaming`].
+/// `agent_name` is the already-resolved variant (cli does experiment
+/// routing before calling); `messages` is the conversation so far;
+/// `user_id` drives sticky-by-user variant routing on any nested
+/// subagent calls.
+pub struct CompletionRequest<'a> {
+    pub agent_name: &'a str,
+    pub messages: Vec<Message>,
+    pub user_id: UserId,
+}
+
+/// Public input to [`Agents::prompt_with`]: raw provider-level prompt
+/// bypassing agent-config lookup. Used for internal one-shots (memory
+/// extraction, judge scoring) where the runtime's tool plumbing doesn't
+/// apply.
+pub struct PromptInput<'a> {
+    pub messages: Vec<Message>,
+    pub model: &'a str,
+    pub preamble: &'a str,
+    pub provider: ProviderKind,
+}
+
+/// Internal: a [`CompletionRequest`] plus the current subagent recursion
+/// depth. Public entry points start at depth 0; [`SubagentTool`]
+/// bumps the depth on each nested dispatch so `A→B→A→…` chains hit
+/// `MAX_SUBAGENT_DEPTH` before going pathological.
+pub(crate) struct DispatchContext<'a> {
+    pub depth: usize,
+    pub request: CompletionRequest<'a>,
+}
+
+/// Args to the private `AgentsInner::build_tools` helper. Bundled
+/// purely so the helper stays at `self + 1 arg`.
+#[derive(Clone, Copy)]
+struct BuildToolsArgs<'a> {
+    agent: &'a AgentConfig,
+    depth: usize,
+    user_id: UserId,
+}
+
 /// Abstraction over the multi-agent runtime. Implementations answer
 /// completion requests — either as a single response or as a stream of
 /// incremental events. The cli's chat handler talks to this trait so tests
@@ -65,37 +105,32 @@ pub trait Agents: Send + Sync {
     /// config reload swaps the underlying list mid-flight.
     fn agents(&self) -> Arc<Vec<AgentConfig>>;
 
-    /// Run the named agent and return its final reply. The agent name is
-    /// the already-resolved variant; callers (cli's chat handler) do
+    /// Run the named agent and return its final reply. `request.agent_name`
+    /// is the already-resolved variant; callers (cli's chat handler) do
     /// experiment resolution before reaching this method. The caller is
     /// expected to drive this future inside a `turn` tracing span so any
-    /// nested `tool_call` spans inherit the correlation ids. `user_id`
-    /// drives sticky-by-user variant routing on subagent calls —
-    /// observability is the tracing subscriber's job, but variant
-    /// resolution is a real domain dependency that must be plumbed.
+    /// nested `tool_call` spans inherit the correlation ids.
+    /// `request.user_id` drives sticky-by-user variant routing on
+    /// subagent calls — observability is the tracing subscriber's job,
+    /// but variant resolution is a real domain dependency that must be
+    /// plumbed.
     fn complete(
         &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        user_id: UserId,
+        request: CompletionRequest<'_>,
     ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
 
     fn complete_streaming(
         &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        user_id: UserId,
+        request: CompletionRequest<'_>,
     ) -> impl std::future::Future<Output = Result<CompletionStream, AgentsError>> + Send;
 
     /// One-off prompt bypassing agent-config lookup. No MCP tools, no
-    /// preamble merging — just `provider`, `model`, the supplied preamble
-    /// and messages. Used for internal tasks like memory fact extraction.
+    /// preamble merging — just `input.provider`, `input.model`, the
+    /// supplied preamble and messages. Used for internal tasks like
+    /// memory fact extraction.
     fn prompt_with(
         &self,
-        provider: ProviderKind,
-        model: &str,
-        preamble: &str,
-        messages: Vec<Message>,
+        input: PromptInput<'_>,
     ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
 }
 
@@ -143,47 +178,38 @@ impl Agents for RigAgents {
         self.inner.agents.load_full()
     }
 
-    async fn complete(
-        &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        user_id: UserId,
-    ) -> Result<Completion, AgentsError> {
-        AgentsInner::complete_with_depth(&self.inner, agent_name, messages, 0, user_id).await
+    async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, AgentsError> {
+        AgentsInner::complete_with_depth(&self.inner, DispatchContext { depth: 0, request }).await
     }
 
     async fn complete_streaming(
         &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        user_id: UserId,
+        request: CompletionRequest<'_>,
     ) -> Result<CompletionStream, AgentsError> {
-        AgentsInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, user_id)
-            .await
+        AgentsInner::complete_streaming_with_depth(
+            &self.inner,
+            DispatchContext { depth: 0, request },
+        )
+        .await
     }
 
-    async fn prompt_with(
-        &self,
-        provider: ProviderKind,
-        model: &str,
-        preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
-        self.inner
-            .prompt_with(provider, model, preamble, messages)
-            .await
+    async fn prompt_with(&self, input: PromptInput<'_>) -> Result<Completion, AgentsError> {
+        self.inner.prompt_with(input).await
     }
 }
 
 impl OneShotPrompt for RigAgents {
     fn one_shot<'a>(
         &'a self,
-        provider: &'a str,
-        model: &'a str,
-        preamble: &'a str,
-        user_text: &'a str,
+        request: OneShotRequest<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
         Box::pin(async move {
+            let OneShotRequest {
+                model,
+                preamble,
+                provider,
+                user_text,
+            } = request;
             let provider_kind = ProviderKind::parse(provider)
                 .ok_or_else(|| OneShotError::new(format!("unknown provider '{provider}'")))?;
             let messages = vec![Message {
@@ -191,7 +217,12 @@ impl OneShotPrompt for RigAgents {
                 role: Role::User,
             }];
             self.inner
-                .prompt_with(provider_kind, model, preamble, messages)
+                .prompt_with(PromptInput {
+                    messages,
+                    model,
+                    preamble,
+                    provider: provider_kind,
+                })
                 .await
                 .map(|c| c.text)
                 .map_err(|e| OneShotError::new(e.to_string()))
@@ -202,11 +233,17 @@ impl OneShotPrompt for RigAgents {
 impl AgentsInner {
     pub(crate) async fn complete_with_depth(
         self: &Arc<Self>,
-        agent_name: &str,
-        messages: Vec<Message>,
-        depth: usize,
-        user_id: UserId,
+        ctx: DispatchContext<'_>,
     ) -> Result<Completion, AgentsError> {
+        let DispatchContext {
+            depth,
+            request:
+                CompletionRequest {
+                    agent_name,
+                    messages,
+                    user_id,
+                },
+        } = ctx;
         if depth > MAX_SUBAGENT_DEPTH {
             return Err(AgentsError::SubagentDepthExceeded {
                 limit: MAX_SUBAGENT_DEPTH,
@@ -222,10 +259,18 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, _) = self.build_tools(&agent, depth, user_id)?;
+        let (tools, _) = self.build_tools(BuildToolsArgs {
+            agent: &agent,
+            depth,
+            user_id,
+        })?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         provider
-            .send(conversation, &agent.model, tools)
+            .send(SendRequest {
+                conversation,
+                model: &agent.model,
+                tools,
+            })
             .await
             .map_err(AgentsError::from)
     }
@@ -235,13 +280,16 @@ impl AgentsInner {
     /// record themselves). Also returns a snapshot of subagent names so the
     /// streaming classifier in `Conversation::stream` can label outgoing
     /// `ToolCall` events as `Subagent` vs `Mcp`.
-    fn build_tools(
-        self: &Arc<Self>,
-        agent: &AgentConfig,
-        depth: usize,
-        user_id: UserId,
-    ) -> Result<BuiltTools, AgentsError> {
-        let raw_mcp_tools = self.mcp.tools_for(&agent.name, &agent.mcp_tools)?;
+    fn build_tools(self: &Arc<Self>, args: BuildToolsArgs<'_>) -> Result<BuiltTools, AgentsError> {
+        let BuildToolsArgs {
+            agent,
+            depth,
+            user_id,
+        } = args;
+        let raw_mcp_tools = self.mcp.tools_for(ToolsRequest {
+            accesses: &agent.mcp_tools,
+            agent: &agent.name,
+        })?;
         let mut tools: Vec<Box<dyn ToolDyn>> = raw_mcp_tools
             .into_iter()
             .map(|inner| -> Box<dyn ToolDyn> {
@@ -269,11 +317,17 @@ impl AgentsInner {
 
     async fn complete_streaming_with_depth(
         self: &Arc<Self>,
-        agent_name: &str,
-        messages: Vec<Message>,
-        depth: usize,
-        user_id: UserId,
+        ctx: DispatchContext<'_>,
     ) -> Result<CompletionStream, AgentsError> {
+        let DispatchContext {
+            depth,
+            request:
+                CompletionRequest {
+                    agent_name,
+                    messages,
+                    user_id,
+                },
+        } = ctx;
         if depth > MAX_SUBAGENT_DEPTH {
             return Err(AgentsError::SubagentDepthExceeded {
                 limit: MAX_SUBAGENT_DEPTH,
@@ -289,10 +343,19 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, subagent_names) = self.build_tools(&agent, depth, user_id)?;
+        let (tools, subagent_names) = self.build_tools(BuildToolsArgs {
+            agent: &agent,
+            depth,
+            user_id,
+        })?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         provider
-            .stream(conversation, &agent.model, tools, subagent_names)
+            .stream(StreamRequest {
+                conversation,
+                model: &agent.model,
+                subagent_names,
+                tools,
+            })
             .await
             .map_err(AgentsError::from)
     }
@@ -303,13 +366,13 @@ impl AgentsInner {
         self.agents.load().iter().find(|a| a.name == name).cloned()
     }
 
-    async fn prompt_with(
-        &self,
-        provider: ProviderKind,
-        model: &str,
-        preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
+    async fn prompt_with(&self, input: PromptInput<'_>) -> Result<Completion, AgentsError> {
+        let PromptInput {
+            messages,
+            model,
+            preamble,
+            provider,
+        } = input;
         let provider = self
             .providers
             .get(provider)
@@ -319,7 +382,11 @@ impl AgentsInner {
             })?;
         let conversation = Conversation::from_messages(messages, preamble)?;
         provider
-            .send(conversation, model, vec![])
+            .send(SendRequest {
+                conversation,
+                model,
+                tools: vec![],
+            })
             .await
             .map_err(AgentsError::from)
     }

@@ -12,7 +12,7 @@ mod config_store;
 pub mod migrate;
 mod web;
 
-pub use config_store::{ConfigPersistError, ConfigPersister};
+pub use config_store::{ConfigPersistError, ConfigPersister, ConfigSection};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
@@ -120,8 +120,8 @@ impl Default for UserId {
 }
 
 impl From<Uuid> for UserId {
-    fn from(id: Uuid) -> Self {
-        Self(id)
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
     }
 }
 
@@ -243,6 +243,17 @@ pub struct AgentScoreSummary {
     pub samples: u32,
 }
 
+/// Aggregation window for a [`ScoreLookup`] query — the judge + criterion
+/// to roll up, and the lower bound on the score's `created_at`. Owns no
+/// data of its own; bundled into a struct so the trait method stays at
+/// one non-self argument.
+#[derive(Clone, Copy, Debug)]
+pub struct ScoreQuery<'a> {
+    pub criterion: &'a str,
+    pub judge: &'a str,
+    pub since: u64,
+}
+
 /// Read-only view onto judge score aggregates. Implemented by whichever
 /// crate owns the score storage (currently `judges`); consumed by feature
 /// crates that need to read scores at runtime — e.g. `agents` for
@@ -251,9 +262,7 @@ pub struct AgentScoreSummary {
 pub trait ScoreLookup: Send + Sync {
     fn mean_scores_by_agent<'a>(
         &'a self,
-        judge: &'a str,
-        criterion: &'a str,
-        since: u64,
+        query: ScoreQuery<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<AgentScoreSummary>, ScoreLookupError>> + Send + 'a>>;
 }
 
@@ -267,6 +276,17 @@ impl ScoreLookupError {
     }
 }
 
+/// Inputs to one [`OneShotPrompt::one_shot`] call — provider/model address
+/// plus the preamble (system) and user text. All borrowed for the
+/// duration of the call.
+#[derive(Clone, Copy, Debug)]
+pub struct OneShotRequest<'a> {
+    pub model: &'a str,
+    pub preamble: &'a str,
+    pub provider: &'a str,
+    pub user_text: &'a str,
+}
+
 /// Single-shot prompt against a named provider/model. Used by features that
 /// need to call an LLM out-of-band from the main agent flow — e.g. memory
 /// fact extraction, judge scoring. Implemented by whatever crate owns the
@@ -275,10 +295,7 @@ impl ScoreLookupError {
 pub trait OneShotPrompt: Send + Sync {
     fn one_shot<'a>(
         &'a self,
-        provider: &'a str,
-        model: &'a str,
-        preamble: &'a str,
-        user_text: &'a str,
+        request: OneShotRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<String, OneShotError>> + Send + 'a>>;
 }
 
@@ -292,6 +309,15 @@ impl OneShotError {
     }
 }
 
+/// Inputs to [`AgentResolver::resolve`] — the addressable name and the
+/// user the resolution is being performed for (experiments may hash on
+/// the user id to assign variants stably).
+#[derive(Clone, Copy, Debug)]
+pub struct ResolveRequest<'a> {
+    pub name: &'a str,
+    pub user_id: UserId,
+}
+
 /// Map an addressable name (agent or experiment) to a concrete agent name
 /// for a given user. Implemented by the `experiments` crate;
 /// consumed by `agents` so the runtime can dispatch subagent calls
@@ -300,8 +326,7 @@ impl OneShotError {
 pub trait AgentResolver: Send + Sync {
     fn resolve<'a>(
         &'a self,
-        name: &'a str,
-        user_id: UserId,
+        request: ResolveRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 
     /// Tool description for an addressable name when used as a subagent.

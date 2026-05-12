@@ -1,3 +1,6 @@
+// WHY: axum handler arity is dictated by the framework's extractors.
+#![allow(clippy::too_many_arguments)]
+
 //! Admin/studio HTTP surface for the judges crate. Exposes per-user score
 //! panels (loaded into the conversation sidebar via htmx), per-(judge,
 //! criterion) bandit summaries, and CRUD over the judge configs.
@@ -16,12 +19,15 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use coulisse_core::{EitherFormOrJson, ResponseFormat, UserId, now_secs, redirect_to};
+use coulisse_core::{EitherFormOrJson, ResponseFormat, ScoreQuery, UserId, now_secs, redirect_to};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::merge::{AdminJudge, admin_view};
-use crate::{JudgeConfig, JudgeList, JudgeStoreError, Judges};
+use crate::{
+    ActiveJudgeRow, AgentCriterionQuery, JudgeConfig, JudgeList, JudgeStoreError, Judges,
+    RebuildJudges, ScoresForJudge,
+};
 use templates::{JudgeDetailPage, JudgeEditPage, JudgesPage, ScoresFragment, ScoresMeansFragment};
 use views::{JudgeDetailRow, JudgeListRow, ScoreRow, ScoreRowMean, ScoresPanel, build_matrix};
 
@@ -61,7 +67,7 @@ async fn agent_scores(
     Path(name): Path<String>,
 ) -> Result<Html<String>, AdminError> {
     let scores = state.store.scores_for_agent(&name).await?;
-    let panel = ScoresPanel::build(scores);
+    let panel = ScoresPanel::from_scores(scores);
     render(ScoresFragment { scores: panel })
 }
 
@@ -100,8 +106,20 @@ async fn judge_detail(
         };
     }
     let since = now_secs().saturating_sub(7 * 86_400);
-    let matrix_cells = state.store.agent_criterion_matrix(&name, since).await?;
-    let recent = state.store.scores_for_judge(&name, 20).await?;
+    let matrix_cells = state
+        .store
+        .agent_criterion_matrix(AgentCriterionQuery {
+            judge: &name,
+            since,
+        })
+        .await?;
+    let recent = state
+        .store
+        .scores_for_judge(ScoresForJudge {
+            judge: &name,
+            limit: 20,
+        })
+        .await?;
     let recent_scores: Vec<ScoreRow> = recent.into_iter().map(ScoreRow::from_score).collect();
     Ok(Html(
         JudgeDetailPage {
@@ -119,7 +137,13 @@ async fn create_judge(
     fmt: ResponseFormat,
     EitherFormOrJson(judge): EitherFormOrJson<JudgeConfig>,
 ) -> Result<Response, AdminError> {
-    state.store.put_active_dynamic(&judge.name, &judge).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveJudgeRow {
+            config: &judge,
+            name: &judge.name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(judge)).into_response());
@@ -139,7 +163,13 @@ async fn update_judge(
             judge.name
         )));
     }
-    state.store.put_active_dynamic(&name, &judge).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveJudgeRow {
+            config: &judge,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(judge).into_response());
@@ -242,7 +272,10 @@ async fn rebuild(state: &JudgesAdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_configs.load_full();
     state
         .store
-        .rebuild_judges(&state.runtime_configs, &yaml)
+        .rebuild_judges(RebuildJudges {
+            list: &state.runtime_configs,
+            yaml: &yaml,
+        })
         .await?;
     Ok(())
 }
@@ -252,7 +285,7 @@ async fn user_scores(
     Path(user_id): Path<String>,
 ) -> Result<Html<String>, AdminError> {
     let user_id = parse_user_id(&user_id)?;
-    let panel = ScoresPanel::build(state.store.scores(user_id).await?);
+    let panel = ScoresPanel::from_scores(state.store.scores(user_id).await?);
     render(ScoresFragment { scores: panel })
 }
 
@@ -273,7 +306,11 @@ async fn scores_means(
     let since = q.since.unwrap_or(0);
     let scores = state
         .store
-        .mean_scores_by_agent(&q.judge, &q.criterion, since)
+        .mean_scores_by_agent(ScoreQuery {
+            criterion: &q.criterion,
+            judge: &q.judge,
+            since,
+        })
         .await?;
     let mut rows: Vec<ScoreRowMean> = scores
         .into_iter()

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use agents::{Agents, Message as AgentMessage};
+use agents::{Agents, CompletionRequest, Message as AgentMessage};
 use coulisse_core::OneShotPrompt;
 use experiments::ExperimentConfig;
 use judges::{Judge, spawn_score};
@@ -34,7 +34,7 @@ pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
     user_message: &str,
     messages: &[AgentMessage],
 ) {
-    if !state.experiments.shadow_should_sample(experiment, user_id) {
+    if !experiment.shadow_should_sample(user_id) {
         return;
     }
     let variants: Vec<String> = state
@@ -47,27 +47,37 @@ pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
         let messages = messages.to_vec();
         let user_message = user_message.to_string();
         tokio::spawn(async move {
-            run_shadow(
-                state,
-                parent_turn,
-                user_id,
+            run_shadow(ShadowRun {
                 agent_name,
-                user_message,
                 messages,
-            )
+                parent_turn,
+                state,
+                user_id,
+                user_message,
+            })
             .await;
         });
     }
 }
 
-async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
-    state: Arc<AppState<P>>,
-    parent_turn: TurnId,
-    user_id: UserId,
+struct ShadowRun<P: Agents + OneShotPrompt> {
     agent_name: String,
-    user_message: String,
     messages: Vec<AgentMessage>,
-) {
+    parent_turn: TurnId,
+    state: Arc<AppState<P>>,
+    user_id: UserId,
+    user_message: String,
+}
+
+async fn run_shadow<P: Agents + OneShotPrompt + 'static>(inputs: ShadowRun<P>) {
+    let ShadowRun {
+        agent_name,
+        messages,
+        parent_turn,
+        state,
+        user_id,
+        user_message,
+    } = inputs;
     let shadow_message_id = MessageId::new();
     // WHY: reuse the parent turn's correlation id so shadow events nest
     // under the same turn tree in the studio — a fresh `turn` span with
@@ -82,7 +92,11 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
     );
     let outcome = state
         .agents
-        .complete(&agent_name, messages, user_id)
+        .complete(CompletionRequest {
+            agent_name: &agent_name,
+            messages,
+            user_id,
+        })
         .instrument(span)
         .await;
     match outcome {
@@ -93,7 +107,7 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
                 error = %err,
                 "shadow run failed",
             );
-        }
+        },
         Ok(completion) => {
             let judges: Vec<Arc<Judge>> = judges_for_agent(&state, &agent_name);
             spawn_score(
@@ -108,6 +122,6 @@ async fn run_shadow<P: Agents + OneShotPrompt + 'static>(
                     user_message,
                 },
             );
-        }
+        },
     }
 }

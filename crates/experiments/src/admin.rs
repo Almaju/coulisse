@@ -1,3 +1,6 @@
+// WHY: axum handler arity is dictated by the framework's extractors.
+#![allow(clippy::too_many_arguments)]
+
 //! Admin/studio HTTP surface for the experiments crate. Per-experiment
 //! bandit metrics load via htmx from the judges admin router
 //! (`/admin/scores/means`), so this module never depends on `judges`.
@@ -21,7 +24,7 @@ use axum::routing::{get, post};
 use coulisse_core::{EitherFormOrJson, ResponseFormat, redirect_to};
 
 use crate::merge::{AdminExperiment, admin_view};
-use crate::store::{Experiments, ExperimentsError};
+use crate::store::{ActiveExperimentRow, Experiments, ExperimentsError, RebuildExperiments};
 use crate::{ExperimentConfig, ExperimentList};
 use templates::{ExperimentEditPage, ExperimentsPage};
 use views::ExperimentRow;
@@ -85,16 +88,11 @@ async fn detail(
             Some(cfg) => Ok(Json(cfg.clone()).into_response()),
         };
     }
-    let mut resp = (
-        StatusCode::SEE_OTHER,
-        [("location", format!("/admin/experiments#{name}"))],
-    )
-        .into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        axum::http::HeaderValue::from_str(&format!("/admin/experiments#{name}"))
-            .expect("valid header value"),
-    );
+    let location = format!("/admin/experiments#{name}");
+    let mut resp = (StatusCode::SEE_OTHER, [("location", location.clone())]).into_response();
+    if let Ok(value) = axum::http::HeaderValue::try_from(location) {
+        resp.headers_mut().insert("hx-redirect", value);
+    }
     Ok(resp)
 }
 
@@ -105,7 +103,10 @@ async fn create(
 ) -> Result<Response, AdminError> {
     state
         .store
-        .put_active_dynamic(&experiment.name, &experiment)
+        .put_active_dynamic(ActiveExperimentRow {
+            config: &experiment,
+            name: &experiment.name,
+        })
         .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
@@ -126,7 +127,13 @@ async fn update(
             experiment.name
         )));
     }
-    state.store.put_active_dynamic(&name, &experiment).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveExperimentRow {
+            config: &experiment,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(experiment).into_response());
@@ -229,7 +236,10 @@ async fn rebuild(state: &AdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_experiments.load_full();
     state
         .store
-        .rebuild(&state.runtime_experiments, &yaml)
+        .rebuild(RebuildExperiments {
+            list: &state.runtime_experiments,
+            yaml: &yaml,
+        })
         .await?;
     Ok(())
 }

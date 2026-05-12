@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agents::{Agents, BootConfig, DynamicAgents, RigAgents};
+use agents::{Agents, BootConfig, DynamicAgents, RebuildAgents, RigAgents};
 use arc_swap::ArcSwap;
 use auth::Auth;
 use axum::Router;
@@ -15,20 +15,20 @@ use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
 use coulisse_core::{AgentResolver, ScoreLookup};
-use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
-use judges::{Judge, JudgeConfig, Judges};
+use experiments::{ExperimentResolver, ExperimentRouter, Experiments, RebuildExperiments};
+use judges::{Judge, JudgeConfig, Judges, RebuildJudges};
 use limits::Tracker;
 use mcp::McpServers;
-use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
+use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, StoreInputs, UserId};
 use providers::ProviderKind;
-use smoke::{RunDispatcher, SmokeStore};
+use smoke::{RebuildSmoke, RunDispatcher, SmokeStore};
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
 
 use crate::admin::shell as admin_shell;
 use crate::banner::Banner;
 use crate::config::Config;
-use crate::config_store::ConfigStore;
+use crate::config_store::{ConfigStore, ConfigStoreInit};
 use crate::memory_resolve;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
@@ -50,19 +50,27 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let memory_summary = memory_summary(&memory_config);
     let stores = boot_stores(&config, &memory_config).await?;
     let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
-    let runtime = build_runtime(&config, &memory_config, &stores).await?;
-    let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
+    let runtime = build_runtime(RuntimeInputs {
+        config: &config,
+        memory_config: &memory_config,
+        stores: &stores,
+    })
+    .await?;
+    let proxy_state = build_proxy_state(ProxyStateInputs {
+        default_user_id,
+        runtime,
+        stores: &stores,
+    });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port.unwrap_or(8421)));
-    print_banner(
+    print_banner(BannerInputs {
         addr,
-        &auth,
-        &config,
-        &memory_config,
-        &stores,
-        &proxy_state,
-        &memory_summary,
-    );
+        auth: &auth,
+        memory_config: &memory_config,
+        memory_summary: &memory_summary,
+        proxy_state: &proxy_state,
+        stores: &stores,
+    });
 
     // NOTE: lift names that the wiring blocks below still reference.
     let Stores {
@@ -105,7 +113,11 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
     let config_path_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| PathBuf::from(config_path));
-    let config_store = Arc::new(ConfigStore::new(config_path_abs, config.clone(), on_reload));
+    let config_store = Arc::new(ConfigStore::new(ConfigStoreInit {
+        initial: config.clone(),
+        on_reload,
+        path: config_path_abs,
+    }));
     let _watcher_guard = config_store.spawn_watcher()?;
 
     let admin_router = auth.wrap_admin(build_admin_router(AdminWiring {
@@ -188,34 +200,48 @@ async fn boot_stores(
 
     let pool = memory::open_pool(&memory_config.backend).await?;
     let dynamic_agents = Arc::new(DynamicAgents::open(pool.clone()).await?);
-    let report = dynamic_agents.rebuild(&agents_list, &config.agents).await?;
+    let report = dynamic_agents
+        .rebuild(RebuildAgents {
+            list: &agents_list,
+            yaml: &config.agents,
+        })
+        .await?;
     log_agents_merge(&report);
 
     let memory = Arc::new(
-        Store::open(
-            pool.clone(),
-            memory_config.clone(),
-            embedder_fallback_key(config, memory_config).as_deref(),
-        )
+        Store::open(StoreInputs {
+            config: memory_config.clone(),
+            fallback_api_key: embedder_fallback_key(config, memory_config).as_deref(),
+            pool: pool.clone(),
+        })
         .await?,
     );
 
     let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
     let report = judge_store
-        .rebuild_judges(&judges_list, &config.judges)
+        .rebuild_judges(RebuildJudges {
+            list: &judges_list,
+            yaml: &config.judges,
+        })
         .await?;
     log_judges_merge(&report);
 
     let smoke_store = Arc::new(SmokeStore::open(pool.clone()).await?);
     let report = smoke_store
-        .rebuild_smoke(&smoke_list, &config.smoke_tests)
+        .rebuild_smoke(RebuildSmoke {
+            list: &smoke_list,
+            yaml: &config.smoke_tests,
+        })
         .await?;
     log_smoke_merge(&report);
 
     let experiments_store = Arc::new(Experiments::open(pool.clone()).await?);
     let report = experiments_store
-        .rebuild(&experiments_list, &config.experiments)
+        .rebuild(RebuildExperiments {
+            list: &experiments_list,
+            yaml: &config.experiments,
+        })
         .await?;
     log_experiments_merge(&report);
 
@@ -288,11 +314,18 @@ struct Runtime {
     tracker: Tracker,
 }
 
-async fn build_runtime(
-    config: &Config,
-    memory_config: &MemoryConfig,
-    stores: &Stores,
-) -> Result<Runtime, Box<dyn std::error::Error>> {
+struct RuntimeInputs<'a> {
+    config: &'a Config,
+    memory_config: &'a MemoryConfig,
+    stores: &'a Stores,
+}
+
+async fn build_runtime(inputs: RuntimeInputs<'_>) -> Result<Runtime, Box<dyn std::error::Error>> {
+    let RuntimeInputs {
+        config,
+        memory_config,
+        stores,
+    } = inputs;
     // NOTE: build runtime Judge objects from the merged list (DB shadows +
     // YAML) so DB-only judges are usable from the moment they're created.
     // The HashMap itself is rebuilt only at boot — runtime hot-reload of
@@ -326,11 +359,18 @@ async fn build_runtime(
     })
 }
 
-fn build_proxy_state(
+struct ProxyStateInputs<'a> {
     default_user_id: Option<UserId>,
-    stores: &Stores,
     runtime: Runtime,
-) -> Arc<AppState<RigAgents>> {
+    stores: &'a Stores,
+}
+
+fn build_proxy_state(inputs: ProxyStateInputs<'_>) -> Arc<AppState<RigAgents>> {
+    let ProxyStateInputs {
+        default_user_id,
+        runtime,
+        stores,
+    } = inputs;
     Arc::new(AppState {
         agents: runtime.prompter,
         default_user_id,
@@ -343,15 +383,25 @@ fn build_proxy_state(
     })
 }
 
-fn print_banner(
+#[derive(Clone, Copy)]
+struct BannerInputs<'a> {
     addr: SocketAddr,
-    auth: &Auth,
-    _config: &Config,
-    memory_config: &MemoryConfig,
-    stores: &Stores,
-    proxy_state: &AppState<RigAgents>,
-    memory_summary: &str,
-) {
+    auth: &'a Auth,
+    memory_config: &'a MemoryConfig,
+    memory_summary: &'a str,
+    proxy_state: &'a AppState<RigAgents>,
+    stores: &'a Stores,
+}
+
+fn print_banner(inputs: BannerInputs<'_>) {
+    let BannerInputs {
+        addr,
+        auth,
+        memory_config,
+        memory_summary,
+        proxy_state,
+        stores,
+    } = inputs;
     let agent_snapshot = proxy_state.agents.agents();
     let judges_snapshot = stores.judges_list.load();
     let experiments_snapshot = stores.experiments_list.load();
@@ -442,22 +492,38 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             }
             log_rebuild_failure(
                 "agents",
-                dynamic_agents.rebuild(&agents_list, &cfg.agents).await,
+                dynamic_agents
+                    .rebuild(RebuildAgents {
+                        list: &agents_list,
+                        yaml: &cfg.agents,
+                    })
+                    .await,
             );
             log_rebuild_failure(
                 "judges",
-                judge_store.rebuild_judges(&judges_list, &cfg.judges).await,
+                judge_store
+                    .rebuild_judges(RebuildJudges {
+                        list: &judges_list,
+                        yaml: &cfg.judges,
+                    })
+                    .await,
             );
             log_rebuild_failure(
                 "experiments",
                 experiments_store
-                    .rebuild(&experiments_list, &cfg.experiments)
+                    .rebuild(RebuildExperiments {
+                        list: &experiments_list,
+                        yaml: &cfg.experiments,
+                    })
                     .await,
             );
             log_rebuild_failure(
                 "smoke",
                 smoke_store
-                    .rebuild_smoke(&smoke_list, &cfg.smoke_tests)
+                    .rebuild_smoke(RebuildSmoke {
+                        list: &smoke_list,
+                        yaml: &cfg.smoke_tests,
+                    })
                     .await,
             );
         })
@@ -580,7 +646,7 @@ fn memory_summary(config: &MemoryConfig) -> String {
     let embedder = match &config.embedder {
         EmbedderConfig::Hash { dims } => {
             format!("hash (dims={dims}, OFFLINE — no semantic understanding)")
-        }
+        },
         EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
         EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
     };

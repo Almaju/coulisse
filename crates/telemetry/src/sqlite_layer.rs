@@ -130,12 +130,12 @@ impl SqliteLayer {
                 match job {
                     WriteJob::Flush(notify) => {
                         let _ = notify.send(());
-                    }
+                    },
                     other => {
                         if let Err(err) = write_job(&pool, &other).await {
                             error!(error = %err, "telemetry sqlite write failed");
                         }
-                    }
+                    },
                 }
             }
         });
@@ -194,7 +194,7 @@ where
                     (Some(u), Some(t)) => (u, t),
                     _ => return,
                 }
-            }
+            },
             (None, _) => return,
             (Some((u, t, _)), _) => (u, t),
         };
@@ -346,8 +346,8 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
             .bind(&row.user_id)
             .execute(pool)
             .await?;
-        }
-        WriteJob::Flush(_) => {}
+        },
+        WriteJob::Flush(_) => {},
         WriteJob::ToolCall(row) => {
             sqlx::query(
                 "INSERT INTO tool_calls (args, created_at, error, id, kind, ordinal, result, \
@@ -366,7 +366,7 @@ async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error>
             .bind(&row.user_id)
             .execute(pool)
             .await?;
-        }
+        },
     }
     Ok(())
 }
@@ -417,7 +417,7 @@ impl Visit for FieldVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Sink;
+    use crate::{Sink, TurnQuery};
     use sqlx::sqlite::SqliteConnectOptions;
     use tracing::{Instrument, info_span};
     use tracing_subscriber::layer::SubscriberExt;
@@ -452,7 +452,13 @@ mod tests {
 
         guard.flush().await;
         let sink = Sink::open(pool).await.unwrap();
-        let events = sink.fetch_turn(user, turn).await.unwrap();
+        let events = sink
+            .fetch_turn(TurnQuery {
+                correlation_id: turn,
+                user_id: user,
+            })
+            .await
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload["agent"], "hello-agent");
         assert_eq!(events[0].payload["user_message"], "hi");
@@ -493,7 +499,13 @@ mod tests {
 
         guard.flush().await;
         let sink = Sink::open(pool).await.unwrap();
-        let events = sink.fetch_turn(user, turn).await.unwrap();
+        let events = sink
+            .fetch_turn(TurnQuery {
+                correlation_id: turn,
+                user_id: user,
+            })
+            .await
+            .unwrap();
         assert_eq!(events.len(), 2, "expected one turn + one tool_call event");
 
         let turn_evt = events

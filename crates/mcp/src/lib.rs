@@ -12,4 +12,4 @@ mod server;
 
 pub use config::{McpServerConfig, McpToolAccess};
 pub use error::McpError;
-pub use server::McpServers;
+pub use server::{McpServers, ToolsRequest};

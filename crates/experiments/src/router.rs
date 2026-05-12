@@ -20,6 +20,16 @@ pub const BANDIT_DEFAULT_MIN_SAMPLES: u32 = 30;
 /// regression in production scoring shifts the leader.
 pub const BANDIT_DEFAULT_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+/// Inputs to [`ExperimentRouter::resolve`]. `scores` is empty for callers
+/// without bandit data on hand — non-bandit strategies ignore it, and
+/// bandits then force exploration uniformly.
+#[derive(Clone, Copy)]
+pub struct ResolveQuery<'a> {
+    pub name: &'a str,
+    pub scores: &'a [AgentScoreSummary],
+    pub user_id: UserId,
+}
+
 /// Outcome of resolving a request's `model` (or a subagent name) against
 /// the experiment table. `experiment` is `Some(name)` when the input was
 /// an experiment — useful for telemetry and the studio.
@@ -77,66 +87,44 @@ impl ExperimentRouter {
         self.by_name.get(name)
     }
 
-    /// Resolve `name` to a concrete agent for `user_id`. If `name` is
-    /// not an experiment, it's returned unchanged — callers don't need
-    /// to know in advance whether they're addressing an experiment or
-    /// an agent.
+    /// Resolve `query.name` to a concrete agent for `query.user_id`. If
+    /// the name isn't an experiment it's returned unchanged — callers
+    /// don't need to know in advance whether they're addressing an
+    /// experiment or an agent. `query.scores` feeds bandit decisions;
+    /// pass an empty slice when not relevant.
     ///
-    /// Bandit experiments without scores fall back to a weighted hash
-    /// pick (effectively `split`). Callers that have score data should
-    /// use `resolve_with_scores` to get the bandit decision.
+    /// If the experiment is structurally broken (validation guarantees
+    /// rule this out, but the type system can't prove it), falls back
+    /// to returning `query.name` unchanged with the experiment tag set
+    /// so downstream errors point at the offending name.
     #[must_use]
-    pub fn resolve<'a>(&'a self, name: &'a str, user_id: UserId) -> Resolved<'a> {
-        self.resolve_with_scores(name, user_id, &[])
-    }
-
-    /// Like `resolve`, but `scores` participates in bandit decisions —
-    /// each entry is the recent mean for a candidate variant agent.
-    /// For non-bandit strategies the slice is ignored, so callers may
-    /// pass an empty slice when they don't have data on hand.
-    #[must_use]
-    pub fn resolve_with_scores<'a>(
-        &'a self,
-        name: &'a str,
-        user_id: UserId,
-        scores: &[AgentScoreSummary],
-    ) -> Resolved<'a> {
-        match self.by_name.get(name) {
-            None => Resolved {
+    pub fn resolve<'a>(&'a self, query: ResolveQuery<'a>) -> Resolved<'a> {
+        let ResolveQuery {
+            name,
+            scores,
+            user_id,
+        } = query;
+        let Some(experiment) = self.by_name.get(name) else {
+            return Resolved {
                 agent: Cow::Borrowed(name),
                 experiment: None,
+            };
+        };
+        let ctx = PickContext {
+            experiment,
+            scores,
+            user_id,
+        };
+        match pick_variant(ctx) {
+            None => Resolved {
+                agent: Cow::Borrowed(name),
+                experiment: Some(experiment.name.as_str()),
             },
-            Some(experiment) => {
-                let variant = pick_variant(experiment, user_id, scores);
-                Resolved {
-                    agent: Cow::Owned(variant.agent.clone()),
-                    experiment: Some(experiment.name.as_str()),
-                }
-            }
+            Some(variant) => Resolved {
+                agent: Cow::Owned(variant.agent.clone()),
+                experiment: Some(experiment.name.as_str()),
+            },
         }
-    }
-
-    /// True iff a shadow experiment should also run its non-primary
-    /// variants for this turn. Always `true` for non-shadow strategies
-    /// (callers gate that themselves) — shadow gates probabilistically
-    /// based on `sampling_rate`.
-    #[must_use]
-    pub fn shadow_should_sample(&self, experiment: &ExperimentConfig, user_id: UserId) -> bool {
-        if !matches!(experiment.strategy, Strategy::Shadow) {
-            return false;
-        }
-        let rate = experiment.sampling_rate.unwrap_or(1.0);
-        if rate >= 1.0 {
-            return true;
-        }
-        if rate <= 0.0 {
-            return false;
-        }
-        // WHY: avoid pulling in `rand` for what is effectively a coin flip
-        // on the request hot path — hash a per-turn seed and compare against
-        // the rate.
-        let seed = per_request_seed(user_id, &experiment.name);
-        seed_to_unit_f32(seed) < rate
     }
 
     /// Variants other than the shadow primary, in declaration order.
@@ -157,6 +145,31 @@ impl ExperimentRouter {
     }
 }
 
+impl ExperimentConfig {
+    /// True iff a shadow experiment should also run its non-primary
+    /// variants for this turn. Always `false` for non-shadow strategies
+    /// — callers gate strategy choice themselves; shadow gates
+    /// probabilistically based on `sampling_rate`.
+    #[must_use]
+    pub fn shadow_should_sample(&self, user_id: UserId) -> bool {
+        if !matches!(self.strategy, Strategy::Shadow) {
+            return false;
+        }
+        let rate = self.sampling_rate.unwrap_or(1.0);
+        if rate >= 1.0 {
+            return true;
+        }
+        if rate <= 0.0 {
+            return false;
+        }
+        // WHY: avoid pulling in `rand` for what is effectively a coin flip
+        // on the request hot path — hash a per-turn seed and compare against
+        // the rate.
+        let seed = per_request_seed(user_id, &self.name);
+        seed_to_unit_f32(seed) < rate
+    }
+}
+
 /// Map a u64 hash output to a uniform f32 in [0, 1). The precision and
 /// truncation losses are intrinsic to producing a ratio — bandit/shadow
 /// rollouts only need ~24 bits of randomness anyway.
@@ -165,30 +178,31 @@ fn seed_to_unit_f32(seed: u64) -> f32 {
     (seed as f64 / u64::MAX as f64) as f32
 }
 
-fn pick_variant<'a>(
+/// Inputs threaded through the per-strategy pickers. Bundled so each
+/// picker stays at one argument and shares the same shape.
+#[derive(Clone, Copy)]
+struct PickContext<'a> {
     experiment: &'a ExperimentConfig,
+    scores: &'a [AgentScoreSummary],
     user_id: UserId,
-    scores: &[AgentScoreSummary],
-) -> &'a Variant {
-    match experiment.strategy {
-        Strategy::Bandit => bandit_pick(experiment, user_id, scores),
-        Strategy::Shadow => shadow_pick(experiment),
-        Strategy::Split => weighted_pick(experiment, user_id),
+}
+
+/// Pick a variant per the experiment's strategy. Returns `None` only when
+/// the experiment is structurally broken (no variants, shadow without a
+/// valid primary) — validation rejects these at boot, so callers can
+/// treat `None` as a "shouldn't happen" signal and fall back to passing
+/// the experiment name through unchanged.
+fn pick_variant(ctx: PickContext<'_>) -> Option<&Variant> {
+    match ctx.experiment.strategy {
+        Strategy::Bandit => bandit_pick(ctx),
+        Strategy::Shadow => shadow_pick(ctx.experiment),
+        Strategy::Split => weighted_pick(ctx.experiment, ctx.user_id),
     }
 }
 
-fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
-    // NOTE: validation guarantees `primary` is present and references one
-    // of the variants for shadow strategy.
-    let primary = experiment
-        .primary
-        .as_deref()
-        .expect("validation guarantees shadow has primary");
-    experiment
-        .variants
-        .iter()
-        .find(|v| v.agent == primary)
-        .expect("validation guarantees primary is a variant")
+fn shadow_pick(experiment: &ExperimentConfig) -> Option<&Variant> {
+    let primary = experiment.primary.as_deref()?;
+    experiment.variants.iter().find(|v| v.agent == primary)
 }
 
 /// Epsilon-greedy bandit pick. Arms below `min_samples` are forced; if
@@ -196,11 +210,12 @@ fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
 /// probability `epsilon` we pick a hash-stable random arm, else the
 /// arm with the highest mean. Ties go to the first arm by declaration
 /// order, which makes the choice deterministic on ties.
-fn bandit_pick<'a>(
-    experiment: &'a ExperimentConfig,
-    user_id: UserId,
-    scores: &[AgentScoreSummary],
-) -> &'a Variant {
+fn bandit_pick(ctx: PickContext<'_>) -> Option<&Variant> {
+    let PickContext {
+        experiment,
+        scores,
+        user_id,
+    } = ctx;
     let min_samples = experiment.min_samples.unwrap_or(BANDIT_DEFAULT_MIN_SAMPLES);
     let forced: Vec<&Variant> = experiment
         .variants
@@ -213,7 +228,7 @@ fn bandit_pick<'a>(
         })
         .collect();
     if !forced.is_empty() {
-        return uniform_hash_pick(&forced, user_id, &experiment.name);
+        return uniform_hash_pick(&forced, sticky_seed(user_id, &experiment.name));
     }
     let epsilon = experiment.epsilon.unwrap_or(BANDIT_DEFAULT_EPSILON);
     let seed = if experiment.sticky_by_user {
@@ -223,40 +238,43 @@ fn bandit_pick<'a>(
     };
     if seed_to_unit_f32(seed) < epsilon {
         let arms: Vec<&Variant> = experiment.variants.iter().collect();
-        return uniform_hash_pick(&arms, user_id, &experiment.name);
+        return uniform_hash_pick(&arms, sticky_seed(user_id, &experiment.name));
     }
-    experiment
-        .variants
-        .iter()
-        .max_by(|a, b| {
-            let mean_a = scores
-                .iter()
-                .find(|s| s.agent_name == a.agent)
-                .map_or(f32::MIN, |s| s.mean);
-            let mean_b = scores
-                .iter()
-                .find(|s| s.agent_name == b.agent)
-                .map_or(f32::MIN, |s| s.mean);
-            mean_a
-                .partial_cmp(&mean_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .expect("validation rejects experiments with no variants")
+    experiment.variants.iter().max_by(|a, b| {
+        let mean_a = scores
+            .iter()
+            .find(|s| s.agent_name == a.agent)
+            .map_or(f32::MIN, |s| s.mean);
+        let mean_b = scores
+            .iter()
+            .find(|s| s.agent_name == b.agent)
+            .map_or(f32::MIN, |s| s.mean);
+        mean_a
+            .partial_cmp(&mean_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
-fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &'a Variant {
-    let seed = sticky_seed(user_id, name);
+/// Pick a single arm uniformly from `arms` using `seed` modulo arm
+/// count. Returns `None` for an empty slice — callers prevent that
+/// upstream. Caller computes the seed so this stays at two args.
+fn uniform_hash_pick<'a>(arms: &[&'a Variant], seed: u64) -> Option<&'a Variant> {
+    if arms.is_empty() {
+        return None;
+    }
     // WHY: `seed % arms.len()` is bounded by `arms.len()` (a usize), so the
     // narrowing is exact on every platform.
     #[allow(clippy::cast_possible_truncation)]
     let idx = (seed % arms.len() as u64) as usize;
-    arms[idx]
+    Some(arms[idx])
 }
 
-fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
+fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> Option<&Variant> {
     // NOTE: validation guarantees at least one variant with strictly
     // positive weight, so the cumulative total is finite and `> 0.0` and
-    // the index lookup below cannot fall off the end.
+    // the early return hits before falling off the end. The fallback to
+    // `variants.last()` covers the floating-point edge case where the
+    // cumulative sum tops out just under `target`.
     let total: f32 = experiment.variants.iter().map(|v| v.weight).sum();
     let seed = if experiment.sticky_by_user {
         sticky_seed(user_id, &experiment.name)
@@ -268,13 +286,10 @@ fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
     for variant in &experiment.variants {
         acc += variant.weight;
         if target < acc {
-            return variant;
+            return Some(variant);
         }
     }
-    experiment
-        .variants
-        .last()
-        .expect("validation rejects experiments with no variants")
+    experiment.variants.last()
 }
 
 fn sticky_seed(user_id: UserId, experiment_name: &str) -> u64 {
@@ -390,10 +405,22 @@ mod tests {
         }
     }
 
+    fn query<'a>(
+        name: &'a str,
+        scores: &'a [AgentScoreSummary],
+        user_id: UserId,
+    ) -> ResolveQuery<'a> {
+        ResolveQuery {
+            name,
+            scores,
+            user_id,
+        }
+    }
+
     #[test]
     fn unknown_name_is_passed_through() {
         let router = ExperimentRouter::new(vec![]);
-        let resolved = router.resolve("solo", UserId::new());
+        let resolved = router.resolve(query("solo", &[], UserId::new()));
         assert_eq!(resolved.agent.as_ref(), "solo");
         assert!(resolved.experiment.is_none());
     }
@@ -401,7 +428,7 @@ mod tests {
     #[test]
     fn experiment_resolves_to_a_variant() {
         let router = ExperimentRouter::new(vec![experiment(true, &[("v1", 1.0), ("v2", 1.0)])]);
-        let resolved = router.resolve("alice", UserId::new());
+        let resolved = router.resolve(query("alice", &[], UserId::new()));
         assert_eq!(resolved.experiment, Some("alice"));
         assert!(matches!(resolved.agent.as_ref(), "v1" | "v2"));
     }
@@ -410,9 +437,12 @@ mod tests {
     fn sticky_routing_is_stable_for_the_same_user() {
         let router = ExperimentRouter::new(vec![experiment(true, &[("v1", 1.0), ("v2", 1.0)])]);
         let user = UserId::new();
-        let first = router.resolve("alice", user).agent.into_owned();
+        let first = router.resolve(query("alice", &[], user)).agent.into_owned();
         for _ in 0..100 {
-            assert_eq!(router.resolve("alice", user).agent.as_ref(), first);
+            assert_eq!(
+                router.resolve(query("alice", &[], user)).agent.as_ref(),
+                first,
+            );
         }
     }
 
@@ -423,7 +453,11 @@ mod tests {
         let mut v1 = 0;
         let mut v2 = 0;
         for _ in 0..2000 {
-            match router.resolve("alice", UserId::new()).agent.as_ref() {
+            match router
+                .resolve(query("alice", &[], UserId::new()))
+                .agent
+                .as_ref()
+            {
                 "v1" => v1 += 1,
                 "v2" => v2 += 1,
                 _ => unreachable!(),
@@ -437,7 +471,13 @@ mod tests {
         let exp = shadow_experiment("v1", &["v1", "v2", "v3"]);
         let router = ExperimentRouter::new(vec![exp]);
         for _ in 0..10 {
-            assert_eq!(router.resolve("alice", UserId::new()).agent.as_ref(), "v1");
+            assert_eq!(
+                router
+                    .resolve(query("alice", &[], UserId::new()))
+                    .agent
+                    .as_ref(),
+                "v1",
+            );
         }
     }
 
@@ -459,7 +499,7 @@ mod tests {
         let router = ExperimentRouter::new(vec![exp]);
         let exp_ref = router.get("alice").unwrap();
         for _ in 0..10 {
-            assert!(!router.shadow_should_sample(exp_ref, UserId::new()));
+            assert!(!exp_ref.shadow_should_sample(UserId::new()));
         }
     }
 
@@ -481,7 +521,7 @@ mod tests {
                 samples: 5,
             },
         ];
-        let resolved = router.resolve_with_scores("alice", UserId::new(), &scores);
+        let resolved = router.resolve(query("alice", &scores, UserId::new()));
         assert!(matches!(resolved.agent.as_ref(), "v1" | "v2"));
     }
 
@@ -503,7 +543,7 @@ mod tests {
             },
         ];
         for _ in 0..10 {
-            let resolved = router.resolve_with_scores("alice", UserId::new(), &scores);
+            let resolved = router.resolve(query("alice", &scores, UserId::new()));
             assert_eq!(resolved.agent.as_ref(), "v1");
         }
     }
@@ -529,7 +569,7 @@ mod tests {
         let mut v2 = 0;
         for _ in 0..2000 {
             match router
-                .resolve_with_scores("alice", UserId::new(), &scores)
+                .resolve(query("alice", &scores, UserId::new()))
                 .agent
                 .as_ref()
             {

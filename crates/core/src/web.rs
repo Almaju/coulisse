@@ -16,17 +16,12 @@ use serde::de::DeserializeOwned;
 /// Build a response that redirects browser navigations (`303 See Other`)
 /// and htmx requests (`HX-Redirect` header) to the same target. Every
 /// admin handler that mutates state and falls back to HTML uses this.
-///
-/// # Panics
-///
-/// Panics if invariants documented above are violated.
 #[must_use]
 pub fn redirect_to(to: &str) -> Response {
     let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        HeaderValue::from_str(to).expect("valid header value"),
-    );
+    if let Ok(value) = HeaderValue::try_from(to) {
+        resp.headers_mut().insert("hx-redirect", value);
+    }
     resp
 }
 
@@ -97,7 +92,7 @@ fn prefers_json(accept: &str) -> bool {
         match media {
             "application/json" | "*/json" => json_q = json_q.max(q),
             "text/html" | "application/xhtml+xml" | "text/*" | "*/*" => html_q = html_q.max(q),
-            _ => {}
+            _ => {},
         }
     }
     if json_q < 0.0 {
@@ -122,8 +117,8 @@ where
 {
     type Rejection = BodyRejection;
 
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let content_type = req
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let content_type = request
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -133,7 +128,7 @@ where
             || content_type.starts_with("application/x-yaml")
             || content_type.starts_with("text/yaml")
         {
-            let bytes = axum::body::to_bytes(req.into_body(), 8 * 1024 * 1024)
+            let bytes = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024)
                 .await
                 .map_err(|err| BodyRejection::Yaml(err.to_string()))?;
             let value: T = serde_yaml::from_slice(&bytes)
@@ -141,12 +136,12 @@ where
             return Ok(Self(value));
         }
         if content_type.starts_with("application/x-www-form-urlencoded") {
-            let Form(value) = Form::<T>::from_request(req, state)
+            let Form(value) = Form::<T>::from_request(request, state)
                 .await
                 .map_err(|err| BodyRejection::Form(err.to_string()))?;
             return Ok(Self(value));
         }
-        let Json(value) = Json::<T>::from_request(req, state)
+        let Json(value) = Json::<T>::from_request(request, state)
             .await
             .map_err(|err| BodyRejection::Json(err.to_string()))?;
         Ok(Self(value))

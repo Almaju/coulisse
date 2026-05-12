@@ -79,6 +79,14 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
 }
 
+/// Set of declared agent and experiment names, threaded into the
+/// validators that cross-reference them (smoke targets, subagent refs).
+#[derive(Clone, Copy)]
+struct Names<'a> {
+    agent_names: &'a HashSet<&'a str>,
+    experiment_names: &'a HashSet<&'a str>,
+}
+
 impl Config {
     /// # Errors
     ///
@@ -114,8 +122,12 @@ impl Config {
         let judge_names = self.validate_judges()?;
         let agent_names = self.validate_agents(&judge_names)?;
         let experiment_names = self.validate_experiments(&agent_names)?;
-        self.validate_smoke_tests(&agent_names, &experiment_names)?;
-        self.validate_subagents(&agent_names, &experiment_names)?;
+        let names = Names {
+            agent_names: &agent_names,
+            experiment_names: &experiment_names,
+        };
+        self.validate_smoke_tests(names)?;
+        self.validate_subagents(names)?;
         Ok(())
     }
 
@@ -230,11 +242,11 @@ impl Config {
         Ok(judge_names)
     }
 
-    fn validate_smoke_tests(
-        &self,
-        agent_names: &HashSet<&str>,
-        experiment_names: &HashSet<&str>,
-    ) -> Result<(), ConfigError> {
+    fn validate_smoke_tests(&self, names: Names<'_>) -> Result<(), ConfigError> {
+        let Names {
+            agent_names,
+            experiment_names,
+        } = names;
         let mut smoke_names: HashSet<&str> = HashSet::new();
         for test in &self.smoke_tests {
             if !smoke_names.insert(test.name.as_str()) {
@@ -273,11 +285,11 @@ impl Config {
     /// Subagent references resolve against the *combined* namespace of
     /// agents + experiments so an agent can list an experiment as a
     /// subagent.
-    fn validate_subagents(
-        &self,
-        agent_names: &HashSet<&str>,
-        experiment_names: &HashSet<&str>,
-    ) -> Result<(), ConfigError> {
+    fn validate_subagents(&self, names: Names<'_>) -> Result<(), ConfigError> {
+        let Names {
+            agent_names,
+            experiment_names,
+        } = names;
         for agent in &self.agents {
             let mut sub_seen = HashSet::new();
             for sub in &agent.subagents {
@@ -402,51 +414,68 @@ fn validate_bandit_fields(
 
 /// Reject fields that only apply to the `shadow` strategy.
 fn reject_shadow_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
-    reject_field(
+    reject_field(FieldRule {
         experiment,
-        "primary",
-        experiment.primary.is_some(),
-        "shadow",
-    )?;
-    reject_field(
+        field: "primary",
+        present: experiment.primary.is_some(),
+        valid_for: "shadow",
+    })?;
+    reject_field(FieldRule {
         experiment,
-        "sampling_rate",
-        experiment.sampling_rate.is_some(),
-        "shadow",
-    )?;
+        field: "sampling_rate",
+        present: experiment.sampling_rate.is_some(),
+        valid_for: "shadow",
+    })?;
     Ok(())
 }
 
 /// Reject fields that only apply to the `bandit` strategy.
 fn reject_bandit_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
-    reject_field(experiment, "metric", experiment.metric.is_some(), "bandit")?;
-    reject_field(
+    reject_field(FieldRule {
         experiment,
-        "epsilon",
-        experiment.epsilon.is_some(),
-        "bandit",
-    )?;
-    reject_field(
+        field: "metric",
+        present: experiment.metric.is_some(),
+        valid_for: "bandit",
+    })?;
+    reject_field(FieldRule {
         experiment,
-        "min_samples",
-        experiment.min_samples.is_some(),
-        "bandit",
-    )?;
-    reject_field(
+        field: "epsilon",
+        present: experiment.epsilon.is_some(),
+        valid_for: "bandit",
+    })?;
+    reject_field(FieldRule {
         experiment,
-        "bandit_window_seconds",
-        experiment.bandit_window_seconds.is_some(),
-        "bandit",
-    )?;
+        field: "min_samples",
+        present: experiment.min_samples.is_some(),
+        valid_for: "bandit",
+    })?;
+    reject_field(FieldRule {
+        experiment,
+        field: "bandit_window_seconds",
+        present: experiment.bandit_window_seconds.is_some(),
+        valid_for: "bandit",
+    })?;
     Ok(())
 }
 
-fn reject_field(
-    experiment: &ExperimentConfig,
+/// A single "this field belongs to strategy X" rejection rule. Threaded
+/// through [`reject_shadow_fields`] / [`reject_bandit_fields`] so each
+/// validation step stays at one arg.
+#[derive(Clone, Copy)]
+struct FieldRule<'a> {
+    experiment: &'a ExperimentConfig,
     field: &'static str,
     present: bool,
     valid_for: &'static str,
-) -> Result<(), ConfigError> {
+}
+
+fn reject_field(rule: FieldRule<'_>) -> Result<(), ConfigError> {
+    let FieldRule {
+        experiment,
+        field,
+        present,
+        valid_for,
+    } = rule;
     if present {
         return Err(ConfigError::ExperimentFieldStrategyMismatch {
             experiment: experiment.name.clone(),
@@ -681,7 +710,7 @@ providers:
             Err(ConfigError::UnknownSubagent { agent, subagent }) => {
                 assert_eq!(agent, "coach");
                 assert_eq!(subagent, "ghost");
-            }
+            },
             other => panic!("expected UnknownSubagent error, got {other:?}"),
         }
     }
@@ -782,7 +811,7 @@ experiments:
             Err(ConfigError::ExperimentUnknownVariant { agent, experiment }) => {
                 assert_eq!(agent, "ghost");
                 assert_eq!(experiment, "alice");
-            }
+            },
             other => panic!("expected ExperimentUnknownVariant, got {other:?}"),
         }
     }
@@ -808,7 +837,7 @@ experiments:
             }) => {
                 assert_eq!(agent, "alice-v1");
                 assert_eq!(experiment, "alice");
-            }
+            },
             other => panic!("expected ExperimentInvalidWeight, got {other:?}"),
         }
     }
@@ -899,7 +928,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentPrimaryNotVariant { primary, .. }) => {
                 assert_eq!(primary, "alice-v2");
-            }
+            },
             other => panic!("expected ExperimentPrimaryNotVariant, got {other:?}"),
         }
     }
@@ -922,7 +951,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentFieldStrategyMismatch { field, .. }) => {
                 assert_eq!(field, "primary");
-            }
+            },
             other => panic!("expected ExperimentFieldStrategyMismatch, got {other:?}"),
         }
     }
@@ -991,7 +1020,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricUnknownJudge { judge, .. }) => {
                 assert_eq!(judge, "ghost");
-            }
+            },
             other => panic!("expected ExperimentMetricUnknownJudge, got {other:?}"),
         }
     }
@@ -1021,7 +1050,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricUnknownCriterion { criterion, .. }) => {
                 assert_eq!(criterion, "tone");
-            }
+            },
             other => panic!("expected ExperimentMetricUnknownCriterion, got {other:?}"),
         }
     }
@@ -1055,7 +1084,7 @@ experiments:
         match parse(&yaml) {
             Err(ConfigError::ExperimentMetricVariantMissingJudge { agent, .. }) => {
                 assert_eq!(agent, "alice-v2");
-            }
+            },
             other => panic!("expected ExperimentMetricVariantMissingJudge, got {other:?}"),
         }
     }
@@ -1121,7 +1150,7 @@ experiments:
             Err(ConfigError::DuplicateSubagent { agent, subagent }) => {
                 assert_eq!(agent, "coach");
                 assert_eq!(subagent, "helper");
-            }
+            },
             other => panic!("expected DuplicateSubagent error, got {other:?}"),
         }
     }
@@ -1195,7 +1224,7 @@ smoke_tests:
             Err(ConfigError::SmokeUnknownTarget { target, test }) => {
                 assert_eq!(target, "missing");
                 assert_eq!(test, "ghost");
-            }
+            },
             other => panic!("expected SmokeUnknownTarget, got {other:?}"),
         }
     }
@@ -1216,7 +1245,7 @@ smoke_tests:
             Err(ConfigError::SmokePersonaProviderNotConfigured { provider, test }) => {
                 assert_eq!(provider, ProviderKind::Anthropic);
                 assert_eq!(test, "missing_provider");
-            }
+            },
             other => panic!("expected SmokePersonaProviderNotConfigured, got {other:?}"),
         }
     }
@@ -1237,7 +1266,7 @@ smoke_tests:
             Err(ConfigError::SmokePersonaUnknownProvider { provider, test }) => {
                 assert_eq!(provider, "not-a-provider");
                 assert_eq!(test, "bogus_provider");
-            }
+            },
             other => panic!("expected SmokePersonaUnknownProvider, got {other:?}"),
         }
     }

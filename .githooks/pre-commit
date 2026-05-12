@@ -5,11 +5,15 @@
 set -e
 
 echo "==> cargo oneway (fmt --check + clippy + oneway-lints)"
+if [ -d "../oneway-lints/lints" ]; then
+    export ONEWAY_LINTS_PATH="$(cd ../oneway-lints/lints && pwd)"
+    echo "    (using local oneway-lints from $ONEWAY_LINTS_PATH)"
+fi
 cargo oneway
 
-echo "==> cargo sort-derives --check"
-cargo sort-derives --check
-
+# NOTE: cargo-oneway's `sorted_derives` rule covers what cargo-sort-derives
+# used to enforce; running both side-by-side disagrees on ordering for
+# qualified derives (e.g. `schemars::JsonSchema`).
 echo "==> cargo machete"
 cargo machete --with-metadata
 

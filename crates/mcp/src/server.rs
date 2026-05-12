@@ -10,6 +10,15 @@ use tokio::process::Command;
 use crate::config::{McpServerConfig, McpToolAccess};
 use crate::error::McpError;
 
+/// Tools-resolution input for [`McpServers::tools_for`]: the agent doing
+/// the lookup (used only in error messages so config pointers remain
+/// readable) and its `mcp_tools:` access list.
+#[derive(Clone, Copy)]
+pub struct ToolsRequest<'a> {
+    pub accesses: &'a [McpToolAccess],
+    pub agent: &'a str,
+}
+
 /// Pool of connected MCP servers, keyed by the YAML name. Owns the long-lived
 /// rmcp client/service handles. Built once at startup; cloned via `Arc` to any
 /// crate that needs to hand MCP tools to an LLM agent.
@@ -41,17 +50,14 @@ impl McpServers {
     }
 
     /// Build the rig-shaped tool list for one agent's `mcp_tools:` section.
-    /// `agent` is the agent's name (used only in error messages so config
-    /// pointers remain readable).
+    /// `request.agent` is the agent's name (used only in error messages so
+    /// config pointers remain readable).
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn tools_for(
-        &self,
-        agent: &str,
-        accesses: &[McpToolAccess],
-    ) -> Result<Vec<Box<dyn ToolDyn>>, McpError> {
+    pub fn tools_for(&self, request: ToolsRequest<'_>) -> Result<Vec<Box<dyn ToolDyn>>, McpError> {
+        let ToolsRequest { accesses, agent } = request;
         let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
         for access in accesses {
             let server =
@@ -100,7 +106,7 @@ impl McpServer {
                         server: name.to_string(),
                         source: Box::new(source),
                     })?
-            }
+            },
             McpServerConfig::Stdio { args, command, env } => {
                 let mut cmd = Command::new(&command);
                 cmd.args(&args);
@@ -117,7 +123,7 @@ impl McpServer {
                         server: name.to_string(),
                         source: Box::new(source),
                     })?
-            }
+            },
         };
         let listed = service
             .list_tools(Option::default())

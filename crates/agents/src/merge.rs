@@ -50,10 +50,10 @@ pub fn merge(yaml: &[AgentConfig], db: &[DynamicRow]) -> (Vec<MergedAgent>, Merg
                     source: Source::Yaml,
                 });
                 report.yaml_count += 1;
-            }
+            },
             Some(row) if row.disabled => {
                 report.tombstone_count += 1;
-            }
+            },
             Some(row) => {
                 if let Some(db_cfg) = &row.config {
                     merged.push(MergedAgent {
@@ -62,7 +62,7 @@ pub fn merge(yaml: &[AgentConfig], db: &[DynamicRow]) -> (Vec<MergedAgent>, Merg
                     });
                     report.override_count += 1;
                 }
-            }
+            },
         }
     }
 

@@ -21,5 +21,8 @@ mod types;
 pub use config::{PersonaConfig, SmokeList, SmokeTestConfig, smoke_list};
 pub use dispatcher::{DispatchError, RunDispatcher};
 pub use merge::{AdminSmoke, AdminSource, MergeReport, MergedSmoke, Source, admin_view, merge};
-pub use store::{DynamicSmokeRow, SmokeStore, SmokeStoreError};
+pub use store::{
+    ActiveSmokeRow, AssistantTurn, DynamicSmokeRow, FinishRun, PersonaTurn, RebuildSmoke,
+    Resolution, RunsForTest, SmokeStore, SmokeStoreError,
+};
 pub use types::{RunId, RunStatus, StoredMessage, StoredRun, TurnRole};

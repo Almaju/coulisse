@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::AgentConfig;
 use crate::merge::{AdminAgent, AdminSource};
 

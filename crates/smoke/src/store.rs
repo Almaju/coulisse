@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::migrate::{self, MigrationStep, SchemaMigrator};
 use coulisse_core::{MessageId, i64_to_u32, i64_to_u64, now_secs, u64_to_i64};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Executor, SqliteConnection, SqlitePool};
+use sqlx::{Executor, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -20,28 +20,84 @@ impl SchemaMigrator for Schema {
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0", "0.2.0"];
 
-    async fn upgrade_from(
-        &self,
-        from_version: &str,
-        conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        match from_version {
+    async fn upgrade_from(&self, step: MigrationStep<'_>) -> sqlx::Result<()> {
+        match step.from_version {
             "0.1.0" => {
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS dynamic_smoke_tests (\
-                        config_json TEXT,\
-                        created_at  INTEGER NOT NULL,\
-                        disabled    INTEGER NOT NULL DEFAULT 0,\
-                        name        TEXT    NOT NULL PRIMARY KEY,\
-                        updated_at  INTEGER NOT NULL\
-                    )",
-                )
-                .await?;
+                step.conn
+                    .execute(
+                        "CREATE TABLE IF NOT EXISTS dynamic_smoke_tests (\
+                            config_json TEXT,\
+                            created_at  INTEGER NOT NULL,\
+                            disabled    INTEGER NOT NULL DEFAULT 0,\
+                            name        TEXT    NOT NULL PRIMARY KEY,\
+                            updated_at  INTEGER NOT NULL\
+                        )",
+                    )
+                    .await?;
                 Ok(())
-            }
-            _ => unreachable!("unknown smoke schema version: {from_version}"),
+            },
+            other => Err(sqlx::Error::Protocol(format!(
+                "smoke: no upgrade path from '{other}'",
+            ))),
         }
     }
+}
+
+/// Inputs to [`SmokeStore::finish_run`]: which run, the final status,
+/// and the optional error message that drove the failure (None on
+/// successful completion).
+pub struct FinishRun<'a> {
+    pub error: Option<&'a str>,
+    pub run_id: RunId,
+    pub status: RunStatus,
+}
+
+/// Inputs to [`SmokeStore::list_runs_for_test`]: which test to filter
+/// on and a hard row cap on the most-recent-first result set.
+pub struct RunsForTest<'a> {
+    pub limit: u32,
+    pub test_name: &'a str,
+}
+
+/// Inputs to [`SmokeStore::record_assistant_turn`]: which run/turn the
+/// assistant reply belongs to, the message id it's persisted under, and
+/// the text content.
+pub struct AssistantTurn<'a> {
+    pub content: &'a str,
+    pub message_id: MessageId,
+    pub run_id: RunId,
+    pub turn_index: u32,
+}
+
+/// Inputs to [`SmokeStore::record_persona_turn`]: which run/turn the
+/// synthetic-user message belongs to, plus the text content.
+pub struct PersonaTurn<'a> {
+    pub content: &'a str,
+    pub run_id: RunId,
+    pub turn_index: u32,
+}
+
+/// Inputs to [`SmokeStore::put_active_dynamic`]: the addressable name
+/// and the override/DB-only config to write.
+pub struct ActiveSmokeRow<'a> {
+    pub config: &'a SmokeTestConfig,
+    pub name: &'a str,
+}
+
+/// Inputs to [`SmokeStore::rebuild_smoke`]: the in-memory `SmokeList` to
+/// atomically swap and the YAML-side slice to merge against the DB.
+pub struct RebuildSmoke<'a> {
+    pub list: &'a SmokeList,
+    pub yaml: &'a [SmokeTestConfig],
+}
+
+/// Inputs to [`SmokeStore::set_resolution`]: the experiment-router
+/// outcome for one run — concrete agent name plus the originating
+/// experiment, if any.
+pub struct Resolution<'a> {
+    pub agent_resolved: &'a str,
+    pub experiment: Option<&'a str>,
+    pub run_id: RunId,
 }
 
 /// One row in `dynamic_smoke_tests`. `config` is `Some` for active rows
@@ -90,12 +146,12 @@ impl SmokeStore {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn finish_run(
-        &self,
-        run_id: RunId,
-        status: RunStatus,
-        error: Option<&str>,
-    ) -> Result<(), SmokeStoreError> {
+    pub async fn finish_run(&self, finish: FinishRun<'_>) -> Result<(), SmokeStoreError> {
+        let FinishRun {
+            error,
+            run_id,
+            status,
+        } = finish;
         sqlx::query("UPDATE smoke_runs SET ended_at = ?, error = ?, status = ? WHERE id = ?")
             .bind(u64_to_i64(now_secs()))
             .bind(error)
@@ -160,9 +216,9 @@ impl SmokeStore {
     /// Returns an error if the underlying operation fails.
     pub async fn list_runs_for_test(
         &self,
-        test_name: &str,
-        limit: u32,
+        query: RunsForTest<'_>,
     ) -> Result<Vec<StoredRun>, SmokeStoreError> {
+        let RunsForTest { limit, test_name } = query;
         let rows = sqlx::query(
             "SELECT agent_resolved, ended_at, error, experiment, id, started_at, status, \
              test_name, total_turns \
@@ -195,11 +251,8 @@ impl SmokeStore {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn put_active_dynamic(
-        &self,
-        name: &str,
-        config: &SmokeTestConfig,
-    ) -> Result<(), SmokeStoreError> {
+    pub async fn put_active_dynamic(&self, row: ActiveSmokeRow<'_>) -> Result<(), SmokeStoreError> {
+        let ActiveSmokeRow { config, name } = row;
         let now = u64_to_i64(now_secs());
         let json = serde_json::to_string(config)
             .map_err(|e| SmokeStoreError::RowDecode(format!("serialize: {e}")))?;
@@ -246,9 +299,9 @@ impl SmokeStore {
     /// Returns an error if the underlying operation fails.
     pub async fn rebuild_smoke(
         &self,
-        list: &SmokeList,
-        yaml: &[SmokeTestConfig],
+        rebuild: RebuildSmoke<'_>,
     ) -> Result<MergeReport, SmokeStoreError> {
+        let RebuildSmoke { list, yaml } = rebuild;
         let db = self.list_dynamic().await?;
         let (merged, report) = merge(yaml, &db);
         let configs: Vec<SmokeTestConfig> = merged.into_iter().map(|m| m.config).collect();
@@ -261,11 +314,14 @@ impl SmokeStore {
     /// Returns an error if the underlying operation fails.
     pub async fn record_assistant_turn(
         &self,
-        run_id: RunId,
-        turn_index: u32,
-        message_id: MessageId,
-        content: &str,
+        turn: AssistantTurn<'_>,
     ) -> Result<(), SmokeStoreError> {
+        let AssistantTurn {
+            content,
+            message_id,
+            run_id,
+            turn_index,
+        } = turn;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO smoke_messages (content, message_id, role, run_id, turn_index) \
@@ -290,12 +346,12 @@ impl SmokeStore {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn record_persona_turn(
-        &self,
-        run_id: RunId,
-        turn_index: u32,
-        content: &str,
-    ) -> Result<(), SmokeStoreError> {
+    pub async fn record_persona_turn(&self, turn: PersonaTurn<'_>) -> Result<(), SmokeStoreError> {
+        let PersonaTurn {
+            content,
+            run_id,
+            turn_index,
+        } = turn;
         sqlx::query(
             "INSERT INTO smoke_messages (content, message_id, role, run_id, turn_index) \
              VALUES (?, NULL, ?, ?, ?)",
@@ -316,12 +372,12 @@ impl SmokeStore {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn set_resolution(
-        &self,
-        run_id: RunId,
-        agent_resolved: &str,
-        experiment: Option<&str>,
-    ) -> Result<(), SmokeStoreError> {
+    pub async fn set_resolution(&self, res: Resolution<'_>) -> Result<(), SmokeStoreError> {
+        let Resolution {
+            agent_resolved,
+            experiment,
+            run_id,
+        } = res;
         sqlx::query("UPDATE smoke_runs SET agent_resolved = ?, experiment = ? WHERE id = ?")
             .bind(agent_resolved)
             .bind(experiment)

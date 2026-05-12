@@ -157,16 +157,32 @@ fn agents_item() -> Value {
 }
 
 fn judges_collection() -> Value {
-    item_collection("judges", "JudgeConfig", "Judge")
+    item_collection(ItemSpec {
+        label: "Judge",
+        schema_name: "JudgeConfig",
+        tag: "judges",
+    })
 }
 fn judges_item() -> Value {
-    item_resource("judges", "JudgeConfig", "Judge name")
+    item_resource(ItemSpec {
+        label: "Judge name",
+        schema_name: "JudgeConfig",
+        tag: "judges",
+    })
 }
 fn experiments_collection() -> Value {
-    item_collection("experiments", "ExperimentConfig", "Experiment")
+    item_collection(ItemSpec {
+        label: "Experiment",
+        schema_name: "ExperimentConfig",
+        tag: "experiments",
+    })
 }
 fn experiments_item() -> Value {
-    item_resource("experiments", "ExperimentConfig", "Experiment name")
+    item_resource(ItemSpec {
+        label: "Experiment name",
+        schema_name: "ExperimentConfig",
+        tag: "experiments",
+    })
 }
 fn providers_collection() -> Value {
     json!({
@@ -269,7 +285,11 @@ fn mcp_collection() -> Value {
     })
 }
 fn mcp_item() -> Value {
-    item_resource("mcp", "McpServerConfig", "MCP server name")
+    item_resource(ItemSpec {
+        label: "MCP server name",
+        schema_name: "McpServerConfig",
+        tag: "mcp",
+    })
 }
 
 fn config_endpoint() -> Value {
@@ -306,7 +326,19 @@ fn config_endpoint() -> Value {
     })
 }
 
-fn item_collection(tag: &str, schema_name: &str, label: &str) -> Value {
+#[derive(Clone, Copy)]
+struct ItemSpec<'a> {
+    label: &'a str,
+    schema_name: &'a str,
+    tag: &'a str,
+}
+
+fn item_collection(spec: ItemSpec<'_>) -> Value {
+    let ItemSpec {
+        label,
+        schema_name,
+        tag,
+    } = spec;
     json!({
         "get": {
             "tags": [tag],
@@ -337,7 +369,12 @@ fn item_collection(tag: &str, schema_name: &str, label: &str) -> Value {
     })
 }
 
-fn item_resource(tag: &str, schema_name: &str, name_desc: &str) -> Value {
+fn item_resource(spec: ItemSpec<'_>) -> Value {
+    let ItemSpec {
+        label: name_desc,
+        schema_name,
+        tag,
+    } = spec;
     json!({
         "parameters": [name_param(name_desc)],
         "get": {

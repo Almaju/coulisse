@@ -43,10 +43,10 @@ pub fn merge(yaml: &[JudgeConfig], db: &[DynamicJudgeRow]) -> (Vec<MergedJudge>,
                     source: Source::Yaml,
                 });
                 report.yaml_count += 1;
-            }
+            },
             Some(row) if row.disabled => {
                 report.tombstone_count += 1;
-            }
+            },
             Some(row) => {
                 if let Some(db_cfg) = &row.config {
                     merged.push(MergedJudge {
@@ -55,7 +55,7 @@ pub fn merge(yaml: &[JudgeConfig], db: &[DynamicJudgeRow]) -> (Vec<MergedJudge>,
                     });
                     report.override_count += 1;
                 }
-            }
+            },
         }
     }
 

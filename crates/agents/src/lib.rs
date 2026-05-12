@@ -13,5 +13,5 @@ pub use merge::{AdminAgent, AdminSource, MergeReport, MergedAgent, Source, admin
 pub use providers::{
     Completion, CompletionStream, Message, Role, StreamEvent, ToolCallKind, Usage,
 };
-pub use runtime::{Agents, BootConfig, RigAgents};
-pub use store::{DynamicAgents, DynamicAgentsError, DynamicRow};
+pub use runtime::{Agents, BootConfig, CompletionRequest, PromptInput, RigAgents};
+pub use store::{ActiveAgentRow, DynamicAgents, DynamicAgentsError, DynamicRow, RebuildAgents};

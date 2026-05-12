@@ -77,7 +77,7 @@ impl SmokeTestRow {
                 yaml_backed: row.yaml_backed,
             },
             Some(cfg) => Self {
-                last_run: last_run.map(RunRow::build),
+                last_run: last_run.map(RunRow::from_run),
                 max_turns: cfg.max_turns,
                 name: cfg.name.clone(),
                 persona_model: format!("{} / {}", cfg.persona.provider, cfg.persona.model),
@@ -92,7 +92,7 @@ impl SmokeTestRow {
 }
 
 impl RunRow {
-    pub(super) fn build(run: &StoredRun) -> Self {
+    pub(super) fn from_run(run: &StoredRun) -> Self {
         let (status_class, status) = status_pill(run.status);
         Self {
             agent_resolved: run.agent_resolved.clone().unwrap_or_else(|| "—".into()),
@@ -107,7 +107,7 @@ impl RunRow {
 }
 
 impl RunDetailView {
-    pub(super) fn build(run: &StoredRun, messages: Vec<StoredMessage>) -> Self {
+    pub(super) fn from_run(run: &StoredRun, messages: Vec<StoredMessage>) -> Self {
         let (status_class, status) = status_pill(run.status);
         let mut turns: Vec<TurnView> = messages
             .into_iter()

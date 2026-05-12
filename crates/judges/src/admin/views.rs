@@ -43,7 +43,7 @@ pub(super) struct ScoresPanel {
 }
 
 impl ScoresPanel {
-    pub(super) fn build(scores: Vec<Score>) -> Self {
+    pub(super) fn from_scores(scores: Vec<Score>) -> Self {
         let averages = average_by_criterion(&scores);
         let mut recent: Vec<ScoreRow> = scores
             .into_iter()
@@ -114,7 +114,7 @@ impl JudgeDetailRow {
                     source: label,
                     yaml_backed: row.yaml_backed,
                 }
-            }
+            },
         }
     }
 }
@@ -229,7 +229,7 @@ pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix
                             mean: format!("{:.1}", c.mean),
                             samples: c.samples,
                         }
-                    }
+                    },
                 })
                 .collect();
             MatrixRow { agent_name, cells }

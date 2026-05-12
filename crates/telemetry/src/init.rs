@@ -113,7 +113,7 @@ fn build_otlp_provider(cfg: &OtlpConfig) -> Result<SdkTracerProvider, InitError>
                 builder = builder.with_metadata(headers_to_metadata(&cfg.headers)?);
             }
             builder.build().map_err(InitError::Otlp)?
-        }
+        },
         OtlpProtocol::HttpBinary => {
             let mut builder = opentelemetry_otlp::SpanExporter::builder()
                 .with_http()
@@ -122,7 +122,7 @@ fn build_otlp_provider(cfg: &OtlpConfig) -> Result<SdkTracerProvider, InitError>
                 builder = builder.with_headers(cfg.headers.clone());
             }
             builder.build().map_err(InitError::Otlp)?
-        }
+        },
     };
 
     Ok(SdkTracerProvider::builder()

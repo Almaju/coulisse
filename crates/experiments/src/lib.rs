@@ -21,6 +21,8 @@ pub use merge::{
 pub use resolver::ExperimentResolver;
 pub use router::{
     BANDIT_DEFAULT_EPSILON, BANDIT_DEFAULT_MIN_SAMPLES, BANDIT_DEFAULT_WINDOW_SECONDS,
-    ExperimentRouter, Resolved,
+    ExperimentRouter, ResolveQuery, Resolved,
 };
-pub use store::{DynamicExperimentRow, Experiments, ExperimentsError};
+pub use store::{
+    ActiveExperimentRow, DynamicExperimentRow, Experiments, ExperimentsError, RebuildExperiments,
+};

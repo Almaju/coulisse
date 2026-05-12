@@ -8,12 +8,13 @@ use axum::response::sse::{Event, KeepAlive};
 use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
 use judges::spawn_score;
-use memory::{MessageId, Role as MemRole, UserId};
+use limits::RecordUsage;
+use memory::{AppendMessage, ExtractInputs, MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
 use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
 
-use crate::server::{AppState, judges_for_agent, record_llm_call};
+use crate::server::{AppState, LlmCallRecord, judges_for_agent, record_llm_call};
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
 /// the rest of the per-request state (user id, tracker key, user message)
@@ -169,35 +170,54 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
         let user_message = std::mem::take(&mut self.user_message);
         tokio::spawn(
             async move {
-                if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
+                if let Err(err) = state
+                    .tracker
+                    .record(RecordUsage {
+                        tokens: usage.total_tokens,
+                        user: &tracker_key,
+                    })
+                    .await
+                {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
-                record_llm_call(&state, &agent_name, usage, &llm_call_span);
+                record_llm_call(LlmCallRecord {
+                    agent_name: &agent_name,
+                    state: &state,
+                    turn_span: &llm_call_span,
+                    usage,
+                });
                 let um = state.memory.for_user(user_id);
-                if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
+                if let Err(err) = um
+                    .append_message(AppendMessage {
+                        content: user_message.clone(),
+                        id: None,
+                        role: MemRole::User,
+                    })
+                    .await
+                {
                     warn_memory_append_failed("user", &err);
                 }
                 if accumulated.is_empty() {
                     return;
                 }
                 let assistant_append = um
-                    .append_message_with_id(
-                        MemRole::Assistant,
-                        accumulated.clone(),
-                        assistant_message_id,
-                    )
+                    .append_message(AppendMessage {
+                        content: accumulated.clone(),
+                        id: Some(assistant_message_id),
+                        role: MemRole::Assistant,
+                    })
                     .await;
                 if let Err(err) = assistant_append {
                     warn_memory_append_failed("assistant", &err);
                     return;
                 }
                 if let Some(extractor) = state.extractor.as_ref() {
-                    extractor.spawn(
-                        Arc::clone(&state.memory),
+                    extractor.spawn(ExtractInputs {
+                        assistant_message: accumulated.clone(),
+                        memory: Arc::clone(&state.memory),
                         user_id,
-                        user_message.clone(),
-                        accumulated.clone(),
-                    );
+                        user_message: user_message.clone(),
+                    });
                 }
                 let judges = judges_for_agent(&state, &agent_name);
                 spawn_score(
@@ -231,13 +251,19 @@ struct StreamMeta {
     model: String,
 }
 
+struct ChunkInputs {
+    delta: ChunkDelta,
+    finish_reason: Option<FinishReason>,
+    usage: Option<Usage>,
+}
+
 impl StreamMeta {
-    fn chunk(
-        &self,
-        delta: ChunkDelta,
-        finish_reason: Option<FinishReason>,
-        usage: Option<Usage>,
-    ) -> Event {
+    fn chunk(&self, inputs: ChunkInputs) -> Event {
+        let ChunkInputs {
+            delta,
+            finish_reason,
+            usage,
+        } = inputs;
         Event::default()
             .json_data(&ChatCompletionChunk {
                 choices: vec![ChunkChoice {
@@ -255,14 +281,14 @@ impl StreamMeta {
     }
 
     fn content_event(&self, text: &str) -> Event {
-        self.chunk(
-            ChunkDelta {
+        self.chunk(ChunkInputs {
+            delta: ChunkDelta {
                 content: Some(text.to_string()),
                 role: None,
             },
-            None,
-            None,
-        )
+            finish_reason: None,
+            usage: None,
+        })
     }
 
     /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
@@ -287,18 +313,22 @@ impl StreamMeta {
     }
 
     fn role_event(&self) -> Event {
-        self.chunk(
-            ChunkDelta {
+        self.chunk(ChunkInputs {
+            delta: ChunkDelta {
                 content: None,
                 role: Some(Role::Assistant),
             },
-            None,
-            None,
-        )
+            finish_reason: None,
+            usage: None,
+        })
     }
 
     fn stop_event(&self, usage: Option<Usage>) -> Event {
-        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
+        self.chunk(ChunkInputs {
+            delta: ChunkDelta::default(),
+            finish_reason: Some(FinishReason::Stop),
+            usage,
+        })
     }
 }
 

@@ -40,10 +40,10 @@ pub fn merge(yaml: &[SmokeTestConfig], db: &[DynamicSmokeRow]) -> (Vec<MergedSmo
                     source: Source::Yaml,
                 });
                 report.yaml_count += 1;
-            }
+            },
             Some(row) if row.disabled => {
                 report.tombstone_count += 1;
-            }
+            },
             Some(row) => {
                 if let Some(db_cfg) = &row.config {
                     merged.push(MergedSmoke {
@@ -52,7 +52,7 @@ pub fn merge(yaml: &[SmokeTestConfig], db: &[DynamicSmokeRow]) -> (Vec<MergedSmo
                     });
                     report.override_count += 1;
                 }
-            }
+            },
         }
     }
 

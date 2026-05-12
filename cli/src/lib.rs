@@ -1,3 +1,10 @@
+// WHY: cli is the boot path + glue layer. Per CLAUDE.md, `unwrap`/
+// `expect` are acceptable at startup, on Mutex poisoning (the holder
+// already panicked, so propagating is right), and on serializing a
+// known-good struct to JSON. These cases dominate cli.
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+
 //! Coulisse CLI: orchestrates every feature crate behind one `OpenAI`-
 //! compatible HTTP server. The chat handler in `server` reads
 //! top-to-bottom as the request-flow spec — limits → context → route

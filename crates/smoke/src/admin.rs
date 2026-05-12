@@ -1,3 +1,8 @@
+// WHY: axum handlers' arity is dictated by the framework's extractors,
+// not our design. Bundling extractors into a struct isn't compatible
+// with `#[axum::handler]`, so this lint can't pay off in this module.
+#![allow(clippy::too_many_arguments)]
+
 //! Admin/studio HTTP surface for the smoke crate. Pages: list of
 //! configured tests, per-test detail, run viewer, plus CRUD endpoints.
 //!
@@ -23,7 +28,7 @@ use uuid::Uuid;
 use crate::config::{SmokeList, SmokeTestConfig};
 use crate::dispatcher::{DispatchError, RunDispatcher};
 use crate::merge::{AdminSmoke, admin_view};
-use crate::store::{SmokeStore, SmokeStoreError};
+use crate::store::{ActiveSmokeRow, RebuildSmoke, RunsForTest, SmokeStore, SmokeStoreError};
 use crate::types::RunId;
 use templates::{SmokePage, SmokeRunPage, SmokeTestDetailPage, SmokeTestEditPage};
 use views::{RunDetailView, RunRow, SmokeTestRow};
@@ -101,9 +106,12 @@ async fn test_detail(
     }
     let runs = state
         .store
-        .list_runs_for_test(&name, RECENT_RUNS_LIMIT)
+        .list_runs_for_test(RunsForTest {
+            limit: RECENT_RUNS_LIMIT,
+            test_name: &name,
+        })
         .await?;
-    let recent_runs: Vec<RunRow> = runs.iter().map(RunRow::build).collect();
+    let recent_runs: Vec<RunRow> = runs.iter().map(RunRow::from_run).collect();
     let test = SmokeTestRow::from_admin(row, runs.first());
     Ok(Html(SmokeTestDetailPage { recent_runs, test }.render()?).into_response())
 }
@@ -113,7 +121,13 @@ async fn create(
     fmt: ResponseFormat,
     EitherFormOrJson(test): EitherFormOrJson<SmokeTestConfig>,
 ) -> Result<Response, AdminError> {
-    state.store.put_active_dynamic(&test.name, &test).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveSmokeRow {
+            config: &test,
+            name: &test.name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(test)).into_response());
@@ -133,7 +147,13 @@ async fn update(
             test.name
         )));
     }
-    state.store.put_active_dynamic(&name, &test).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveSmokeRow {
+            config: &test,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(test).into_response());
@@ -259,7 +279,7 @@ async fn run_page(
         .await?
         .ok_or(AdminError::NotFound)?;
     let messages = state.store.messages_for_run(run_id).await?;
-    let view = RunDetailView::build(&run, messages);
+    let view = RunDetailView::from_run(&run, messages);
     Ok(Html(SmokeRunPage { run: view }.render()?))
 }
 
@@ -273,7 +293,10 @@ async fn rebuild(state: &SmokeAdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_configs.load_full();
     state
         .store
-        .rebuild_smoke(&state.runtime_configs, &yaml)
+        .rebuild_smoke(RebuildSmoke {
+            list: &state.runtime_configs,
+            yaml: &yaml,
+        })
         .await?;
     Ok(())
 }
@@ -323,7 +346,7 @@ impl IntoResponse for AdminError {
             ),
             Self::Dispatch(DispatchError::Other(m)) | Self::Internal(m) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, m)
-            }
+            },
             Self::InvalidRunId => (
                 StatusCode::BAD_REQUEST,
                 "run_id must be a valid UUID".to_string(),

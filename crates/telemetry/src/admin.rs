@@ -22,7 +22,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use uuid::Uuid;
 
-use crate::{Sink, TelemetryError, TurnId};
+use crate::{Sink, TelemetryError, ToolCallsForTool, TurnId, TurnQuery};
 use coulisse_core::UserId;
 use templates::{EventsFragment, ToolCallsFragment, ToolDetailPage, ToolsPage};
 use views::{event_rows, recent_tool_call_rows, tool_call_rows, tool_detail_row, tool_list_rows};
@@ -51,7 +51,12 @@ async fn tool_detail(
         .into_iter()
         .find(|s| s.tool_name == name)
         .ok_or(AdminError::NotFound)?;
-    let calls = sink.tool_calls_for_tool(&name, 20).await?;
+    let calls = sink
+        .tool_calls_for_tool(ToolCallsForTool {
+            limit: 20,
+            tool_name: &name,
+        })
+        .await?;
     render(ToolDetailPage {
         recent_calls: recent_tool_call_rows(calls),
         tool: tool_detail_row(&entry),
@@ -72,7 +77,12 @@ async fn turn_events(
 ) -> Result<Html<String>, AdminError> {
     let user_id = parse_user_id(&user_id)?;
     let turn_id = parse_turn_id(&turn_id)?;
-    let events = sink.fetch_turn(user_id, turn_id).await?;
+    let events = sink
+        .fetch_turn(TurnQuery {
+            correlation_id: turn_id,
+            user_id,
+        })
+        .await?;
     render(EventsFragment {
         rows: event_rows(events),
     })

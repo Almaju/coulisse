@@ -3,8 +3,8 @@ use std::sync::Arc;
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{now_secs, u64_to_i64};
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
 use thiserror::Error;
 
 use crate::merge::{MergeReport, merge};
@@ -16,14 +16,20 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "agents";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
+}
 
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("agents has only one schema version")
-    }
+/// Inputs to [`DynamicAgents::put_active`]: the addressable name and
+/// the override/DB-only config to write.
+pub struct ActiveAgentRow<'a> {
+    pub config: &'a AgentConfig,
+    pub name: &'a str,
+}
+
+/// Inputs to [`DynamicAgents::rebuild`]: the in-memory `AgentList` to
+/// atomically swap and the YAML-side slice to merge against the DB.
+pub struct RebuildAgents<'a> {
+    pub list: &'a AgentList,
+    pub yaml: &'a [AgentConfig],
 }
 
 /// One row in `dynamic_agents`. `config` is `Some` for active rows
@@ -97,11 +103,8 @@ impl DynamicAgents {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn put_active(
-        &self,
-        name: &str,
-        config: &AgentConfig,
-    ) -> Result<(), DynamicAgentsError> {
+    pub async fn put_active(&self, row: ActiveAgentRow<'_>) -> Result<(), DynamicAgentsError> {
+        let ActiveAgentRow { config, name } = row;
         let now = u64_to_i64(now_secs());
         let json = serde_json::to_string(config)
             .map_err(|e| DynamicAgentsError::Serialize(e.to_string()))?;
@@ -156,11 +159,11 @@ impl DynamicAgents {
     /// Returns an error if the underlying operation fails.
     pub async fn rebuild(
         &self,
-        list: &AgentList,
-        yaml_agents: &[AgentConfig],
+        rebuild: RebuildAgents<'_>,
     ) -> Result<MergeReport, DynamicAgentsError> {
+        let RebuildAgents { list, yaml } = rebuild;
         let db = self.list().await?;
-        let (merged, report) = merge(yaml_agents, &db);
+        let (merged, report) = merge(yaml, &db);
         let configs: Vec<AgentConfig> = merged.into_iter().map(|m| m.config).collect();
         list.store(Arc::new(configs));
         Ok(report)
@@ -215,6 +218,10 @@ mod tests {
             .unwrap()
     }
 
+    fn active<'a>(name: &'a str, config: &'a AgentConfig) -> ActiveAgentRow<'a> {
+        ActiveAgentRow { config, name }
+    }
+
     fn sample_config(name: &str) -> AgentConfig {
         AgentConfig {
             judges: vec![],
@@ -246,7 +253,7 @@ mod tests {
     async fn put_active_round_trips() {
         let store = DynamicAgents::open(pool().await).await.unwrap();
         store
-            .put_active("alice", &sample_config("alice"))
+            .put_active(active("alice", &sample_config("alice")))
             .await
             .unwrap();
 
@@ -261,13 +268,13 @@ mod tests {
     async fn put_active_overwrites_existing_row() {
         let store = DynamicAgents::open(pool().await).await.unwrap();
         store
-            .put_active("alice", &sample_config("alice"))
+            .put_active(active("alice", &sample_config("alice")))
             .await
             .unwrap();
 
         let mut updated = sample_config("alice");
         updated.model = "gpt-5".into();
-        store.put_active("alice", &updated).await.unwrap();
+        store.put_active(active("alice", &updated)).await.unwrap();
 
         let rows = store.list().await.unwrap();
         assert_eq!(rows.len(), 1);
@@ -278,7 +285,7 @@ mod tests {
     async fn put_tombstone_replaces_active_row() {
         let store = DynamicAgents::open(pool().await).await.unwrap();
         store
-            .put_active("alice", &sample_config("alice"))
+            .put_active(active("alice", &sample_config("alice")))
             .await
             .unwrap();
         store.put_tombstone("alice").await.unwrap();
@@ -294,7 +301,7 @@ mod tests {
         let store = DynamicAgents::open(pool().await).await.unwrap();
         store.put_tombstone("alice").await.unwrap();
         store
-            .put_active("alice", &sample_config("alice"))
+            .put_active(active("alice", &sample_config("alice")))
             .await
             .unwrap();
 
@@ -308,7 +315,7 @@ mod tests {
     async fn delete_removes_row() {
         let store = DynamicAgents::open(pool().await).await.unwrap();
         store
-            .put_active("alice", &sample_config("alice"))
+            .put_active(active("alice", &sample_config("alice")))
             .await
             .unwrap();
 
@@ -321,11 +328,11 @@ mod tests {
     async fn list_orders_by_name() {
         let store = DynamicAgents::open(pool().await).await.unwrap();
         store
-            .put_active("charlie", &sample_config("charlie"))
+            .put_active(active("charlie", &sample_config("charlie")))
             .await
             .unwrap();
         store
-            .put_active("alice", &sample_config("alice"))
+            .put_active(active("alice", &sample_config("alice")))
             .await
             .unwrap();
         store.put_tombstone("bob").await.unwrap();

@@ -1,3 +1,10 @@
+// WHY: testing-only module. `unwrap` on `Mutex::lock` is the standard
+// pattern; panicking on poison surfaces the original test failure
+// rather than masking it. `expect` policy in CLAUDE.md carves test
+// code out from the workspace's blanket lints.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::unwrap_used)]
+
 //! Real in-memory `Agents` implementation for tests. Drives handlers
 //! deterministically without talking to a provider.
 
@@ -5,12 +12,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_stream::stream;
-use coulisse_core::{OneShotError, OneShotPrompt, UserId};
+use coulisse_core::{OneShotError, OneShotPrompt, OneShotRequest};
 use providers::ProviderKind;
 
 use crate::{
-    AgentConfig, Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent,
-    ToolCallKind, Usage,
+    AgentConfig, Agents, AgentsError, Completion, CompletionRequest, CompletionStream, Message,
+    PromptInput, Role, StreamEvent, ToolCallKind, Usage,
 };
 
 /// A `Agents` that replays a scripted reply. Each call to `complete` or
@@ -164,12 +171,12 @@ impl Agents for ScriptedAgents {
         Arc::clone(&self.agents)
     }
 
-    async fn complete(
-        &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        _user_id: UserId,
-    ) -> Result<Completion, AgentsError> {
+    async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, AgentsError> {
+        let CompletionRequest {
+            agent_name,
+            messages,
+            user_id: _,
+        } = request;
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         Ok(Completion {
@@ -180,10 +187,13 @@ impl Agents for ScriptedAgents {
 
     async fn complete_streaming(
         &self,
-        agent_name: &str,
-        messages: Vec<Message>,
-        _user_id: UserId,
+        request: CompletionRequest<'_>,
     ) -> Result<CompletionStream, AgentsError> {
+        let CompletionRequest {
+            agent_name,
+            messages,
+            user_id: _,
+        } = request;
         self.calls.lock().unwrap().push(messages);
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
@@ -232,14 +242,8 @@ impl Agents for ScriptedAgents {
         Ok(Box::pin(s))
     }
 
-    async fn prompt_with(
-        &self,
-        _provider: ProviderKind,
-        _model: &str,
-        _preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
-        self.calls.lock().unwrap().push(messages);
+    async fn prompt_with(&self, input: PromptInput<'_>) -> Result<Completion, AgentsError> {
+        self.calls.lock().unwrap().push(input.messages);
         let reply = {
             let mut replies = self.replies.lock().unwrap();
             match replies.len() {
@@ -247,7 +251,7 @@ impl Agents for ScriptedAgents {
                     return Err(AgentsError::Provider(providers::CallError::Streaming(
                         "scripted prompter has no replies left".into(),
                     )));
-                }
+                },
                 1 => replies[0].clone(),
                 _ => replies.remove(0),
             }
@@ -262,20 +266,22 @@ impl Agents for ScriptedAgents {
 impl OneShotPrompt for ScriptedAgents {
     fn one_shot<'a>(
         &'a self,
-        _provider: &'a str,
-        _model: &'a str,
-        _preamble: &'a str,
-        user_text: &'a str,
+        request: OneShotRequest<'a>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
         Box::pin(async move {
             let messages = vec![Message {
-                content: user_text.to_string(),
+                content: request.user_text.to_string(),
                 role: Role::User,
             }];
-            self.prompt_with(ProviderKind::Openai, "scripted", "", messages)
-                .await
-                .map(|c| c.text)
-                .map_err(|e| OneShotError::new(e.to_string()))
+            self.prompt_with(PromptInput {
+                messages,
+                model: "scripted",
+                preamble: "",
+                provider: ProviderKind::Openai,
+            })
+            .await
+            .map(|c| c.text)
+            .map_err(|e| OneShotError::new(e.to_string()))
         })
     }
 }
