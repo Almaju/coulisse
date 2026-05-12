@@ -28,7 +28,7 @@ use uuid::Uuid;
 use crate::config::{SmokeList, SmokeTestConfig};
 use crate::dispatcher::{DispatchError, RunDispatcher};
 use crate::merge::{AdminSmoke, admin_view};
-use crate::store::{SmokeStore, SmokeStoreError};
+use crate::store::{ActiveSmokeRow, RebuildSmoke, RunsForTest, SmokeStore, SmokeStoreError};
 use crate::types::RunId;
 use templates::{SmokePage, SmokeRunPage, SmokeTestDetailPage, SmokeTestEditPage};
 use views::{RunDetailView, RunRow, SmokeTestRow};
@@ -106,7 +106,10 @@ async fn test_detail(
     }
     let runs = state
         .store
-        .list_runs_for_test(&name, RECENT_RUNS_LIMIT)
+        .list_runs_for_test(RunsForTest {
+            limit: RECENT_RUNS_LIMIT,
+            test_name: &name,
+        })
         .await?;
     let recent_runs: Vec<RunRow> = runs.iter().map(RunRow::from_run).collect();
     let test = SmokeTestRow::from_admin(row, runs.first());
@@ -118,7 +121,13 @@ async fn create(
     fmt: ResponseFormat,
     EitherFormOrJson(test): EitherFormOrJson<SmokeTestConfig>,
 ) -> Result<Response, AdminError> {
-    state.store.put_active_dynamic(&test.name, &test).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveSmokeRow {
+            config: &test,
+            name: &test.name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(test)).into_response());
@@ -138,7 +147,13 @@ async fn update(
             test.name
         )));
     }
-    state.store.put_active_dynamic(&name, &test).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveSmokeRow {
+            config: &test,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(test).into_response());
@@ -278,7 +293,10 @@ async fn rebuild(state: &SmokeAdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_configs.load_full();
     state
         .store
-        .rebuild_smoke(&state.runtime_configs, &yaml)
+        .rebuild_smoke(RebuildSmoke {
+            list: &state.runtime_configs,
+            yaml: &yaml,
+        })
         .await?;
     Ok(())
 }

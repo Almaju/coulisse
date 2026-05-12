@@ -1,6 +1,3 @@
-// WHY: store methods take well-grouped CRUD args. Deferred refactor.
-#![allow(clippy::too_many_arguments)]
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -74,6 +71,41 @@ pub struct JudgeVolume {
     pub judge_name: String,
 }
 
+/// Inputs to [`Judges::agent_criterion_matrix`]: which judge to roll up
+/// and the lower bound on score `created_at`.
+pub struct AgentCriterionQuery<'a> {
+    pub judge: &'a str,
+    pub since: u64,
+}
+
+/// Inputs to [`Judges::all_scores_since`]: lower bound on `created_at`
+/// and a hard row cap.
+pub struct AllScoresQuery {
+    pub limit: u32,
+    pub since: u64,
+}
+
+/// Inputs to [`Judges::scores_for_judge`]: which judge to filter on and
+/// a hard row cap.
+pub struct ScoresForJudge<'a> {
+    pub judge: &'a str,
+    pub limit: u32,
+}
+
+/// Inputs to [`Judges::put_active_dynamic`]: the addressable name and
+/// the override/DB-only config to write.
+pub struct ActiveJudgeRow<'a> {
+    pub config: &'a JudgeConfig,
+    pub name: &'a str,
+}
+
+/// Inputs to [`Judges::rebuild_judges`]: the in-memory `JudgeList` to
+/// atomically swap and the YAML-side slice to merge against the DB.
+pub struct RebuildJudges<'a> {
+    pub list: &'a JudgeList,
+    pub yaml: &'a [JudgeConfig],
+}
+
 /// Persistent storage for LLM-judge scores. One row per criterion per
 /// scored turn. Reads are exposed both directly (`scores`,
 /// `mean_scores_by_agent`) and via the `ScoreLookup` trait so feature
@@ -98,9 +130,9 @@ impl Judges {
     /// Returns an error if the underlying operation fails.
     pub async fn agent_criterion_matrix(
         &self,
-        judge: &str,
-        since: u64,
+        query: AgentCriterionQuery<'_>,
     ) -> Result<Vec<AgentCriterionCell>, JudgeStoreError> {
+        let AgentCriterionQuery { judge, since } = query;
         let rows = sqlx::query(
             "SELECT agent_name, criterion, AVG(score) AS mean, COUNT(*) AS samples \
              FROM scores \
@@ -135,9 +167,9 @@ impl Judges {
     /// Returns an error if the underlying operation fails.
     pub async fn all_scores_since(
         &self,
-        since: u64,
-        limit: u32,
+        query: AllScoresQuery,
     ) -> Result<Vec<Score>, JudgeStoreError> {
+        let AllScoresQuery { limit, since } = query;
         let rows = sqlx::query(
             "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
              message_id, reasoning, score, user_id \
@@ -299,9 +331,9 @@ impl Judges {
     /// Returns an error if the underlying operation fails.
     pub async fn scores_for_judge(
         &self,
-        judge: &str,
-        limit: u32,
+        query: ScoresForJudge<'_>,
     ) -> Result<Vec<Score>, JudgeStoreError> {
+        let ScoresForJudge { judge, limit } = query;
         let rows = sqlx::query(
             "SELECT agent_name, created_at, criterion, id, judge_model, judge_name, \
              message_id, reasoning, score, user_id \
@@ -350,11 +382,8 @@ impl Judges {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn put_active_dynamic(
-        &self,
-        name: &str,
-        config: &JudgeConfig,
-    ) -> Result<(), JudgeStoreError> {
+    pub async fn put_active_dynamic(&self, row: ActiveJudgeRow<'_>) -> Result<(), JudgeStoreError> {
+        let ActiveJudgeRow { config, name } = row;
         let now = u64_to_i64(now_secs());
         let json = serde_json::to_string(config)
             .map_err(|e| JudgeStoreError::RowDecode(format!("serialize: {e}")))?;
@@ -408,11 +437,11 @@ impl Judges {
     /// Returns an error if the underlying operation fails.
     pub async fn rebuild_judges(
         &self,
-        list: &JudgeList,
-        yaml_judges: &[JudgeConfig],
+        rebuild: RebuildJudges<'_>,
     ) -> Result<MergeReport, JudgeStoreError> {
+        let RebuildJudges { list, yaml } = rebuild;
         let db = self.list_dynamic().await?;
-        let (merged, report) = merge(yaml_judges, &db);
+        let (merged, report) = merge(yaml, &db);
         let configs: Vec<JudgeConfig> = merged.into_iter().map(|m| m.config).collect();
         list.store(Arc::new(configs));
         Ok(report)

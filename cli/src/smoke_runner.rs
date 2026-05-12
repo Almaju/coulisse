@@ -23,8 +23,8 @@ use experiments::ResolveQuery;
 use judges::spawn_score;
 use providers::ProviderKind;
 use smoke::{
-    DispatchError, PersonaConfig, RunDispatcher, RunId, RunStatus, SmokeList, SmokeStore,
-    SmokeTestConfig,
+    AssistantTurn, DispatchError, FinishRun, PersonaConfig, PersonaTurn, Resolution, RunDispatcher,
+    RunId, RunStatus, SmokeList, SmokeStore, SmokeTestConfig,
 };
 use tracing::{Instrument, info_span};
 
@@ -68,8 +68,13 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
                     if let Err(err) = run_once(state, store.clone(), cfg, id).await {
                         let msg = err.to_string();
                         tracing::warn!(run = %id.0, error = %msg, "smoke run failed");
-                        if let Err(store_err) =
-                            store.finish_run(id, RunStatus::Failed, Some(&msg)).await
+                        if let Err(store_err) = store
+                            .finish_run(FinishRun {
+                                error: Some(&msg),
+                                run_id: id,
+                                status: RunStatus::Failed,
+                            })
+                            .await
                         {
                             tracing::warn!(error = %store_err, "failed to persist smoke failure");
                         }
@@ -102,7 +107,11 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
             persona_turn(&state, &config.persona, &messages).await?
         };
         store
-            .record_persona_turn(run_id, turn_index, &persona_text)
+            .record_persona_turn(PersonaTurn {
+                content: &persona_text,
+                run_id,
+                turn_index,
+            })
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
         messages.push(AgentMessage {
@@ -117,7 +126,11 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         let resolved = resolve_target(&state, &config.target, synthetic_user).await;
         if !resolved_recorded {
             store
-                .set_resolution(run_id, &resolved.agent, resolved.experiment.as_deref())
+                .set_resolution(Resolution {
+                    agent_resolved: &resolved.agent,
+                    experiment: resolved.experiment.as_deref(),
+                    run_id,
+                })
                 .await
                 .map_err(|e| RunError::Store(e.to_string()))?;
             resolved_recorded = true;
@@ -140,7 +153,12 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
             .await
             .map_err(|e| RunError::Agent(e.to_string()))?;
         store
-            .record_assistant_turn(run_id, turn_index, assistant_message_id, &completion.text)
+            .record_assistant_turn(AssistantTurn {
+                content: &completion.text,
+                message_id: assistant_message_id,
+                run_id,
+                turn_index,
+            })
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
         messages.push(AgentMessage {
@@ -168,7 +186,11 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
     }
 
     store
-        .finish_run(run_id, RunStatus::Completed, None)
+        .finish_run(FinishRun {
+            error: None,
+            run_id,
+            status: RunStatus::Completed,
+        })
         .await
         .map_err(|e| RunError::Store(e.to_string()))?;
     Ok(())

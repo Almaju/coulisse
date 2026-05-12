@@ -16,12 +16,12 @@ use axum::response::Redirect;
 use axum::routing::get;
 use coulisse_core::{AgentResolver, ScoreLookup};
 use experiments::{ExperimentResolver, ExperimentRouter, Experiments, RebuildExperiments};
-use judges::{Judge, JudgeConfig, Judges};
+use judges::{Judge, JudgeConfig, Judges, RebuildJudges};
 use limits::Tracker;
 use mcp::McpServers;
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
-use smoke::{RunDispatcher, SmokeStore};
+use smoke::{RebuildSmoke, RunDispatcher, SmokeStore};
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
 
@@ -208,13 +208,19 @@ async fn boot_stores(
     let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
     let report = judge_store
-        .rebuild_judges(&judges_list, &config.judges)
+        .rebuild_judges(RebuildJudges {
+            list: &judges_list,
+            yaml: &config.judges,
+        })
         .await?;
     log_judges_merge(&report);
 
     let smoke_store = Arc::new(SmokeStore::open(pool.clone()).await?);
     let report = smoke_store
-        .rebuild_smoke(&smoke_list, &config.smoke_tests)
+        .rebuild_smoke(RebuildSmoke {
+            list: &smoke_list,
+            yaml: &config.smoke_tests,
+        })
         .await?;
     log_smoke_merge(&report);
 
@@ -459,7 +465,12 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             );
             log_rebuild_failure(
                 "judges",
-                judge_store.rebuild_judges(&judges_list, &cfg.judges).await,
+                judge_store
+                    .rebuild_judges(RebuildJudges {
+                        list: &judges_list,
+                        yaml: &cfg.judges,
+                    })
+                    .await,
             );
             log_rebuild_failure(
                 "experiments",
@@ -473,7 +484,10 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             log_rebuild_failure(
                 "smoke",
                 smoke_store
-                    .rebuild_smoke(&smoke_list, &cfg.smoke_tests)
+                    .rebuild_smoke(RebuildSmoke {
+                        list: &smoke_list,
+                        yaml: &cfg.smoke_tests,
+                    })
                     .await,
             );
         })

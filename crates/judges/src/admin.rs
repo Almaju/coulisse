@@ -24,7 +24,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::merge::{AdminJudge, admin_view};
-use crate::{JudgeConfig, JudgeList, JudgeStoreError, Judges};
+use crate::{
+    ActiveJudgeRow, AgentCriterionQuery, JudgeConfig, JudgeList, JudgeStoreError, Judges,
+    RebuildJudges, ScoresForJudge,
+};
 use templates::{JudgeDetailPage, JudgeEditPage, JudgesPage, ScoresFragment, ScoresMeansFragment};
 use views::{JudgeDetailRow, JudgeListRow, ScoreRow, ScoreRowMean, ScoresPanel, build_matrix};
 
@@ -103,8 +106,20 @@ async fn judge_detail(
         };
     }
     let since = now_secs().saturating_sub(7 * 86_400);
-    let matrix_cells = state.store.agent_criterion_matrix(&name, since).await?;
-    let recent = state.store.scores_for_judge(&name, 20).await?;
+    let matrix_cells = state
+        .store
+        .agent_criterion_matrix(AgentCriterionQuery {
+            judge: &name,
+            since,
+        })
+        .await?;
+    let recent = state
+        .store
+        .scores_for_judge(ScoresForJudge {
+            judge: &name,
+            limit: 20,
+        })
+        .await?;
     let recent_scores: Vec<ScoreRow> = recent.into_iter().map(ScoreRow::from_score).collect();
     Ok(Html(
         JudgeDetailPage {
@@ -122,7 +137,13 @@ async fn create_judge(
     fmt: ResponseFormat,
     EitherFormOrJson(judge): EitherFormOrJson<JudgeConfig>,
 ) -> Result<Response, AdminError> {
-    state.store.put_active_dynamic(&judge.name, &judge).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveJudgeRow {
+            config: &judge,
+            name: &judge.name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(judge)).into_response());
@@ -142,7 +163,13 @@ async fn update_judge(
             judge.name
         )));
     }
-    state.store.put_active_dynamic(&name, &judge).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveJudgeRow {
+            config: &judge,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(judge).into_response());
@@ -245,7 +272,10 @@ async fn rebuild(state: &JudgesAdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_configs.load_full();
     state
         .store
-        .rebuild_judges(&state.runtime_configs, &yaml)
+        .rebuild_judges(RebuildJudges {
+            list: &state.runtime_configs,
+            yaml: &yaml,
+        })
         .await?;
     Ok(())
 }
