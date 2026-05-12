@@ -24,7 +24,7 @@ use axum::routing::{get, post};
 use coulisse_core::{EitherFormOrJson, ResponseFormat, redirect_to};
 
 use crate::merge::{AdminExperiment, admin_view};
-use crate::store::{Experiments, ExperimentsError};
+use crate::store::{ActiveExperimentRow, Experiments, ExperimentsError, RebuildExperiments};
 use crate::{ExperimentConfig, ExperimentList};
 use templates::{ExperimentEditPage, ExperimentsPage};
 use views::ExperimentRow;
@@ -103,7 +103,10 @@ async fn create(
 ) -> Result<Response, AdminError> {
     state
         .store
-        .put_active_dynamic(&experiment.name, &experiment)
+        .put_active_dynamic(ActiveExperimentRow {
+            config: &experiment,
+            name: &experiment.name,
+        })
         .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
@@ -124,7 +127,13 @@ async fn update(
             experiment.name
         )));
     }
-    state.store.put_active_dynamic(&name, &experiment).await?;
+    state
+        .store
+        .put_active_dynamic(ActiveExperimentRow {
+            config: &experiment,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(experiment).into_response());
@@ -227,7 +236,10 @@ async fn rebuild(state: &AdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_experiments.load_full();
     state
         .store
-        .rebuild(&state.runtime_experiments, &yaml)
+        .rebuild(RebuildExperiments {
+            list: &state.runtime_experiments,
+            yaml: &yaml,
+        })
         .await?;
     Ok(())
 }

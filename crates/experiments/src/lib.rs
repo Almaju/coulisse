@@ -23,4 +23,6 @@ pub use router::{
     BANDIT_DEFAULT_EPSILON, BANDIT_DEFAULT_MIN_SAMPLES, BANDIT_DEFAULT_WINDOW_SECONDS,
     ExperimentRouter, ResolveQuery, Resolved,
 };
-pub use store::{DynamicExperimentRow, Experiments, ExperimentsError};
+pub use store::{
+    ActiveExperimentRow, DynamicExperimentRow, Experiments, ExperimentsError, RebuildExperiments,
+};

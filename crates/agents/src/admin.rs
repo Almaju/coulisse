@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use coulisse_core::{EitherFormOrJson, ResponseFormat, redirect_to};
 
 use crate::merge::{AdminAgent, admin_view};
-use crate::store::{DynamicAgents, DynamicAgentsError};
+use crate::store::{ActiveAgentRow, DynamicAgents, DynamicAgentsError, RebuildAgents};
 use crate::{AgentConfig, AgentList};
 use templates::{AgentDetailPage, AgentEditPage, AgentsPage};
 use views::{AgentDetailRow, AgentRow};
@@ -94,7 +94,13 @@ async fn create(
     fmt: ResponseFormat,
     EitherFormOrJson(agent): EitherFormOrJson<AgentConfig>,
 ) -> Result<Response, AdminError> {
-    state.store.put_active(&agent.name, &agent).await?;
+    state
+        .store
+        .put_active(ActiveAgentRow {
+            config: &agent,
+            name: &agent.name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok((StatusCode::CREATED, Json(agent)).into_response());
@@ -114,7 +120,13 @@ async fn update(
             agent.name
         )));
     }
-    state.store.put_active(&name, &agent).await?;
+    state
+        .store
+        .put_active(ActiveAgentRow {
+            config: &agent,
+            name: &name,
+        })
+        .await?;
     rebuild(&state).await?;
     if matches!(fmt, ResponseFormat::Json) {
         return Ok(Json(agent).into_response());
@@ -208,7 +220,13 @@ async fn current_admin_view(state: &AdminState) -> Result<Vec<AdminAgent>, Admin
 
 async fn rebuild(state: &AdminState) -> Result<(), AdminError> {
     let yaml = state.yaml_agents.load_full();
-    state.store.rebuild(&state.runtime_agents, &yaml).await?;
+    state
+        .store
+        .rebuild(RebuildAgents {
+            list: &state.runtime_agents,
+            yaml: &yaml,
+        })
+        .await?;
     Ok(())
 }
 

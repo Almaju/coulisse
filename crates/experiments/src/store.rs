@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +16,20 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "experiments";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
+}
+
+/// Inputs to [`Experiments::put_active_dynamic`]: the addressable name
+/// and the override/DB-only config to write.
+pub struct ActiveExperimentRow<'a> {
+    pub config: &'a ExperimentConfig,
+    pub name: &'a str,
+}
+
+/// Inputs to [`Experiments::rebuild`]: the in-memory `ExperimentList` to
+/// atomically swap and the YAML-side slice to merge against the DB.
+pub struct RebuildExperiments<'a> {
+    pub list: &'a ExperimentList,
+    pub yaml: &'a [ExperimentConfig],
 }
 
 /// One row in `dynamic_experiments`. `config` is `Some` for active rows
@@ -74,9 +86,9 @@ impl Experiments {
     /// Returns an error if the underlying operation fails.
     pub async fn put_active_dynamic(
         &self,
-        name: &str,
-        config: &ExperimentConfig,
+        row: ActiveExperimentRow<'_>,
     ) -> Result<(), ExperimentsError> {
+        let ActiveExperimentRow { config, name } = row;
         let now = now_secs();
         let json = serde_json::to_string(config)
             .map_err(|e| ExperimentsError::Serialize(e.to_string()))?;
@@ -126,11 +138,11 @@ impl Experiments {
     /// Returns an error if the underlying operation fails.
     pub async fn rebuild(
         &self,
-        list: &ExperimentList,
-        yaml_experiments: &[ExperimentConfig],
+        rebuild: RebuildExperiments<'_>,
     ) -> Result<MergeReport, ExperimentsError> {
+        let RebuildExperiments { list, yaml } = rebuild;
         let db = self.list_dynamic().await?;
-        let (merged, report) = merge(yaml_experiments, &db);
+        let (merged, report) = merge(yaml, &db);
         let configs: Vec<ExperimentConfig> = merged.into_iter().map(|m| m.config).collect();
         list.store(Arc::new(configs));
         Ok(report)

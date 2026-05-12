@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agents::{Agents, BootConfig, DynamicAgents, RigAgents};
+use agents::{Agents, BootConfig, DynamicAgents, RebuildAgents, RigAgents};
 use arc_swap::ArcSwap;
 use auth::Auth;
 use axum::Router;
@@ -15,7 +15,7 @@ use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
 use coulisse_core::{AgentResolver, ScoreLookup};
-use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
+use experiments::{ExperimentResolver, ExperimentRouter, Experiments, RebuildExperiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::McpServers;
@@ -188,7 +188,12 @@ async fn boot_stores(
 
     let pool = memory::open_pool(&memory_config.backend).await?;
     let dynamic_agents = Arc::new(DynamicAgents::open(pool.clone()).await?);
-    let report = dynamic_agents.rebuild(&agents_list, &config.agents).await?;
+    let report = dynamic_agents
+        .rebuild(RebuildAgents {
+            list: &agents_list,
+            yaml: &config.agents,
+        })
+        .await?;
     log_agents_merge(&report);
 
     let memory = Arc::new(
@@ -215,7 +220,10 @@ async fn boot_stores(
 
     let experiments_store = Arc::new(Experiments::open(pool.clone()).await?);
     let report = experiments_store
-        .rebuild(&experiments_list, &config.experiments)
+        .rebuild(RebuildExperiments {
+            list: &experiments_list,
+            yaml: &config.experiments,
+        })
         .await?;
     log_experiments_merge(&report);
 
@@ -442,7 +450,12 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             }
             log_rebuild_failure(
                 "agents",
-                dynamic_agents.rebuild(&agents_list, &cfg.agents).await,
+                dynamic_agents
+                    .rebuild(RebuildAgents {
+                        list: &agents_list,
+                        yaml: &cfg.agents,
+                    })
+                    .await,
             );
             log_rebuild_failure(
                 "judges",
@@ -451,7 +464,10 @@ fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
             log_rebuild_failure(
                 "experiments",
                 experiments_store
-                    .rebuild(&experiments_list, &cfg.experiments)
+                    .rebuild(RebuildExperiments {
+                        list: &experiments_list,
+                        yaml: &cfg.experiments,
+                    })
                     .await,
             );
             log_rebuild_failure(
