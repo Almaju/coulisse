@@ -12,6 +12,7 @@ experiments: [ ... ]          # optional; A/B test groups over agents
 judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
 memory: { ... }               # optional; defaults to sqlite history, no long-term memory
+port: <int>                   # optional; defaults to 8421
 providers: { ... }            # required
 smoke_tests: [ ... ]          # optional; synthetic-user evaluation runs
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
@@ -75,6 +76,14 @@ auth:
 - **Purpose:** fallback identifier for requests that don't supply `safety_identifier` (or the deprecated `user`).
 
 Leave it unset for multi-tenant deployments — unidentified requests will be rejected. Set it to something like `"main"` for local or single-user setups so memory still works whether or not the client bothers to send an id. See [User identification](../configuration/user-id.md).
+
+## `port`
+
+- **Type:** integer (u16)
+- **Default:** `8421`
+- **Purpose:** HTTP port the proxy/admin server binds to.
+
+Useful when running multiple Coulisse instances against different `coulisse.yaml` files on the same machine — give each yaml its own port. The server always binds `0.0.0.0`.
 
 ## `providers`
 

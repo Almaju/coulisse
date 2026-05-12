@@ -53,7 +53,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = build_runtime(&config, &memory_config, &stores).await?;
     let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8421));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port.unwrap_or(8421)));
     print_banner(
         addr,
         &auth,

@@ -11,6 +11,8 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- Top-level `port:` field in `coulisse.yaml`. Defaults to 8421; set it to
+  run multiple Coulisse instances against different yamls on one machine.
 - Runtime overrides for agents, judges, experiments, and smoke tests. Each
   can now be created, edited, and disabled via the admin UI or HTTP without
   modifying `coulisse.yaml`. Runtime entries live in new `dynamic_agents`,

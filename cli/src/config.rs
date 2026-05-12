@@ -58,6 +58,11 @@ pub struct Config {
     /// local `SQLite` file.
     #[serde(default)]
     pub memory: MemoryYaml,
+    /// HTTP port the proxy/admin server binds to. Defaults to 8421. Useful
+    /// when running multiple Coulisse instances against different
+    /// `coulisse.yaml` files on the same machine.
+    #[serde(default)]
+    pub port: Option<u16>,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
     /// Synthetic-user evaluation tests. Each entry pairs a persona prompt
     /// with a target agent (or experiment); admin UI exposes a "Run now"
