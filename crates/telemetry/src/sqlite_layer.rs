@@ -417,7 +417,7 @@ impl Visit for FieldVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Sink;
+    use crate::{Sink, TurnQuery};
     use sqlx::sqlite::SqliteConnectOptions;
     use tracing::{Instrument, info_span};
     use tracing_subscriber::layer::SubscriberExt;
@@ -452,7 +452,13 @@ mod tests {
 
         guard.flush().await;
         let sink = Sink::open(pool).await.unwrap();
-        let events = sink.fetch_turn(user, turn).await.unwrap();
+        let events = sink
+            .fetch_turn(TurnQuery {
+                correlation_id: turn,
+                user_id: user,
+            })
+            .await
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload["agent"], "hello-agent");
         assert_eq!(events[0].payload["user_message"], "hi");
@@ -493,7 +499,13 @@ mod tests {
 
         guard.flush().await;
         let sink = Sink::open(pool).await.unwrap();
-        let events = sink.fetch_turn(user, turn).await.unwrap();
+        let events = sink
+            .fetch_turn(TurnQuery {
+                correlation_id: turn,
+                user_id: user,
+            })
+            .await
+            .unwrap();
         assert_eq!(events.len(), 2, "expected one turn + one tool_call event");
 
         let turn_evt = events

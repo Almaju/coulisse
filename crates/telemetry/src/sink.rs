@@ -1,7 +1,3 @@
-// WHY: telemetry insert functions take a flat event payload; bundling
-// into a struct duplicates the row shape. Deferred.
-#![allow(clippy::too_many_arguments)]
-
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{ToolCallKind, TurnId, UserId, i64_to_u32, u64_to_i64};
 use sqlx::Row;
@@ -35,6 +31,26 @@ pub struct ToolCallStats {
     pub user_count: u32,
 }
 
+/// Inputs to [`Sink::fetch_turn`]: identify a single turn for one user.
+pub struct TurnQuery {
+    pub correlation_id: TurnId,
+    pub user_id: UserId,
+}
+
+/// Inputs to [`Sink::recent_turns`]: which user to list turns for and
+/// the most-recent-first row cap.
+pub struct RecentTurnsQuery {
+    pub limit: u32,
+    pub user_id: UserId,
+}
+
+/// Inputs to [`Sink::tool_calls_for_tool`]: which tool to filter on and
+/// the most-recent-first row cap.
+pub struct ToolCallsForTool<'a> {
+    pub limit: u32,
+    pub tool_name: &'a str,
+}
+
 /// Read-only handle onto the telemetry tables. Writes flow exclusively
 /// through `SqliteLayer`, which mirrors `tracing` spans into the same
 /// `events` and `tool_calls` tables that this struct reads back for the
@@ -64,11 +80,11 @@ impl Sink {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn fetch_turn(
-        &self,
-        user_id: UserId,
-        correlation_id: TurnId,
-    ) -> Result<Vec<Event>, TelemetryError> {
+    pub async fn fetch_turn(&self, query: TurnQuery) -> Result<Vec<Event>, TelemetryError> {
+        let TurnQuery {
+            correlation_id,
+            user_id,
+        } = query;
         let rows = sqlx::query(
             "SELECT correlation_id, created_at, duration_ms, id, kind, parent_id, \
              payload, user_id FROM events \
@@ -115,9 +131,9 @@ impl Sink {
     /// Returns an error if the underlying operation fails.
     pub async fn recent_turns(
         &self,
-        user_id: UserId,
-        limit: u32,
+        query: RecentTurnsQuery,
     ) -> Result<Vec<TurnId>, TelemetryError> {
+        let RecentTurnsQuery { limit, user_id } = query;
         let rows = sqlx::query(
             "SELECT correlation_id, MAX(created_at) AS last_seen FROM events \
              WHERE user_id = ? \
@@ -193,9 +209,9 @@ impl Sink {
     /// Returns an error if the underlying operation fails.
     pub async fn tool_calls_for_tool(
         &self,
-        tool_name: &str,
-        limit: u32,
+        query: ToolCallsForTool<'_>,
     ) -> Result<Vec<ToolCall>, TelemetryError> {
+        let ToolCallsForTool { limit, tool_name } = query;
         let rows = sqlx::query(
             "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
              turn_id, user_id FROM tool_calls \
