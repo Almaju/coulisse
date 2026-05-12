@@ -35,4 +35,28 @@ disable = [
     # over if/else; the legitimate "silent fall-through" cases this
     # could catch are rare enough to be reviewed by eye.
     "no_if_else",
+
+    # `raw_primitive_field` / `raw_primitive_param` — CLAUDE.md is
+    # explicit about wrapping domain primitives in newtypes (UserId,
+    # MessageId, TurnId, RunId, MemoryId, EventId, ScoreId,
+    # TokenCount, ToolCallId all exist for this reason). But the
+    # rule fires on every raw `String`/`bool`/integer field across
+    # the codebase, including categories where newtypes add friction
+    # without runtime value:
+    #
+    #   - Admin view rows rendered by askama templates (`RunRow`,
+    #     `ScoreRow`, `EventRow`): display data, the template would
+    #     just unwrap the newtype.
+    #   - SQL row mirrors (`StoredRun`, `Event`, `ToolCall`): every
+    #     `bind()` / `try_get()` would need newtype glue layers; the
+    #     primitives ARE the table columns.
+    #   - OpenAI / rig wire schemas (`proxy::chat`, `providers`):
+    #     types defined by external specs.
+    #
+    # ~596 sites across 76 files; the cost of retrofitting outweighs
+    # the payoff. Disabled here; CLAUDE.md remains the cultural
+    # guidance for *new* code (newtype domain primitives at the seam
+    # they live behind).
+    "raw_primitive_field",
+    "raw_primitive_param",
 ]
