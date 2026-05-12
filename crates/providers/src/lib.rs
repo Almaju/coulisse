@@ -17,8 +17,8 @@ use rig::providers::{anthropic, cohere, deepseek, gemini, groq, openai};
 use serde::{Deserialize, Serialize};
 
 pub use conversation::{
-    CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, StreamEvent,
-    ToolCallKind, Usage,
+    CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, SendRequest,
+    StreamEvent, StreamRequest, ToolCallKind, Usage,
 };
 pub use pricing::{Cost, cost_for, warm as warm_pricing};
 

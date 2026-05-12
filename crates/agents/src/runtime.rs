@@ -12,7 +12,7 @@ use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, OneShotRequest, 
 use mcp::{McpServers, ToolsRequest};
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
-    ToolCallKind,
+    SendRequest, StreamRequest, ToolCallKind,
 };
 use rig::tool::ToolDyn;
 
@@ -234,7 +234,11 @@ impl AgentsInner {
         let (tools, _) = self.build_tools(&agent, depth, user_id)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         provider
-            .send(conversation, &agent.model, tools)
+            .send(SendRequest {
+                conversation,
+                model: &agent.model,
+                tools,
+            })
             .await
             .map_err(AgentsError::from)
     }
@@ -304,7 +308,12 @@ impl AgentsInner {
         let (tools, subagent_names) = self.build_tools(&agent, depth, user_id)?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         provider
-            .stream(conversation, &agent.model, tools, subagent_names)
+            .stream(StreamRequest {
+                conversation,
+                model: &agent.model,
+                subagent_names,
+                tools,
+            })
             .await
             .map_err(AgentsError::from)
     }
@@ -331,7 +340,11 @@ impl AgentsInner {
             })?;
         let conversation = Conversation::from_messages(messages, preamble)?;
         provider
-            .send(conversation, model, vec![])
+            .send(SendRequest {
+                conversation,
+                model,
+                tools: vec![],
+            })
             .await
             .map_err(AgentsError::from)
     }
