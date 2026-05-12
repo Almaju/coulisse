@@ -8,7 +8,8 @@ use serde::Deserialize;
 /// Top-level config. Every field is optional — a missing
 /// `telemetry:` block falls back to the documented defaults
 /// (fmt to stderr at info, sqlite enabled, no OTLP).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "TelemetryConfig")]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Stderr fmt layer. Defaults: enabled, level inherited from
@@ -24,7 +25,7 @@ pub struct Config {
     pub sqlite: SqliteConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct FmtConfig {
     pub enabled: bool,
@@ -36,7 +37,7 @@ impl Default for FmtConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SqliteConfig {
     pub enabled: bool,
@@ -50,7 +51,7 @@ impl Default for SqliteConfig {
 
 /// OTLP exporter knobs. Required when the operator wants to ship
 /// traces to their own observability stack.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OtlpConfig {
     /// Collector URL — e.g. `http://localhost:4317` for grpc,
@@ -73,7 +74,7 @@ fn default_service_name() -> String {
     "coulisse".to_string()
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, schemars::JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum OtlpProtocol {
     #[default]

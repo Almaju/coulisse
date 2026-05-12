@@ -29,6 +29,7 @@ nix.workspace = true
 notify.workspace = true
 providers.workspace = true
 proxy.workspace = true
+schemars.workspace = true
 self_update.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

@@ -5,7 +5,8 @@ use thiserror::Error;
 /// corresponding surface (`/v1/*` for `proxy`, `/admin/*` for `admin`) is
 /// served unauthenticated. Both scopes accept the same shape, so a single
 /// pair of credentials can guard both by repeating the block.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "AuthConfig")]
 pub struct Config {
     #[serde(default)]
     pub admin: Option<ScopeConfig>,
@@ -16,7 +17,7 @@ pub struct Config {
 /// One scope's auth method. Exactly one of `basic` or `oidc` must be set
 /// when the scope block is present — they are mutually exclusive so the
 /// server never has to choose between two competing session schemes.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct ScopeConfig {
     #[serde(default)]
     pub basic: Option<BasicConfig>,
@@ -27,7 +28,7 @@ pub struct ScopeConfig {
 /// Static HTTP Basic credentials. Appropriate for local dev or a
 /// single-operator deployment. Browsers prompt via the native login
 /// dialog; no session state.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct BasicConfig {
     pub password: String,
     #[serde(default = "default_username")]
@@ -38,7 +39,7 @@ pub struct BasicConfig {
 /// Authentik, Keycloak, Auth0, Google, Microsoft, Okta. Access control
 /// (who may use the surface) is delegated to the `IdP`'s application
 /// bindings, not configured here.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct OidcConfig {
     pub client_id: String,
     /// Optional for public clients that use PKCE only. Authentik's default

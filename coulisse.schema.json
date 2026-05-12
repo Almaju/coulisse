@@ -1,0 +1,876 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "type": "object",
+  "required": [
+    "agents",
+    "providers"
+  ],
+  "properties": {
+    "agents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AgentConfig"
+      }
+    },
+    "auth": {
+      "description": "Authentication for the OpenAI-compatible `/v1/*` proxy and the `/admin/*` (studio) surfaces. Each scope is independent: omit a scope to leave it unauthenticated (fine for local dev, never for anything exposed beyond loopback).",
+      "allOf": [
+        {
+          "$ref": "#/definitions/AuthConfig"
+        }
+      ]
+    },
+    "default_user_id": {
+      "description": "Fallback user identifier for requests that don't carry a `safety_identifier` (or the deprecated `user` field). Unset means every request must supply its own identifier — appropriate for multi-tenant deployments. Set to e.g. `\"main\"` for single-user or local-dev setups so behavior stays identical whether or not the client bothers to send an id; the same memory bucket is used.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "experiments": {
+      "description": "A/B test groups that wrap one or more agents under a single addressable name. Clients send the experiment name as the `model` field; the router picks a variant per request (sticky-by-user by default). Experiment names share the agent namespace — collisions are rejected at config load.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ExperimentConfig"
+      }
+    },
+    "judges": {
+      "description": "LLM-as-judge evaluators. Each agent opts in by listing judge names in its own `judges:` array — omit here (or on the agent) to skip evaluation entirely.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/JudgeConfig"
+      }
+    },
+    "mcp": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/McpServerConfig"
+      }
+    },
+    "memory": {
+      "description": "Memory subsystem config. Two pillars: `storage` (where data lives) and `user_state` (long-term per-user memory; off by default). Omit the whole block for sensible defaults — history-only on a local `SQLite` file.",
+      "default": {
+        "storage": null,
+        "user_state": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/MemoryYaml"
+        }
+      ]
+    },
+    "port": {
+      "description": "HTTP port the proxy/admin server binds to. Defaults to 8421. Useful when running multiple Coulisse instances against different `coulisse.yaml` files on the same machine.",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint16",
+      "minimum": 0.0
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/ProviderConfig"
+      }
+    },
+    "smoke_tests": {
+      "description": "Synthetic-user evaluation tests. Each entry pairs a persona prompt with a target agent (or experiment); admin UI exposes a \"Run now\" button that drives the conversation, persists every turn, and fans the assistant turns out to the configured judges. Useful for iterating on agent prompts and comparing experiment variants.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SmokeTestConfig"
+      }
+    },
+    "telemetry": {
+      "description": "Observability wiring: stderr fmt logs (always on by default), `SQLite` mirror that drives the studio UI (on by default), and an optional OpenTelemetry OTLP exporter for shipping traces to Grafana / `SigNoz` / Jaeger / etc.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/TelemetryConfig"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "AgentConfig": {
+      "type": "object",
+      "required": [
+        "model",
+        "name",
+        "provider"
+      ],
+      "properties": {
+        "judges": {
+          "description": "Names of judges (defined at the top level under `judges:`) that should evaluate this agent's replies. Empty = no automatic evaluation.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mcp_tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/McpToolAccess"
+          }
+        },
+        "model": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "preamble": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderKind"
+        },
+        "purpose": {
+          "description": "Short description used as the tool description when this agent is exposed to other agents via `subagents:`. If absent, the agent's `name` is used as a fallback — but clear prose here helps the caller LLM decide when to invoke this agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subagents": {
+          "description": "Other agents exposed to this agent as tools. Names must match entries in the top-level `agents:` list. Self-reference is rejected; duplicate entries are rejected. Calling a subagent runs a fresh conversation against that agent's preamble + MCP tools; the subagent's final message is returned as the tool result.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "McpToolAccess": {
+      "type": "object",
+      "required": [
+        "server"
+      ],
+      "properties": {
+        "only": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "server": {
+          "type": "string"
+        }
+      }
+    },
+    "ProviderKind": {
+      "type": "string",
+      "enum": [
+        "anthropic",
+        "cohere",
+        "deepseek",
+        "gemini",
+        "groq",
+        "openai"
+      ]
+    },
+    "AuthConfig": {
+      "description": "Two-scope auth configuration. Each scope is optional: unset means the corresponding surface (`/v1/*` for `proxy`, `/admin/*` for `admin`) is served unauthenticated. Both scopes accept the same shape, so a single pair of credentials can guard both by repeating the block.",
+      "type": "object",
+      "properties": {
+        "admin": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScopeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proxy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScopeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ScopeConfig": {
+      "description": "One scope's auth method. Exactly one of `basic` or `oidc` must be set when the scope block is present — they are mutually exclusive so the server never has to choose between two competing session schemes.",
+      "type": "object",
+      "properties": {
+        "basic": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BasicConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "oidc": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OidcConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "BasicConfig": {
+      "description": "Static HTTP Basic credentials. Appropriate for local dev or a single-operator deployment. Browsers prompt via the native login dialog; no session state.",
+      "type": "object",
+      "required": [
+        "password"
+      ],
+      "properties": {
+        "password": {
+          "type": "string"
+        },
+        "username": {
+          "default": "admin",
+          "type": "string"
+        }
+      }
+    },
+    "OidcConfig": {
+      "description": "OIDC (`OpenID` Connect) login. Validated against any compliant `IdP` — Authentik, Keycloak, Auth0, Google, Microsoft, Okta. Access control (who may use the surface) is delegated to the `IdP`'s application bindings, not configured here.",
+      "type": "object",
+      "required": [
+        "client_id",
+        "issuer_url",
+        "redirect_url"
+      ],
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "description": "Optional for public clients that use PKCE only. Authentik's default \"confidential\" client type requires a secret.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "issuer_url": {
+          "description": "OIDC issuer URL. For Authentik, typically `https://authentik.example.com/application/o/<app-slug>/`.",
+          "type": "string"
+        },
+        "redirect_url": {
+          "description": "Absolute URL the `IdP` will redirect to after login. Must be whitelisted in the `IdP`'s client config and match a route served by Coulisse inside the protected scope.",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "Additional `OAuth2` scopes beyond the implicit `openid`. Defaults to `profile` and `email`.",
+          "default": [
+            "email",
+            "profile"
+          ],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ExperimentConfig": {
+      "description": "One A/B test group. The `name` is addressable as a `model` value and resolves to one of the `variants` per request.",
+      "type": "object",
+      "required": [
+        "name",
+        "strategy",
+        "variants"
+      ],
+      "properties": {
+        "bandit_window_seconds": {
+          "description": "Bandit-only. Maximum age of scores included in mean-arm computations, in seconds. Older rows are ignored. Defaults to 7 days.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "epsilon": {
+          "description": "Bandit-only. Probability in `[0.0, 1.0]` of routing to a random arm instead of the leader. Defaults to `0.1`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "metric": {
+          "description": "Bandit-only. `judge.criterion` to use as the optimisation metric. The named judge must declare the criterion in its rubrics, and every variant must opt into the judge.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "min_samples": {
+          "description": "Bandit-only. Each arm must accumulate at least this many scores before exploitation kicks in. Until then, the arm is forced. Defaults to 30.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "name": {
+          "description": "Name clients address as `model`. Must not collide with any agent name and must not collide with another experiment name.",
+          "type": "string"
+        },
+        "primary": {
+          "description": "Shadow-only. Required: the variant agent that serves the user. Other variants run in the background.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose": {
+          "description": "Optional tool description when this experiment is exposed via another agent's `subagents:`. Treated like an agent's `purpose`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sampling_rate": {
+          "description": "Shadow-only. Probability in `[0.0, 1.0]` that any given turn also runs the non-primary variants in the background. Defaults to `1.0` (every turn).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "sticky_by_user": {
+          "description": "When true (the default), the same user always hits the same variant of this experiment. The mapping is a deterministic hash of `(user_id, experiment_name)` modulo the cumulative weights — no DB writes, stable across restarts. Adding or removing a variant reshuffles users. For bandit, sticky still applies per-decision, but mean scores update over time so a user may shift if a different arm overtakes the leader.",
+          "default": true,
+          "type": "boolean"
+        },
+        "strategy": {
+          "$ref": "#/definitions/Strategy"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Variant"
+          }
+        }
+      }
+    },
+    "Strategy": {
+      "description": "How requests are dispatched across an experiment's variants.",
+      "oneOf": [
+        {
+          "description": "Epsilon-greedy: read recent mean scores per arm, exploit the leader with `1 - epsilon` probability and explore otherwise. Arms with fewer than `min_samples` scores are forced (explored).",
+          "type": "string",
+          "enum": [
+            "bandit"
+          ]
+        },
+        {
+          "description": "`primary` serves the user; the other variants run in the background and are scored. Cost-bounded by `sampling_rate`.",
+          "type": "string",
+          "enum": [
+            "shadow"
+          ]
+        },
+        {
+          "description": "Weighted random sampling (sticky-by-user when enabled).",
+          "type": "string",
+          "enum": [
+            "split"
+          ]
+        }
+      ]
+    },
+    "Variant": {
+      "type": "object",
+      "required": [
+        "agent"
+      ],
+      "properties": {
+        "agent": {
+          "description": "Name of an agent declared under top-level `agents:`. Variants must reference concrete agents; nesting experiments is rejected.",
+          "type": "string"
+        },
+        "weight": {
+          "description": "Relative weight for `split`/`bandit` sampling. Must be > 0; the router normalises against the sum of all variant weights.",
+          "default": 1.0,
+          "type": "number",
+          "format": "float"
+        }
+      }
+    },
+    "JudgeConfig": {
+      "description": "Runtime config for one LLM-as-judge evaluator. A judge runs in a background task after each assistant turn of agents that reference it, sampling at `sampling_rate`, and produces one `Score` row per criterion in `rubrics`.\n\nThe user only describes *what* to evaluate; Coulisse builds the judge preamble and forces JSON output internally — users should not write scale or format instructions into their rubrics.",
+      "type": "object",
+      "required": [
+        "model",
+        "name",
+        "provider"
+      ],
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "rubrics": {
+          "description": "Map of criterion name → short description of what to assess. Each criterion produces one score per scored turn. `BTreeMap` gives deterministic, alphabetical order in the judge preamble.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "sampling_rate": {
+          "description": "Probability in [0, 1] that any given assistant turn is scored. 1.0 = every turn, 0.1 = ~10% of turns. Defaults to 1.0.",
+          "default": 1.0,
+          "type": "number",
+          "format": "float"
+        }
+      }
+    },
+    "McpServerConfig": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "transport",
+            "url"
+          ],
+          "properties": {
+            "transport": {
+              "type": "string",
+              "enum": [
+                "http"
+              ]
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "command",
+            "transport"
+          ],
+          "properties": {
+            "transport": {
+              "type": "string",
+              "enum": [
+                "stdio"
+              ]
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "command": {
+              "type": "string"
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "MemoryYaml": {
+      "description": "User-facing YAML shape for the `memory:` block. Two pillars:\n\n- `storage` — where the `SQLite` database lives (path, or `:memory:` for ephemeral). - `user_state` — long-term, per-user facts and preferences. Off by default; `user_state: true` enables it with auto-derived defaults; an explicit struct lets advanced users override the embedder, the extraction model, and recall/dedup tuning.\n\nResolved into a [`MemoryConfig`] by the orchestrator (cli) before being handed to [`Store::open`]. Resolution looks at the configured `providers:` map to fill in any auto-derived choices.",
+      "type": "object",
+      "properties": {
+        "storage": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user_state": {
+          "default": false,
+          "allOf": [
+            {
+              "$ref": "#/definitions/UserStateYaml"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "UserStateYaml": {
+      "description": "Three forms accepted in YAML for `user_state`:\n\n- `user_state: false` (or absent) — long-term memory is off entirely. No extraction, no recall, no embedder calls. - `user_state: true` — enabled with auto-derived defaults. - `user_state: { learn_from: ..., embed_with: ..., ... }` — enabled with explicit overrides.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/UserStateConfig"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "UserStateConfig": {
+      "description": "Explicit overrides for long-term user state. Every field is optional — resolution fills in the rest from sensible defaults.",
+      "type": "object",
+      "properties": {
+        "dedup_threshold": {
+          "description": "Cosine similarity threshold above which an extracted fact is considered a duplicate of an existing memory. Defaults to 0.9. Advanced.",
+          "default": null,
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "embed_with": {
+          "description": "Embedder used to vectorize facts for recall and dedup. Auto-picked from the configured providers when unset.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EmbedderYaml"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "learn_from": {
+          "description": "Model that decides what's worth remembering after each exchange. Auto-picked from the configured providers when unset.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProviderModel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_facts_per_turn": {
+          "description": "Cap on facts written per exchange. Defaults to 5. Advanced.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "recall_k": {
+          "description": "Number of memories recalled per request. Defaults to 5. Advanced.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "EmbedderYaml": {
+      "description": "Embedder override. Mirrors [`EmbedderConfig`] but lives on the YAML side so the resolved type can stay free of optional fields.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "hash"
+              ]
+            },
+            "dims": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0.0
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "openai"
+              ]
+            },
+            "api_key": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "voyage"
+              ]
+            },
+            "api_key": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ProviderModel": {
+      "description": "Generic `{provider, model}` pair used by overrides.",
+      "type": "object",
+      "required": [
+        "model",
+        "provider"
+      ],
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderConfig": {
+      "type": "object",
+      "required": [
+        "api_key"
+      ],
+      "properties": {
+        "api_key": {
+          "type": "string"
+        }
+      }
+    },
+    "SmokeTestConfig": {
+      "description": "One smoke test: a synthetic-user persona that drives a conversation against an agent (or experiment) for evaluation. Each repetition uses a fresh synthetic `user_id`, so split/bandit experiments sample variants naturally across reps.",
+      "type": "object",
+      "required": [
+        "name",
+        "persona",
+        "target"
+      ],
+      "properties": {
+        "initial_message": {
+          "description": "Optional opening message from the synthetic user. When omitted, the persona produces the first turn itself from its preamble.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_turns": {
+          "description": "Hard ceiling on persona-then-agent turn pairs. Stops the loop even if no `stop_marker` appears.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        },
+        "persona": {
+          "$ref": "#/definitions/PersonaConfig"
+        },
+        "repetitions": {
+          "description": "How many independent runs to launch when the test is triggered. Each run gets its own synthetic `user_id`.",
+          "default": 1,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "stop_marker": {
+          "description": "If either side emits this substring, the run terminates after recording that turn. Useful for personas that signal \"I have what I needed\" with a sentinel like `[FIN]`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "Agent or experiment name to evaluate. Resolved through the experiment router at run time, so a target of `\"my_exp\"` will pick a variant per run.",
+          "type": "string"
+        }
+      }
+    },
+    "PersonaConfig": {
+      "type": "object",
+      "required": [
+        "model",
+        "preamble",
+        "provider"
+      ],
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "preamble": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        }
+      }
+    },
+    "TelemetryConfig": {
+      "description": "Top-level config. Every field is optional — a missing `telemetry:` block falls back to the documented defaults (fmt to stderr at info, sqlite enabled, no OTLP).",
+      "type": "object",
+      "properties": {
+        "fmt": {
+          "description": "Stderr fmt layer. Defaults: enabled, level inherited from `RUST_LOG` if set, otherwise `info,sqlx=warn`.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/FmtConfig"
+            }
+          ]
+        },
+        "otlp": {
+          "description": "OpenTelemetry OTLP exporter. Absent (the default) = no external traces shipped. Set `endpoint` to point at a Grafana, `SigNoz`, Jaeger or any OTLP-compatible collector.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OtlpConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sqlite": {
+          "description": "`SQLite` layer that mirrors spans into the `events` and `tool_calls` tables for the studio UI. Defaults: enabled. Disable only if you don't need the studio's per-turn event tree.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SqliteConfig"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FmtConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OtlpConfig": {
+      "description": "OTLP exporter knobs. Required when the operator wants to ship traces to their own observability stack.",
+      "type": "object",
+      "required": [
+        "endpoint"
+      ],
+      "properties": {
+        "endpoint": {
+          "description": "Collector URL — e.g. `http://localhost:4317` for grpc, `http://localhost:4318/v1/traces` for http/protobuf.",
+          "type": "string"
+        },
+        "headers": {
+          "description": "Static headers (e.g. `authorization: Bearer ...`) attached to every export request. Useful for managed backends like `SigNoz` Cloud or Honeycomb.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "protocol": {
+          "description": "Wire protocol. Defaults to `grpc` (port 4317).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OtlpProtocol"
+            }
+          ]
+        },
+        "service_name": {
+          "description": "Resource attribute `service.name`. Defaults to `coulisse`.",
+          "default": "coulisse",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OtlpProtocol": {
+      "type": "string",
+      "enum": [
+        "grpc",
+        "httpbinary"
+      ]
+    },
+    "SqliteConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

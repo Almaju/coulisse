@@ -22,7 +22,7 @@ pub use conversation::{
 };
 pub use pricing::{Cost, cost_for, warm as warm_pricing};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, schemars::JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Anthropic,
@@ -66,7 +66,7 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct ProviderConfig {
     pub api_key: String,
 }

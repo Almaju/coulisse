@@ -29,17 +29,20 @@ jobs:
         with:
           tool: cargo-sort-derives
 
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+      - name: Install cargo-dylint + dylint-link
+        run: cargo install cargo-dylint dylint-link --locked
+
+      - name: Install cargo-oneway
+        run: cargo install cargo-oneway --git https://github.com/Almaju/oneway
+
+      - name: cargo oneway (fmt --check + clippy + oneway-lints)
+        run: cargo oneway
 
       - name: cargo sort-derives --check
         run: cargo sort-derives --check
 
       - name: cargo machete
         run: cargo machete --with-metadata
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
         run: cargo test --all --locked

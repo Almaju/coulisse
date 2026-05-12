@@ -48,7 +48,7 @@ Preview the book locally with `mdbook serve docs --port 4421`. Port 3000 is avoi
 
 # Pre-commit hook
 
-The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test`. A commit fails if any of them does.
+The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo oneway` (rustfmt check + clippy + oneway-lints via dylint), `cargo sort-derives --check`, `cargo machete`, and `cargo test`. A commit fails if any of them does.
 
 Enable it in each clone with:
 

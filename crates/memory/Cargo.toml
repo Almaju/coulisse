@@ -10,6 +10,7 @@ axum.workspace = true
 coulisse-core.workspace = true
 reqwest = { version = "0.13", default-features = false }
 rig-core.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sqlx.workspace = true

@@ -72,6 +72,25 @@ coulisse check
 # ok — coulisse.yaml (3 agents, 1 judges, 0 experiments, 2 providers)
 ```
 
+## `coulisse schema`
+
+Emit the JSON Schema for `coulisse.yaml` to stdout. Redirect to a file
+next to your config and reference it for IDE autocompletion and
+validation:
+
+```bash
+coulisse schema > coulisse.schema.json
+```
+
+```yaml
+# yaml-language-server: $schema=./coulisse.schema.json
+```
+
+Picked up by the VS Code YAML extension, Helix, Neovim, Zed, JetBrains —
+anything that speaks the yaml-language-server directive. The schema is
+generated from the same Rust types that parse the config, so it never
+drifts.
+
 ## `coulisse update`
 
 Fetch the latest release from GitHub and replace the running binary

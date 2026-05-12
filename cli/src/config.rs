@@ -21,7 +21,7 @@ use smoke::SmokeTestConfig;
 use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct Config {
     pub agents: Vec<AgentConfig>,
     /// Authentication for the OpenAI-compatible `/v1/*` proxy and the

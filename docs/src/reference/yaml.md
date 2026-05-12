@@ -2,6 +2,22 @@
 
 A complete reference for every field in `coulisse.yaml`.
 
+## IDE autocompletion and validation
+
+Coulisse derives a JSON Schema from the Rust types that parse the YAML, so your editor can autocomplete and lint the config live. Generate the schema next to your config:
+
+```sh
+coulisse schema > coulisse.schema.json
+```
+
+Then reference it from the top of `coulisse.yaml` with the [yaml-language-server](https://github.com/redhat-developer/yaml-language-server) directive (recognised by the VS Code YAML extension, Helix, Neovim, Zed, JetBrains, etc.):
+
+```yaml
+# yaml-language-server: $schema=./coulisse.schema.json
+```
+
+The schema is also shipped at the repo root as `coulisse.schema.json` and is the single source of truth for the field tables below — they describe the same shape in prose.
+
 ## Top-level
 
 ```yaml

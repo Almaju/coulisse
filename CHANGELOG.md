@@ -11,6 +11,12 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- `coulisse schema` subcommand emits a JSON Schema for `coulisse.yaml`
+  derived from the Rust types via `schemars`. The repo ships
+  `coulisse.schema.json` at the root; reference it from the top of your
+  yaml with `# yaml-language-server: $schema=./coulisse.schema.json` for
+  IDE autocompletion and validation (VS Code YAML extension, Helix,
+  Neovim, Zed, JetBrains).
 - Top-level `port:` field in `coulisse.yaml`. Defaults to 8421; set it to
   run multiple Coulisse instances against different yamls on one machine.
 - Runtime overrides for agents, judges, experiments, and smoke tests. Each

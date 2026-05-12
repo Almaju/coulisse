@@ -9,6 +9,7 @@ axum.workspace = true
 axum-oidc = "0.6"
 base64 = "0.22"
 http = "1"
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 time = "0.3"

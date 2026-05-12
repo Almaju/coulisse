@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// One A/B test group. The `name` is addressable as a `model` value and
 /// resolves to one of the `variants` per request.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct ExperimentConfig {
     /// Bandit-only. Maximum age of scores included in mean-arm
     /// computations, in seconds. Older rows are ignored. Defaults to 7
@@ -60,7 +60,7 @@ fn default_sticky_by_user() -> bool {
 }
 
 /// How requests are dispatched across an experiment's variants.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, schemars::JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Strategy {
     /// Epsilon-greedy: read recent mean scores per arm, exploit the
@@ -74,7 +74,7 @@ pub enum Strategy {
     Split,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct Variant {
     /// Name of an agent declared under top-level `agents:`. Variants must
     /// reference concrete agents; nesting experiments is rejected.

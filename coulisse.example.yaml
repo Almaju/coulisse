@@ -1,5 +1,7 @@
+# yaml-language-server: $schema=./coulisse.schema.json
 # Copy to coulisse.yaml and fill in the values.
 # Supported providers: anthropic, cohere, deepseek, gemini, groq, openai
+# Regenerate the schema with `coulisse schema > coulisse.schema.json`.
 
 # Fallback user identifier for requests that don't supply `safety_identifier`
 # (or the deprecated `user` field). Leave unset for multi-tenant deployments

@@ -44,6 +44,7 @@ notify = "8"
 oxilangtag = "0.1"
 proxy = { path = "crates/proxy" }
 rig-core = { version = "0.35", features = ["rmcp"] }
+schemars = { version = "0.8", features = ["preserve_order"] }
 rmcp = { version = "1", features = [
     "client",
     "reqwest",
@@ -85,17 +86,3 @@ unimplemented = "deny"
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-# dylint integration. `just lint` runs `cargo dylint --all` which builds
-# the libraries listed below and applies them to the workspace. The
-# oneway-lints crate enforces the "one way to write it" rules — sorted
-# fields/variants/match arms, no .unwrap() outside tests, newtype-first,
-# etc. See https://github.com/Almaju/oneway/tree/main/oneway-lints.
-#
-# Pointed at a local sibling checkout so changes to the lint rules can be
-# iterated on without push/pull. Swap back to a git source (with a pinned
-# rev) before publishing.
-[workspace.metadata.dylint]
-libraries = [
-    { path = "../oneway/oneway-lints" },
-]

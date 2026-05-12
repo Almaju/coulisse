@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use coulisse::commands::{check, init, restart, serve, start, status, stop, update};
+use coulisse::commands::{check, init, restart, schema, serve, start, status, stop, update};
 
 const DEFAULT_CONFIG: &str = "coulisse.yaml";
 
@@ -38,6 +38,11 @@ enum Command {
     },
     /// Restart the running server (stop, then start detached).
     Restart,
+    /// Emit the JSON Schema for `coulisse.yaml` to stdout. Redirect to
+    /// `coulisse.schema.json` next to your config and reference it via
+    /// `# yaml-language-server: $schema=./coulisse.schema.json` for IDE
+    /// autocomplete and validation.
+    Schema,
     /// Start the server, detached. Use --foreground to run attached.
     Start {
         /// Internal: marker that we are the re-spawned detached child.
@@ -79,6 +84,7 @@ fn main() -> ExitCode {
         )
         .map_err(std::convert::Into::into),
         Some(Command::Restart) => restart::run(&config),
+        Some(Command::Schema) => schema::run(),
         Some(Command::Start {
             detached_child,
             foreground,

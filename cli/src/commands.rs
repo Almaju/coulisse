@@ -6,6 +6,7 @@
 pub mod check;
 pub mod init;
 pub mod restart;
+pub mod schema;
 pub mod serve;
 pub mod start;
 pub mod status;

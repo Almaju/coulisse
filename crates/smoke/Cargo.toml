@@ -9,6 +9,7 @@ arc-swap.workspace = true
 askama.workspace = true
 axum.workspace = true
 coulisse-core.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true

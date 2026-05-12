@@ -114,11 +114,20 @@ Then open <http://localhost:4421>.
 
 ## Contributing
 
-The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test`. Enable it once per clone:
+The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo oneway` (rustfmt check + clippy + oneway-lints via dylint), `cargo sort-derives --check`, `cargo machete`, and `cargo test`. Enable it once per clone:
 
 ```bash
 git config core.hooksPath .githooks
 ```
+
+Install the lint toolchain (one-time):
+
+```bash
+cargo install cargo-dylint dylint-link --locked
+cargo install cargo-oneway --git https://github.com/Almaju/oneway
+```
+
+Or run `just install`, which installs the dev tools (cargo-watch, mdbook, cargo-dylint, dylint-link, cargo-oneway) in one go.
 
 ## License
 

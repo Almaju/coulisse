@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// The user only describes *what* to evaluate; Coulisse builds the judge
 /// preamble and forces JSON output internally — users should not write scale
 /// or format instructions into their rubrics.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct JudgeConfig {
     pub model: String,
     pub name: String,

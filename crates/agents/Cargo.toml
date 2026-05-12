@@ -13,6 +13,7 @@ coulisse-core.workspace = true
 mcp.workspace = true
 providers.workspace = true
 rig-core.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
