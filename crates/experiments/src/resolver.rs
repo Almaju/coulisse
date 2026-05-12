@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use coulisse_core::{AgentResolver, ResolveRequest, ScoreLookup, ScoreQuery};
 
-use crate::ExperimentRouter;
+use crate::{ExperimentRouter, ResolveQuery};
 
 /// Composes `ExperimentRouter` with an optional `ScoreLookup` to satisfy
 /// the `AgentResolver` trait. Agents holds an `Arc<dyn AgentResolver>` —
@@ -50,7 +50,11 @@ impl AgentResolver for ExperimentResolver {
             } else {
                 Vec::new()
             };
-            let resolved = self.router.resolve_with_scores(name, user_id, &scores);
+            let resolved = self.router.resolve(ResolveQuery {
+                name,
+                scores: &scores,
+                user_id,
+            });
             resolved.agent.into_owned()
         })
     }

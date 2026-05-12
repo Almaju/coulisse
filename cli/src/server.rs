@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use coulisse_core::{OneShotPrompt, ScoreQuery};
-use experiments::{ExperimentRouter, Strategy};
+use experiments::{ExperimentRouter, ResolveQuery, Strategy};
 use judges::{Judge, Judges, spawn_score};
 use limits::{CheckRequest, RecordUsage, RequestLimits, Tracker};
 use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, UserId};
@@ -163,10 +163,11 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(
             .await
             .unwrap_or_default(),
     };
-    let resolved =
-        state
-            .experiments
-            .resolve_with_scores(&request.model, prepared.user_id, &bandit_scores);
+    let resolved = state.experiments.resolve(ResolveQuery {
+        name: &request.model,
+        scores: &bandit_scores,
+        user_id: prepared.user_id,
+    });
     let agent_name = resolved.agent.clone().into_owned();
     let experiment_name = resolved.experiment.map(str::to_owned);
 

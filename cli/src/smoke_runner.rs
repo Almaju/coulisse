@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use agents::{Agents, CompletionRequest, Message as AgentMessage, PromptInput, Role as AgentRole};
 use coulisse_core::{MessageId, OneShotPrompt, ScoreQuery, UserId};
+use experiments::ResolveQuery;
 use judges::spawn_score;
 use providers::ProviderKind;
 use smoke::{
@@ -195,9 +196,11 @@ async fn resolve_target<P: Agents + OneShotPrompt>(
             .await
             .unwrap_or_default(),
     };
-    let resolved = state
-        .experiments
-        .resolve_with_scores(target, user_id, &bandit_scores);
+    let resolved = state.experiments.resolve(ResolveQuery {
+        name: target,
+        scores: &bandit_scores,
+        user_id,
+    });
     ResolvedTarget {
         agent: resolved.agent.into_owned(),
         experiment: resolved.experiment.map(std::borrow::ToOwned::to_owned),

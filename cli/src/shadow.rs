@@ -34,7 +34,7 @@ pub fn spawn_shadow_runs<P: Agents + OneShotPrompt + 'static>(
     user_message: &str,
     messages: &[AgentMessage],
 ) {
-    if !state.experiments.shadow_should_sample(experiment, user_id) {
+    if !experiment.shadow_should_sample(user_id) {
         return;
     }
     let variants: Vec<String> = state
