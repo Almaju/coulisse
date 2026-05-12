@@ -18,4 +18,12 @@ disable = [
     # codebase should NOT have `TodoController`/`TodoService` shaped
     # types. The rule pushes in the opposite direction.
     "no_self_orchestration",
+
+    # `second primary public type in this file` — wants every public
+    # type in its own file (Java-style). Idiomatic Rust groups
+    # closely-related types together (error enums next to the struct
+    # they describe, request/response pairs, sibling variants), and
+    # CLAUDE.md does not require one-type-per-file. Splitting ~191
+    # sites into ~150 new files would dilute cohesion without payoff.
+    "one_public_type_per_file",
 ]

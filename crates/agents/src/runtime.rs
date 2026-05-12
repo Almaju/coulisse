@@ -83,6 +83,7 @@ pub(crate) struct DispatchContext<'a> {
 
 /// Args to the private `AgentsInner::build_tools` helper. Bundled
 /// purely so the helper stays at `self + 1 arg`.
+#[derive(Clone, Copy)]
 struct BuildToolsArgs<'a> {
     agent: &'a AgentConfig,
     depth: usize,

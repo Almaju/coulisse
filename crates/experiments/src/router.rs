@@ -23,6 +23,7 @@ pub const BANDIT_DEFAULT_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Inputs to [`ExperimentRouter::resolve`]. `scores` is empty for callers
 /// without bandit data on hand — non-bandit strategies ignore it, and
 /// bandits then force exploration uniformly.
+#[derive(Clone, Copy)]
 pub struct ResolveQuery<'a> {
     pub name: &'a str,
     pub scores: &'a [AgentScoreSummary],
@@ -179,6 +180,7 @@ fn seed_to_unit_f32(seed: u64) -> f32 {
 
 /// Inputs threaded through the per-strategy pickers. Bundled so each
 /// picker stays at one argument and shares the same shape.
+#[derive(Clone, Copy)]
 struct PickContext<'a> {
     experiment: &'a ExperimentConfig,
     scores: &'a [AgentScoreSummary],

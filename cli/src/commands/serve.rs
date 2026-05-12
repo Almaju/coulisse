@@ -383,6 +383,7 @@ fn build_proxy_state(inputs: ProxyStateInputs<'_>) -> Arc<AppState<RigAgents>> {
     })
 }
 
+#[derive(Clone, Copy)]
 struct BannerInputs<'a> {
     addr: SocketAddr,
     auth: &'a Auth,

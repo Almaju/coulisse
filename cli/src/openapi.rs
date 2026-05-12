@@ -326,6 +326,7 @@ fn config_endpoint() -> Value {
     })
 }
 
+#[derive(Clone, Copy)]
 struct ItemSpec<'a> {
     label: &'a str,
     schema_name: &'a str,

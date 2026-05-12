@@ -199,6 +199,7 @@ impl Banner<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct SectionHeader<'a> {
     count: usize,
     name: &'a str,

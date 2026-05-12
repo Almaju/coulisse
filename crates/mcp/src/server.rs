@@ -13,6 +13,7 @@ use crate::error::McpError;
 /// Tools-resolution input for [`McpServers::tools_for`]: the agent doing
 /// the lookup (used only in error messages so config pointers remain
 /// readable) and its `mcp_tools:` access list.
+#[derive(Clone, Copy)]
 pub struct ToolsRequest<'a> {
     pub accesses: &'a [McpToolAccess],
     pub agent: &'a str,

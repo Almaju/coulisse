@@ -88,6 +88,16 @@ pub(crate) struct LlmCallRecord<'a, P: Agents + OneShotPrompt> {
     pub usage: providers::Usage,
 }
 
+// WHY: manual `Copy`/`Clone` because the auto-derive would require
+// `P: Copy`, which `RigAgents`/`ScriptedAgents` aren't — but the struct
+// only holds a `&AppState<P>`, so Copy is sound regardless.
+impl<P: Agents + OneShotPrompt> Clone for LlmCallRecord<'_, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<P: Agents + OneShotPrompt> Copy for LlmCallRecord<'_, P> {}
+
 pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(record: LlmCallRecord<'_, P>) {
     let LlmCallRecord {
         agent_name,
@@ -234,6 +244,7 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(inputs: RoutingInputs<'_, P>
     }
 }
 
+#[derive(Clone, Copy)]
 struct TurnSpanInputs<'a> {
     agent_name: &'a str,
     experiment_name: Option<&'a str>,

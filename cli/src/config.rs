@@ -461,6 +461,7 @@ fn reject_bandit_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError
 /// A single "this field belongs to strategy X" rejection rule. Threaded
 /// through [`reject_shadow_fields`] / [`reject_bandit_fields`] so each
 /// validation step stays at one arg.
+#[derive(Clone, Copy)]
 struct FieldRule<'a> {
     experiment: &'a ExperimentConfig,
     field: &'static str,
