@@ -81,12 +81,20 @@ pub(crate) fn judges_for_agent<P: Agents + OneShotPrompt>(
 /// the telemetry layer's `on_close` hook to mirror into the `events`
 /// table. Pricing misses (model not in the vendored `LiteLLM` table) leave
 /// `cost_usd` empty rather than failing the request.
-pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    agent_name: &str,
-    usage: providers::Usage,
-    turn_span: &Span,
-) {
+pub(crate) struct LlmCallRecord<'a, P: Agents + OneShotPrompt> {
+    pub agent_name: &'a str,
+    pub state: &'a AppState<P>,
+    pub turn_span: &'a Span,
+    pub usage: providers::Usage,
+}
+
+pub(crate) fn record_llm_call<P: Agents + OneShotPrompt>(record: LlmCallRecord<'_, P>) {
+    let LlmCallRecord {
+        agent_name,
+        state,
+        turn_span,
+        usage,
+    } = record;
     let snapshot = state.agents.agents();
     let Some(agent) = snapshot.iter().find(|a| a.name == agent_name) else {
         return;
@@ -111,12 +119,22 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
     let mut prepared = prepare_request(&state, &request).await?;
-    let routing = resolve_routing(&state, &request, &prepared).await;
+    let routing = resolve_routing(RoutingInputs {
+        prepared: &prepared,
+        request: &request,
+        state: &state,
+    })
+    .await;
 
     if request.is_streaming() {
-        return Ok(stream_response(state, request, prepared, routing)
-            .await?
-            .into_response());
+        return Ok(stream_response(StreamInputs {
+            prepared,
+            request,
+            routing,
+            state,
+        })
+        .await?
+        .into_response());
     }
 
     let messages = std::mem::take(&mut prepared.messages);
@@ -129,7 +147,13 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         })
         .instrument(routing.turn_span.clone())
         .await?;
-    finalize_non_streaming(&state, &prepared, &routing, &completion).await?;
+    finalize_non_streaming(FinalizeInputs {
+        completion: &completion,
+        prepared: &prepared,
+        routing: &routing,
+        state: &state,
+    })
+    .await?;
 
     let usage = proxy::Usage::new(
         completion.usage.input_tokens,
@@ -149,11 +173,18 @@ struct Routing {
     turn_span: Span,
 }
 
-async fn resolve_routing<P: Agents + OneShotPrompt>(
-    state: &Arc<AppState<P>>,
-    request: &ChatCompletionRequest,
-    prepared: &PreparedRequest,
-) -> Routing {
+struct RoutingInputs<'a, P: Agents + OneShotPrompt> {
+    prepared: &'a PreparedRequest,
+    request: &'a ChatCompletionRequest,
+    state: &'a Arc<AppState<P>>,
+}
+
+async fn resolve_routing<P: Agents + OneShotPrompt>(inputs: RoutingInputs<'_, P>) -> Routing {
+    let RoutingInputs {
+        prepared,
+        request,
+        state,
+    } = inputs;
     let bandit_scores = match state.experiments.bandit_query(&request.model) {
         None => Vec::new(),
         Some((judge, criterion, since)) => state
@@ -179,7 +210,12 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(
     // identifier.
     let assistant_message_id = MessageId::new();
     let turn_id = TurnId(assistant_message_id.0);
-    let turn_span = build_turn_span(&agent_name, experiment_name.as_deref(), turn_id, prepared);
+    let turn_span = build_turn_span(TurnSpanInputs {
+        agent_name: &agent_name,
+        experiment_name: experiment_name.as_deref(),
+        prepared,
+        turn_id,
+    });
 
     // WHY: clone inputs for shadow variants so they run against the same
     // context the primary consumed. No-op for non-shadow strategies.
@@ -198,12 +234,20 @@ async fn resolve_routing<P: Agents + OneShotPrompt>(
     }
 }
 
-fn build_turn_span(
-    agent_name: &str,
-    experiment_name: Option<&str>,
+struct TurnSpanInputs<'a> {
+    agent_name: &'a str,
+    experiment_name: Option<&'a str>,
+    prepared: &'a PreparedRequest,
     turn_id: TurnId,
-    prepared: &PreparedRequest,
-) -> Span {
+}
+
+fn build_turn_span(inputs: TurnSpanInputs<'_>) -> Span {
+    let TurnSpanInputs {
+        agent_name,
+        experiment_name,
+        prepared,
+        turn_id,
+    } = inputs;
     if let Some(experiment) = experiment_name {
         info_span!(
             "turn",
@@ -224,17 +268,27 @@ fn build_turn_span(
     }
 }
 
-async fn stream_response<P: Agents + OneShotPrompt + 'static>(
-    state: Arc<AppState<P>>,
-    request: ChatCompletionRequest,
+struct StreamInputs<P: Agents + OneShotPrompt> {
     prepared: PreparedRequest,
+    request: ChatCompletionRequest,
     routing: Routing,
+    state: Arc<AppState<P>>,
+}
+
+async fn stream_response<P: Agents + OneShotPrompt + 'static>(
+    inputs: StreamInputs<P>,
 ) -> Result<
     axum::response::sse::Sse<
         impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
     >,
     ApiError,
 > {
+    let StreamInputs {
+        prepared,
+        request,
+        routing,
+        state,
+    } = inputs;
     if let Some((experiment, messages)) = routing.shadow_inputs {
         spawn_shadow_runs(
             &state,
@@ -268,12 +322,22 @@ async fn stream_response<P: Agents + OneShotPrompt + 'static>(
     }))
 }
 
+struct FinalizeInputs<'a, P: Agents + OneShotPrompt> {
+    completion: &'a agents::Completion,
+    prepared: &'a PreparedRequest,
+    routing: &'a Routing,
+    state: &'a Arc<AppState<P>>,
+}
+
 async fn finalize_non_streaming<P: Agents + OneShotPrompt + 'static>(
-    state: &Arc<AppState<P>>,
-    prepared: &PreparedRequest,
-    routing: &Routing,
-    completion: &agents::Completion,
+    inputs: FinalizeInputs<'_, P>,
 ) -> Result<(), ApiError> {
+    let FinalizeInputs {
+        completion,
+        prepared,
+        routing,
+        state,
+    } = inputs;
     if let Some((experiment, messages)) = routing.shadow_inputs.as_ref() {
         spawn_shadow_runs(
             state,
@@ -294,12 +358,12 @@ async fn finalize_non_streaming<P: Agents + OneShotPrompt + 'static>(
     {
         eprintln!("rate limit record failed: {err}");
     }
-    record_llm_call(
+    record_llm_call(LlmCallRecord {
+        agent_name: &routing.agent_name,
         state,
-        &routing.agent_name,
-        completion.usage,
-        &routing.turn_span,
-    );
+        turn_span: &routing.turn_span,
+        usage: completion.usage,
+    });
 
     let um = state.memory.for_user(prepared.user_id);
     um.append_message(AppendMessage {

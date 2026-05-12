@@ -1,12 +1,7 @@
-// WHY: cli is the orchestrator and threads ~10 collaborators (state,
-// stores, agents, telemetry, judges, etc.) through every entry point.
-// Bundling those into a request-context struct touches every call
-// site of every entry point; deferred to a focused refactor.
-#![allow(clippy::too_many_arguments)]
 // WHY: cli is the boot path + glue layer. Per CLAUDE.md, `unwrap`/
-// `expect` are acceptable at startup, on Mutex poisoning (which means
-// the holder already panicked, so propagating is right), and on
-// serializing a known-good struct to JSON. These cases dominate cli.
+// `expect` are acceptable at startup, on Mutex poisoning (the holder
+// already panicked, so propagating is right), and on serializing a
+// known-good struct to JSON. These cases dominate cli.
 #![allow(clippy::expect_used)]
 #![allow(clippy::unwrap_used)]
 

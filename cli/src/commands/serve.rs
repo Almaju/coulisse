@@ -28,7 +28,7 @@ use tokio::net::TcpListener;
 use crate::admin::shell as admin_shell;
 use crate::banner::Banner;
 use crate::config::Config;
-use crate::config_store::ConfigStore;
+use crate::config_store::{ConfigStore, ConfigStoreInit};
 use crate::memory_resolve;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
@@ -50,19 +50,27 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let memory_summary = memory_summary(&memory_config);
     let stores = boot_stores(&config, &memory_config).await?;
     let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
-    let runtime = build_runtime(&config, &memory_config, &stores).await?;
-    let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
+    let runtime = build_runtime(RuntimeInputs {
+        config: &config,
+        memory_config: &memory_config,
+        stores: &stores,
+    })
+    .await?;
+    let proxy_state = build_proxy_state(ProxyStateInputs {
+        default_user_id,
+        runtime,
+        stores: &stores,
+    });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port.unwrap_or(8421)));
-    print_banner(
+    print_banner(BannerInputs {
         addr,
-        &auth,
-        &config,
-        &memory_config,
-        &stores,
-        &proxy_state,
-        &memory_summary,
-    );
+        auth: &auth,
+        memory_config: &memory_config,
+        memory_summary: &memory_summary,
+        proxy_state: &proxy_state,
+        stores: &stores,
+    });
 
     // NOTE: lift names that the wiring blocks below still reference.
     let Stores {
@@ -105,7 +113,11 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
     let config_path_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| PathBuf::from(config_path));
-    let config_store = Arc::new(ConfigStore::new(config_path_abs, config.clone(), on_reload));
+    let config_store = Arc::new(ConfigStore::new(ConfigStoreInit {
+        initial: config.clone(),
+        on_reload,
+        path: config_path_abs,
+    }));
     let _watcher_guard = config_store.spawn_watcher()?;
 
     let admin_router = auth.wrap_admin(build_admin_router(AdminWiring {
@@ -302,11 +314,18 @@ struct Runtime {
     tracker: Tracker,
 }
 
-async fn build_runtime(
-    config: &Config,
-    memory_config: &MemoryConfig,
-    stores: &Stores,
-) -> Result<Runtime, Box<dyn std::error::Error>> {
+struct RuntimeInputs<'a> {
+    config: &'a Config,
+    memory_config: &'a MemoryConfig,
+    stores: &'a Stores,
+}
+
+async fn build_runtime(inputs: RuntimeInputs<'_>) -> Result<Runtime, Box<dyn std::error::Error>> {
+    let RuntimeInputs {
+        config,
+        memory_config,
+        stores,
+    } = inputs;
     // NOTE: build runtime Judge objects from the merged list (DB shadows +
     // YAML) so DB-only judges are usable from the moment they're created.
     // The HashMap itself is rebuilt only at boot — runtime hot-reload of
@@ -340,11 +359,18 @@ async fn build_runtime(
     })
 }
 
-fn build_proxy_state(
+struct ProxyStateInputs<'a> {
     default_user_id: Option<UserId>,
-    stores: &Stores,
     runtime: Runtime,
-) -> Arc<AppState<RigAgents>> {
+    stores: &'a Stores,
+}
+
+fn build_proxy_state(inputs: ProxyStateInputs<'_>) -> Arc<AppState<RigAgents>> {
+    let ProxyStateInputs {
+        default_user_id,
+        runtime,
+        stores,
+    } = inputs;
     Arc::new(AppState {
         agents: runtime.prompter,
         default_user_id,
@@ -357,15 +383,24 @@ fn build_proxy_state(
     })
 }
 
-fn print_banner(
+struct BannerInputs<'a> {
     addr: SocketAddr,
-    auth: &Auth,
-    _config: &Config,
-    memory_config: &MemoryConfig,
-    stores: &Stores,
-    proxy_state: &AppState<RigAgents>,
-    memory_summary: &str,
-) {
+    auth: &'a Auth,
+    memory_config: &'a MemoryConfig,
+    memory_summary: &'a str,
+    proxy_state: &'a AppState<RigAgents>,
+    stores: &'a Stores,
+}
+
+fn print_banner(inputs: BannerInputs<'_>) {
+    let BannerInputs {
+        addr,
+        auth,
+        memory_config,
+        memory_summary,
+        proxy_state,
+        stores,
+    } = inputs;
     let agent_snapshot = proxy_state.agents.agents();
     let judges_snapshot = stores.judges_list.load();
     let experiments_snapshot = stores.experiments_list.load();

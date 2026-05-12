@@ -1,3 +1,7 @@
+// WHY: axum handler arity is dictated by the framework's extractors —
+// same treatment as every other admin-handler module in the workspace.
+#![allow(clippy::too_many_arguments)]
+
 //! Cli-owned admin endpoints for sections that don't have a feature
 //! crate admin module today: providers and MCP servers. Same shape as
 //! the per-feature admin routers — content negotiation, JSON/YAML/form

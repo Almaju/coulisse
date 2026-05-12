@@ -59,8 +59,20 @@ pub struct ConfigStore {
     write_lock: Mutex<()>,
 }
 
+pub struct ConfigStoreInit {
+    pub initial: Config,
+    pub on_reload: OnReload,
+    pub path: PathBuf,
+}
+
 impl ConfigStore {
-    pub fn new(path: PathBuf, initial: Config, on_reload: OnReload) -> Self {
+    #[must_use]
+    pub fn new(init: ConfigStoreInit) -> Self {
+        let ConfigStoreInit {
+            initial,
+            on_reload,
+            path,
+        } = init;
         Self {
             on_reload,
             path,

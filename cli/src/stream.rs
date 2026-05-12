@@ -14,7 +14,7 @@ use tracing::{Instrument, Span};
 
 use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
 
-use crate::server::{AppState, judges_for_agent, record_llm_call};
+use crate::server::{AppState, LlmCallRecord, judges_for_agent, record_llm_call};
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
 /// the rest of the per-request state (user id, tracker key, user message)
@@ -180,7 +180,12 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                 {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
-                record_llm_call(&state, &agent_name, usage, &llm_call_span);
+                record_llm_call(LlmCallRecord {
+                    agent_name: &agent_name,
+                    state: &state,
+                    turn_span: &llm_call_span,
+                    usage,
+                });
                 let um = state.memory.for_user(user_id);
                 if let Err(err) = um
                     .append_message(AppendMessage {
@@ -246,13 +251,19 @@ struct StreamMeta {
     model: String,
 }
 
+struct ChunkInputs {
+    delta: ChunkDelta,
+    finish_reason: Option<FinishReason>,
+    usage: Option<Usage>,
+}
+
 impl StreamMeta {
-    fn chunk(
-        &self,
-        delta: ChunkDelta,
-        finish_reason: Option<FinishReason>,
-        usage: Option<Usage>,
-    ) -> Event {
+    fn chunk(&self, inputs: ChunkInputs) -> Event {
+        let ChunkInputs {
+            delta,
+            finish_reason,
+            usage,
+        } = inputs;
         Event::default()
             .json_data(&ChatCompletionChunk {
                 choices: vec![ChunkChoice {
@@ -270,14 +281,14 @@ impl StreamMeta {
     }
 
     fn content_event(&self, text: &str) -> Event {
-        self.chunk(
-            ChunkDelta {
+        self.chunk(ChunkInputs {
+            delta: ChunkDelta {
                 content: Some(text.to_string()),
                 role: None,
             },
-            None,
-            None,
-        )
+            finish_reason: None,
+            usage: None,
+        })
     }
 
     /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
@@ -302,18 +313,22 @@ impl StreamMeta {
     }
 
     fn role_event(&self) -> Event {
-        self.chunk(
-            ChunkDelta {
+        self.chunk(ChunkInputs {
+            delta: ChunkDelta {
                 content: None,
                 role: Some(Role::Assistant),
             },
-            None,
-            None,
-        )
+            finish_reason: None,
+            usage: None,
+        })
     }
 
     fn stop_event(&self, usage: Option<Usage>) -> Event {
-        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
+        self.chunk(ChunkInputs {
+            delta: ChunkDelta::default(),
+            finish_reason: Some(FinishReason::Stop),
+            usage,
+        })
     }
 }
 

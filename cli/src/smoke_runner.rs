@@ -65,7 +65,14 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
                 let store = Arc::clone(&self.store);
                 let cfg = config.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = run_once(state, store.clone(), cfg, id).await {
+                    if let Err(err) = run_once(RunOnce {
+                        config: cfg,
+                        run_id: id,
+                        state,
+                        store: store.clone(),
+                    })
+                    .await
+                    {
                         let msg = err.to_string();
                         tracing::warn!(run = %id.0, error = %msg, "smoke run failed");
                         if let Err(store_err) = store
@@ -88,12 +95,20 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
 
 /// One synthetic conversation. Errors bubble up so the spawn wrapper
 /// can mark the run failed; success paths mark it completed inline.
-async fn run_once<P: Agents + OneShotPrompt + 'static>(
-    state: Arc<AppState<P>>,
-    store: Arc<SmokeStore>,
+struct RunOnce<P: Agents + OneShotPrompt> {
     config: SmokeTestConfig,
     run_id: RunId,
-) -> Result<(), RunError> {
+    state: Arc<AppState<P>>,
+    store: Arc<SmokeStore>,
+}
+
+async fn run_once<P: Agents + OneShotPrompt + 'static>(inputs: RunOnce<P>) -> Result<(), RunError> {
+    let RunOnce {
+        config,
+        run_id,
+        state,
+        store,
+    } = inputs;
     let synthetic_user = UserId::new();
     let mut messages: Vec<AgentMessage> = Vec::new();
     let mut resolved_recorded = false;
@@ -104,7 +119,12 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         {
             initial.clone()
         } else {
-            persona_turn(&state, &config.persona, &messages).await?
+            persona_turn(PersonaTurnInputs {
+                history: &messages,
+                persona: &config.persona,
+                state: &state,
+            })
+            .await?
         };
         store
             .record_persona_turn(PersonaTurn {
@@ -123,7 +143,12 @@ async fn run_once<P: Agents + OneShotPrompt + 'static>(
         }
 
         let assistant_message_id = MessageId::new();
-        let resolved = resolve_target(&state, &config.target, synthetic_user).await;
+        let resolved = resolve_target(ResolveTarget {
+            state: &state,
+            target: &config.target,
+            user_id: synthetic_user,
+        })
+        .await;
         if !resolved_recorded {
             store
                 .set_resolution(Resolution {
@@ -201,11 +226,18 @@ struct ResolvedTarget {
     experiment: Option<String>,
 }
 
-async fn resolve_target<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    target: &str,
+struct ResolveTarget<'a, P: Agents + OneShotPrompt> {
+    state: &'a AppState<P>,
+    target: &'a str,
     user_id: UserId,
-) -> ResolvedTarget {
+}
+
+async fn resolve_target<P: Agents + OneShotPrompt>(inputs: ResolveTarget<'_, P>) -> ResolvedTarget {
+    let ResolveTarget {
+        state,
+        target,
+        user_id,
+    } = inputs;
     let bandit_scores = match state.experiments.bandit_query(target) {
         None => Vec::new(),
         Some((judge, criterion, since)) => state
@@ -236,11 +268,20 @@ async fn resolve_target<P: Agents + OneShotPrompt>(
 /// user. Uses the unconfigured `prompt_with` path so the persona has
 /// no MCP tools, no subagents, no preamble merging — just its own
 /// system prompt.
+struct PersonaTurnInputs<'a, P: Agents + OneShotPrompt> {
+    history: &'a [AgentMessage],
+    persona: &'a PersonaConfig,
+    state: &'a AppState<P>,
+}
+
 async fn persona_turn<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    persona: &PersonaConfig,
-    history: &[AgentMessage],
+    inputs: PersonaTurnInputs<'_, P>,
 ) -> Result<String, RunError> {
+    let PersonaTurnInputs {
+        history,
+        persona,
+        state,
+    } = inputs;
     let provider = ProviderKind::parse(&persona.provider).ok_or_else(|| {
         RunError::Persona(format!("unknown persona provider '{}'", persona.provider))
     })?;
