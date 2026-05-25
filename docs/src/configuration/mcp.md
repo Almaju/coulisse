@@ -47,6 +47,35 @@ mcp:
 - `transport: http`
 - `url` (required) — the endpoint URL
 
+## Per-user OAuth (optional)
+
+MCP servers that require user-delegated credentials (Jira, GitHub, Google Drive, etc.)
+can be configured with an `oauth:` block. Coulisse will handle the authorization flow
+and inject each user's token automatically at call time.
+
+```yaml
+mcp:
+  github:
+    transport: stdio
+    command: uvx
+    args: [github-mcp-server]
+    oauth:
+      authorization_url: https://github.com/login/oauth/authorize
+      client_id: "${GH_CLIENT_ID}"
+      client_secret: "${GH_CLIENT_SECRET}"
+      redirect_uri: https://coulisse.example.com/mcp/github/oauth/callback
+      scopes: [repo, read:user]
+      token_url: https://github.com/login/oauth/access_token
+```
+
+Required `oauth:` fields: `authorization_url`, `client_id`, `client_secret`, `redirect_uri`,
+`token_url`. Missing any of these at startup is a fatal error. Also requires
+`auth.mcp_consumer_secret` in the `auth:` block, plus the `COULISSE_VAULT_KEY` and
+`COULISSE_HMAC_KEY` environment variables.
+
+See [Per-user OAuth for MCP](../features/mcp-oauth.md) for the full flow, required
+environment variables, and the security trust-model warning.
+
 ## Granting tool access to agents
 
 An agent only sees tools you explicitly give it. Reference the server name under `mcp_tools`:
@@ -71,7 +100,7 @@ Restrict to a subset with `only`:
 
 ## Discovering tool names
 
-On startup Coulisse connects to each MCP server and logs the tools it discovered. Tool names in your `only` list must match what the server advertises — check the startup output or the server's own docs.
+On startup Coulisse connects to each non-OAuth MCP server and logs the tools it discovered. OAuth-enabled servers connect per-user on first use. Tool names in your `only` list must match what the server advertises — check the startup output or the server's own docs.
 
 ## How tool calls work
 
@@ -80,7 +109,7 @@ When a request arrives for an agent with tools:
 1. Coulisse collects the agent's allowed tools from the MCP servers.
 2. It forwards them to the model as tool definitions.
 3. If the model calls a tool, Coulisse dispatches to the MCP server and feeds the result back.
-4. This loops until the model produces a final answer (up to 8 turns).
+4. This loops until the model produces a final answer (up to 8 turns by default, configurable via the agent's `max_turns` field).
 
 Your client doesn't see any of this — the tool loop is invisible, and only the final assistant message is returned.
 
