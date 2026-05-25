@@ -8,12 +8,8 @@ pub enum McpError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("failed to decrypt token for server '{server}': {source}")]
-    Decrypt {
-        server: String,
-        #[source]
-        source: aes_gcm::Error,
-    },
+    #[error("failed to decrypt token for server '{server}': {err}")]
+    Decrypt { server: String, err: aes_gcm::Error },
     #[error("failed to list tools for MCP server '{server}': {source}")]
     ListTools {
         server: String,
@@ -48,12 +44,8 @@ pub enum McpError {
         #[source]
         source: reqwest::Error,
     },
-    #[error("failed to encrypt token for server '{server}': {source}")]
-    Encrypt {
-        server: String,
-        #[source]
-        source: aes_gcm::Error,
-    },
+    #[error("failed to encrypt token for server '{server}': {err}")]
+    Encrypt { server: String, err: aes_gcm::Error },
     #[error("vault key is invalid base64 or wrong length (must be 32 bytes base64-encoded)")]
     VaultKeyInvalid,
 }

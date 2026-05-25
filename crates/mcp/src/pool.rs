@@ -176,11 +176,7 @@ pub(crate) struct NotConnectedTool {
 
 impl NotConnectedTool {
     pub(crate) fn new(server: &str, tool: rmcp::model::Tool, _user_id: &str) -> Self {
-        let params = tool
-            .input_schema
-            .as_ref()
-            .and_then(|s| serde_json::to_value(s).ok())
-            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+        let params = tool.schema_as_json_value();
         let message = format!(
             "Not connected: the user has not authorized access to the '{server}' MCP server. \
              Ask them to visit the connect URL to link their account."
@@ -218,12 +214,11 @@ mod tests {
 
     #[tokio::test]
     async fn not_connected_tool_returns_message() {
-        let tool = rmcp::model::Tool {
-            name: "do_thing".into(),
-            description: Some("does a thing".into()),
-            input_schema: None,
-            annotations: None,
-        };
+        let tool = rmcp::model::Tool::new_with_raw(
+            "do_thing".to_string(),
+            Some("does a thing".into()),
+            Arc::new(serde_json::Map::new()),
+        );
         let nct = NotConnectedTool::new("github", tool, "user-1");
         assert_eq!(nct.name(), "do_thing");
         let result = nct.call("{}".to_string()).await.unwrap();

@@ -151,11 +151,12 @@ impl McpServers {
                             None => vec![],
                             Some(names) => names
                                 .iter()
-                                .map(|n| rmcp::model::Tool {
-                                    name: n.as_str().into(),
-                                    description: None,
-                                    input_schema: None,
-                                    annotations: None,
+                                .map(|n| {
+                                    rmcp::model::Tool::new_with_raw(
+                                        n.clone(),
+                                        None,
+                                        Arc::new(serde_json::Map::new()),
+                                    )
                                 })
                                 .collect(),
                         };

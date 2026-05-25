@@ -65,9 +65,9 @@ impl TokenVault {
         let ciphertext = self
             .cipher
             .encrypt(&nonce, plaintext.as_bytes())
-            .map_err(|source| McpError::Encrypt {
+            .map_err(|err| McpError::Encrypt {
                 server: server.to_string(),
-                source,
+                err,
             })?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&ciphertext);
@@ -78,7 +78,7 @@ impl TokenVault {
         if blob.len() < 12 {
             return Err(McpError::Decrypt {
                 server: server.to_string(),
-                source: aes_gcm::Error,
+                err: aes_gcm::Error,
             });
         }
         let (nonce_bytes, ciphertext) = blob.split_at(12);
@@ -86,13 +86,13 @@ impl TokenVault {
         let plaintext =
             self.cipher
                 .decrypt(nonce, ciphertext)
-                .map_err(|source| McpError::Decrypt {
+                .map_err(|err| McpError::Decrypt {
                     server: server.to_string(),
-                    source,
+                    err,
                 })?;
         String::from_utf8(plaintext).map_err(|_| McpError::Decrypt {
             server: server.to_string(),
-            source: aes_gcm::Error,
+            err: aes_gcm::Error,
         })
     }
 

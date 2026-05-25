@@ -19,7 +19,7 @@ use axum::routing::get;
 use coulisse_core::{
     ConfigPersistError, ConfigPersister, EitherFormOrJson, ResponseFormat, redirect_to,
 };
-use mcp::McpServerConfig;
+use mcp::{McpServerConfig, McpTransport};
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
 
@@ -418,9 +418,9 @@ async fn persist_mcp(
 }
 
 fn mcp_summary(server: &McpServerConfig) -> String {
-    match server {
-        McpServerConfig::Http { url } => format!("http · {url}"),
-        McpServerConfig::Stdio { command, args, .. } => {
+    match &server.transport {
+        McpTransport::Http { url } => format!("http · {url}"),
+        McpTransport::Stdio { command, args, .. } => {
             if args.is_empty() {
                 format!("stdio · {command}")
             } else {

@@ -774,6 +774,7 @@ impl ExpandError {
     }
 }
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
 
@@ -1583,8 +1584,10 @@ mcp:
     #[test]
     fn mcp_oauth_missing_vault_key_is_rejected() {
         // Ensure COULISSE_VAULT_KEY is not set for this test.
-        std::env::remove_var("COULISSE_VAULT_KEY");
-        std::env::remove_var("COULISSE_HMAC_KEY");
+        unsafe {
+            std::env::remove_var("COULISSE_VAULT_KEY");
+            std::env::remove_var("COULISSE_HMAC_KEY");
+        }
         let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
         match config.validate() {
             Err(ConfigError::McpOAuthMissingVaultKey) => {}
@@ -1594,11 +1597,15 @@ mcp:
 
     #[test]
     fn mcp_oauth_missing_hmac_key_is_rejected() {
-        std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
-        std::env::remove_var("COULISSE_HMAC_KEY");
+        unsafe {
+            std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+            std::env::remove_var("COULISSE_HMAC_KEY");
+        }
         let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
         let result = config.validate();
-        std::env::remove_var("COULISSE_VAULT_KEY");
+        unsafe {
+            std::env::remove_var("COULISSE_VAULT_KEY");
+        }
         match result {
             Err(ConfigError::McpOAuthMissingHmacKey) => {}
             other => panic!("expected McpOAuthMissingHmacKey, got {other:?}"),
@@ -1607,9 +1614,11 @@ mcp:
 
     #[test]
     fn mcp_oauth_blank_field_is_rejected() {
-        std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
-        std::env::set_var("COULISSE_HMAC_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
-        let yaml = r"
+        unsafe {
+            std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+            std::env::set_var("COULISSE_HMAC_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+        }
+        let yaml = r#"
 providers:
   openai:
     api_key: test
@@ -1629,11 +1638,13 @@ mcp:
       client_secret: client-secret
       redirect_uri: https://coulisse.example.com/mcp/jira/oauth/callback
       token_url: https://auth.example.com/oauth/token
-";
+"#;
         let config: Config = serde_yaml::from_str(yaml).expect("parses");
         let result = config.validate();
-        std::env::remove_var("COULISSE_VAULT_KEY");
-        std::env::remove_var("COULISSE_HMAC_KEY");
+        unsafe {
+            std::env::remove_var("COULISSE_VAULT_KEY");
+            std::env::remove_var("COULISSE_HMAC_KEY");
+        }
         match result {
             Err(ConfigError::McpOAuthBlankField { field, server }) => {
                 assert_eq!(field, "authorization_url");
