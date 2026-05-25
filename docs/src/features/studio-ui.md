@@ -2,7 +2,7 @@
 
 Coulisse ships a studio UI for browsing the conversations and memories the server has seen, and for editing the live YAML config. It's served by the same binary, under `/admin/`.
 
-Point a browser at `http://localhost:8421/admin/` while the server is running.
+Point a browser at `http://localhost:8421/admin/` while the server is running, or run `coulisse studio` (alias `coulisse admin`) to open it for you.
 
 ## What you can do
 

@@ -5,7 +5,7 @@ A minimal `coulisse.yaml` has two things: a **provider** (where to send model ca
 ```yaml
 providers:
   anthropic:
-    api_key: sk-ant-your-key-here
+    api_key: ${ANTHROPIC_API_KEY}
 
 agents:
   - name: assistant
@@ -21,6 +21,8 @@ Save this as `coulisse.yaml` in your working directory, then run `coulisse`.
 ### `providers`
 
 A map of provider kind → credentials. The key must be one of the supported kinds (see [Providers](../configuration/providers.md)). You only need to list the providers you actually use.
+
+API keys (and any other string values) can be read from environment variables using `${VAR_NAME}` — Coulisse expands them before parsing the YAML. If a referenced variable is unset, the server refuses to start and names the missing variable. See the [YAML reference](../reference/yaml.md#environment-variables) for details.
 
 ### `agents`
 
@@ -40,9 +42,9 @@ Want a code reviewer, a pirate, and a tool-using agent? Just add more entries:
 ```yaml
 providers:
   anthropic:
-    api_key: sk-ant-...
+    api_key: ${ANTHROPIC_API_KEY}
   openai:
-    api_key: sk-...
+    api_key: ${OPENAI_API_KEY}
 
 agents:
   - name: assistant

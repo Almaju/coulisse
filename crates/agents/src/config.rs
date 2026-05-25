@@ -11,6 +11,11 @@ pub struct AgentConfig {
     /// evaluate this agent's replies. Empty = no automatic evaluation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judges: Vec<String>,
+    /// Maximum number of tool-calling rounds per turn. Defaults to 8.
+    /// Raise this for agents that chain many tool calls (e.g. a coder reading
+    /// files, editing, then handing off to QA in one go).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_tools: Vec<McpToolAccess>,
     pub model: String,

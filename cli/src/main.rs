@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use coulisse::commands::{check, init, restart, schema, serve, start, status, stop, update};
+use coulisse::commands::{check, init, restart, schema, serve, start, status, stop, studio, update};
 
 const DEFAULT_CONFIG: &str = "coulisse.yaml";
 
@@ -60,6 +60,10 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Open the studio UI (`/admin/`) in the default web browser.
+    /// Requires the server to be running — use `coulisse start` first.
+    #[command(alias = "admin")]
+    Studio,
     /// Download and install the latest release from GitHub.
     Update,
 }
@@ -100,6 +104,7 @@ fn main() -> ExitCode {
         Some(Command::Stop { force }) => {
             stop::run(&config, &stop::Options { force }).map_err(std::convert::Into::into)
         }
+        Some(Command::Studio) => studio::run(&config).map_err(std::convert::Into::into),
         Some(Command::Update) => update::run().map_err(std::convert::Into::into),
     };
 

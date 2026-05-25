@@ -6,7 +6,7 @@ use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, UserId};
 use mcp::McpServers;
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
-    ToolCallKind,
+    ToolCallKind, MAX_TURNS,
 };
 use rig::tool::ToolDyn;
 
@@ -222,10 +222,11 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, _) = self.build_tools(&agent, depth, user_id)?;
+        let (tools, _) = self.build_tools(&agent, depth, user_id).await?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
+        let max_turns = agent.max_turns.unwrap_or(MAX_TURNS);
         provider
-            .send(conversation, &agent.model, tools)
+            .send(conversation, max_turns, &agent.model, tools)
             .await
             .map_err(AgentsError::from)
     }
@@ -235,13 +236,16 @@ impl AgentsInner {
     /// record themselves). Also returns a snapshot of subagent names so the
     /// streaming classifier in `Conversation::stream` can label outgoing
     /// `ToolCall` events as `Subagent` vs `Mcp`.
-    fn build_tools(
+    async fn build_tools(
         self: &Arc<Self>,
         agent: &AgentConfig,
         depth: usize,
         user_id: UserId,
     ) -> Result<BuiltTools, AgentsError> {
-        let raw_mcp_tools = self.mcp.tools_for(&agent.name, &agent.mcp_tools)?;
+        let raw_mcp_tools = self
+            .mcp
+            .tools_for_user(&agent.name, &agent.mcp_tools, user_id)
+            .await?;
         let mut tools: Vec<Box<dyn ToolDyn>> = raw_mcp_tools
             .into_iter()
             .map(|inner| -> Box<dyn ToolDyn> {
@@ -289,10 +293,11 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, subagent_names) = self.build_tools(&agent, depth, user_id)?;
+        let (tools, subagent_names) = self.build_tools(&agent, depth, user_id).await?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
+        let max_turns = agent.max_turns.unwrap_or(MAX_TURNS);
         provider
-            .stream(conversation, &agent.model, tools, subagent_names)
+            .stream(conversation, max_turns, &agent.model, tools, subagent_names)
             .await
             .map_err(AgentsError::from)
     }
@@ -319,7 +324,7 @@ impl AgentsInner {
             })?;
         let conversation = Conversation::from_messages(messages, preamble)?;
         provider
-            .send(conversation, model, vec![])
+            .send(conversation, MAX_TURNS, model, vec![])
             .await
             .map_err(AgentsError::from)
     }

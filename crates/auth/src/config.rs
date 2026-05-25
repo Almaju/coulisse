@@ -10,6 +10,10 @@ use thiserror::Error;
 pub struct Config {
     #[serde(default)]
     pub admin: Option<ScopeConfig>,
+    /// Shared secret that guards `POST /mcp/{server}/connect-link`.
+    /// Required when any MCP server declares an `oauth:` block.
+    #[serde(default)]
+    pub mcp_consumer_secret: Option<String>,
     #[serde(default)]
     pub proxy: Option<ScopeConfig>,
 }
@@ -74,6 +78,11 @@ impl Config {
         if let Some(scope) = &self.proxy {
             scope.validate("proxy")?;
         }
+        if let Some(secret) = &self.mcp_consumer_secret
+            && secret.trim().is_empty()
+        {
+            return Err(ConfigError::BlankMcpConsumerSecret);
+        }
         Ok(())
     }
 }
@@ -130,6 +139,8 @@ pub enum ConfigError {
         field: &'static str,
         scope: &'static str,
     },
+    #[error("auth.mcp_consumer_secret must be non-empty when set")]
+    BlankMcpConsumerSecret,
     #[error("auth.{scope}.oidc.{field} must be non-empty")]
     BlankOidcField {
         field: &'static str,

@@ -218,6 +218,7 @@ mod tests {
     fn sample_config(name: &str) -> AgentConfig {
         AgentConfig {
             judges: vec![],
+            max_turns: None,
             mcp_tools: vec![],
             model: "gpt-4o-mini".into(),
             name: name.into(),

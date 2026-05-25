@@ -188,6 +188,7 @@ mod tests {
     fn cfg(name: &str, model: &str) -> AgentConfig {
         AgentConfig {
             judges: vec![],
+            max_turns: None,
             mcp_tools: vec![],
             model: model.into(),
             name: name.into(),

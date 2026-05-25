@@ -10,10 +10,10 @@
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use nix::unistd::setsid;
@@ -29,14 +29,28 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum StartError {
     #[error("coulisse already running (pid {0}) — run `coulisse stop` first")]
     AlreadyRunning(i32),
+    #[error(
+        "server exited during startup ({status})\n  log: {log_path}\n--- server output ---\n{tail}"
+    )]
+    ChildExited {
+        log_path: String,
+        status: ExitStatus,
+        tail: String,
+    },
     #[error("config not found at {0} — run `coulisse init` first")]
     ConfigMissing(String),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error(transparent)]
     Serve(Box<dyn std::error::Error>),
-    #[error("server failed to come up within {0:?} — see {1}")]
-    StartTimeout(Duration, String),
+    #[error(
+        "server failed to come up within {duration:?}\n  log: {log_path}\n--- recent server output ---\n{tail}"
+    )]
+    StartTimeout {
+        duration: Duration,
+        log_path: String,
+        tail: String,
+    },
 }
 
 pub struct Options {
@@ -108,6 +122,9 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         .append(true)
         .create(true)
         .open(&paths.log)?;
+    // WHY: record the log size before spawn so on failure we can surface
+    // only this run's output, not noise from previous runs.
+    let log_offset = log.metadata().map(|m| m.len()).unwrap_or(0);
     let log_err = log.try_clone()?;
 
     let exe = env::current_exe()?;
@@ -127,7 +144,7 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
             Ok(())
         });
     }
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
 
     let deadline = Instant::now() + READY_TIMEOUT;
     let pid = loop {
@@ -136,11 +153,22 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         {
             break pid;
         }
+        // WHY: a fast-failing child (e.g. config error) exits before the
+        // 5s deadline. Detect that and surface its output immediately
+        // instead of making the user wait for the timeout.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(StartError::ChildExited {
+                log_path: paths.log.display().to_string(),
+                status,
+                tail: read_log_since(&paths.log, log_offset),
+            });
+        }
         if Instant::now() >= deadline {
-            return Err(StartError::StartTimeout(
-                READY_TIMEOUT,
-                paths.log.display().to_string(),
-            ));
+            return Err(StartError::StartTimeout {
+                duration: READY_TIMEOUT,
+                log_path: paths.log.display().to_string(),
+                tail: read_log_since(&paths.log, log_offset),
+            });
         }
         std::thread::sleep(Duration::from_millis(100));
     };
@@ -152,6 +180,29 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
     println!("  log:    {}", paths.log.display());
     println!("  stop with: coulisse stop");
     Ok(())
+}
+
+/// Read the log file from `start` to EOF, return the last ~30 lines
+/// trimmed. Best-effort: returns an empty string if the file can't be
+/// read.
+fn read_log_since(path: &Path, start: u64) -> String {
+    const MAX_LINES: usize = 30;
+    let Ok(mut f) = File::open(path) else {
+        return String::new();
+    };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = String::new();
+    if f.read_to_string(&mut buf).is_err() {
+        return String::new();
+    }
+    let trimmed = buf.trim();
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.len() <= MAX_LINES {
+        return trimmed.to_string();
+    }
+    lines[lines.len() - MAX_LINES..].join("\n")
 }
 
 fn read_pid(path: &Path) -> Option<i32> {

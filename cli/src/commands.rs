@@ -11,4 +11,5 @@ pub mod serve;
 pub mod start;
 pub mod status;
 pub mod stop;
+pub mod studio;
 pub mod update;

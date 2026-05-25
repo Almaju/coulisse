@@ -61,6 +61,19 @@ running (pid 31427)
   log:    ./.coulisse/coulisse.log
 ```
 
+## `coulisse studio`
+
+Open the studio UI (`/admin/`) in the default web browser. Requires
+the server to be running — start it first with `coulisse start`.
+
+```bash
+coulisse studio   # also: coulisse admin
+# opening http://localhost:8421/admin/
+```
+
+The URL honors `port:` from `coulisse.yaml`, so multiple Coulisse
+instances on different ports each open their own studio.
+
 ## `coulisse check`
 
 Load and validate the YAML without starting the server. Catches

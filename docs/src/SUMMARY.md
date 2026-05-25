@@ -23,6 +23,7 @@
 - [Multi-agent routing](./features/multi-agent.md)
 - [Per-user memory](./features/memory.md)
 - [MCP tool integration](./features/tools.md)
+- [Per-user OAuth for MCP](./features/mcp-oauth.md)
 - [Multi-backend support](./features/backends.md)
 - [Streaming responses](./features/streaming.md)
 - [Rate limiting](./features/rate-limiting.md)

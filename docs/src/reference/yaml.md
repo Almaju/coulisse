@@ -18,6 +18,22 @@ Then reference it from the top of `coulisse.yaml` with the [yaml-language-server
 
 The schema is also shipped at the repo root as `coulisse.schema.json` and is the single source of truth for the field tables below — they describe the same shape in prose.
 
+## Environment variables
+
+Any string value in `coulisse.yaml` can reference an environment variable with `${VAR_NAME}`:
+
+```yaml
+providers:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+  openai:
+    api_key: ${OPENAI_API_KEY}
+```
+
+Coulisse expands all `${...}` placeholders before parsing the YAML, so substitution works in any field — API keys, URLs, tokens, passwords, MCP env blocks, etc.
+
+If a referenced variable is not set in the environment, the server refuses to start and prints an error naming the missing variable. An unclosed `${` with no matching `}` is also rejected at startup.
+
 ## Top-level
 
 ```yaml
@@ -119,9 +135,9 @@ Useful when running multiple Coulisse instances against different `coulisse.yaml
 ```yaml
 providers:
   anthropic:
-    api_key: sk-ant-...
+    api_key: ${ANTHROPIC_API_KEY}
   openai:
-    api_key: sk-...
+    api_key: ${OPENAI_API_KEY}
 ```
 
 ## `mcp`
@@ -198,6 +214,7 @@ See [Memory configuration](../configuration/memory.md) for the full walkthrough 
 | `model`      | string                | yes      | Upstream model identifier. |
 | `preamble`   | string                | no       | System prompt. Default: empty. |
 | `judges`     | `list<string>`        | no       | Names of judges (from top-level `judges:`) that evaluate this agent's replies. Empty = no evaluation. |
+| `max_turns`  | integer               | no       | Maximum tool-calling rounds per turn. Default: `8`. Raise for agents that chain many tool calls (e.g. a coder that reads files, edits, and dispatches to QA in one go). |
 | `mcp_tools`  | `list<mcp_tool_access>` | no     | Tools this agent may use. |
 | `purpose`    | string                | no       | Tool description when this agent is exposed via another agent's `subagents`. Omit for standalone agents; add a concrete one-line description when this agent is meant to be called as a specialist. |
 | `subagents`  | `list<string>`        | no       | Names of other agents exposed as callable tools. Each entry must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. |
@@ -395,6 +412,7 @@ telemetry:
 
 On startup, Coulisse checks:
 
+- All `${VAR_NAME}` placeholders resolve to set environment variables.
 - Each present `auth` scope (`proxy`, `admin`) declares exactly one of `basic` or `oidc`.
 - `auth.<scope>.basic.password` and `auth.<scope>.basic.username` are non-empty.
 - `auth.<scope>.oidc.client_id`, `issuer_url`, and `redirect_url` are non-empty.

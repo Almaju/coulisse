@@ -21,6 +21,9 @@ install:
 lint:
     cargo oneway lint
 
+local:
+    cargo install --path cli --bin coulisse --locked
+
 refresh-prices:
     curl -fsSL \
         https://raw.githubusercontent.com/BerriAI/litellm/main/litellm/model_prices_and_context_window_backup.json \

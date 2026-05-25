@@ -16,6 +16,7 @@ What's in Coulisse today, and what's coming.
 - Experiments (A/B testing) — wrap multiple agents under one addressable name and route traffic between them with sticky-by-user defaults. Three strategies: `split` (weighted random), `shadow` (primary serves the user, others run in the background and are scored), and `bandit` (epsilon-greedy on a single judge criterion).
 - Streaming responses over SSE (`stream: true`, with `stream_options.include_usage`).
 - MCP tool integration over stdio and HTTP, with per-agent filtering.
+- Per-user OAuth 2.0 for MCP servers (token vault, connect-link flow, per-user session pool).
 - Per-user token rate limiting (hour / day / month).
 - YAML-driven config with startup validation.
 - Docker image with a volume-mounted SQLite store.

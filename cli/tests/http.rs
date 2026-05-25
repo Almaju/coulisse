@@ -31,6 +31,7 @@ use tower::ServiceExt;
 fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
     AgentConfig {
         judges,
+        max_turns: None,
         mcp_tools: vec![],
         model: "gpt-scripted".into(),
         name: "assistant".into(),
@@ -224,6 +225,7 @@ async fn unknown_agent_returns_not_found() {
 fn variant_agent(name: &str) -> AgentConfig {
     AgentConfig {
         judges: vec![],
+        max_turns: None,
         mcp_tools: vec![],
         model: "gpt-scripted".into(),
         name: name.into(),

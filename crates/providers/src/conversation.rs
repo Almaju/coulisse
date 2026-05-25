@@ -163,16 +163,17 @@ impl Provider {
     pub async fn send(
         &self,
         conversation: Conversation,
+        max_turns: usize,
         model: &str,
         tools: Vec<Box<dyn ToolDyn>>,
     ) -> Result<Completion, CallError> {
         match self {
-            Provider::Anthropic(c) => send_with(c, conversation, model, tools).await,
-            Provider::Cohere(c) => send_with(c, conversation, model, tools).await,
-            Provider::Deepseek(c) => send_with(c, conversation, model, tools).await,
-            Provider::Gemini(c) => send_with(c, conversation, model, tools).await,
-            Provider::Groq(c) => send_with(c, conversation, model, tools).await,
-            Provider::Openai(c) => send_with(c, conversation, model, tools).await,
+            Provider::Anthropic(c) => send_with(c, conversation, max_turns, model, tools).await,
+            Provider::Cohere(c) => send_with(c, conversation, max_turns, model, tools).await,
+            Provider::Deepseek(c) => send_with(c, conversation, max_turns, model, tools).await,
+            Provider::Gemini(c) => send_with(c, conversation, max_turns, model, tools).await,
+            Provider::Groq(c) => send_with(c, conversation, max_turns, model, tools).await,
+            Provider::Openai(c) => send_with(c, conversation, max_turns, model, tools).await,
         }
     }
 
@@ -187,21 +188,30 @@ impl Provider {
     pub async fn stream(
         &self,
         conversation: Conversation,
+        max_turns: usize,
         model: &str,
         tools: Vec<Box<dyn ToolDyn>>,
         subagent_names: Arc<HashSet<String>>,
     ) -> Result<CompletionStream, CallError> {
         match self {
             Provider::Anthropic(c) => {
-                stream_with(c, conversation, model, tools, subagent_names).await
+                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
             }
-            Provider::Cohere(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Cohere(c) => {
+                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+            }
             Provider::Deepseek(c) => {
-                stream_with(c, conversation, model, tools, subagent_names).await
+                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
             }
-            Provider::Gemini(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Provider::Groq(c) => stream_with(c, conversation, model, tools, subagent_names).await,
-            Provider::Openai(c) => stream_with(c, conversation, model, tools, subagent_names).await,
+            Provider::Gemini(c) => {
+                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+            }
+            Provider::Groq(c) => {
+                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+            }
+            Provider::Openai(c) => {
+                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+            }
         }
     }
 }
@@ -209,6 +219,7 @@ impl Provider {
 async fn send_with<C>(
     client: &C,
     conversation: Conversation,
+    max_turns: usize,
     model: &str,
     tools: Vec<Box<dyn ToolDyn>>,
 ) -> Result<Completion, CallError>
@@ -227,7 +238,7 @@ where
     };
     let response = PromptRequest::from_agent(&agent, conversation.prompt)
         .with_history(conversation.history)
-        .max_turns(MAX_TURNS)
+        .max_turns(max_turns)
         .extended_details()
         .await?;
     Ok(Completion {
@@ -239,6 +250,7 @@ where
 async fn stream_with<C>(
     client: &C,
     conversation: Conversation,
+    max_turns: usize,
     model: &str,
     tools: Vec<Box<dyn ToolDyn>>,
     subagent_names: Arc<HashSet<String>>,
@@ -260,7 +272,7 @@ where
     let inner = agent
         .stream_prompt(conversation.prompt)
         .with_history(conversation.history)
-        .multi_turn(MAX_TURNS)
+        .multi_turn(max_turns)
         .await;
     let mapped = inner.filter_map(move |item| {
         let subagent_names = Arc::clone(&subagent_names);
