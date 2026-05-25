@@ -17,6 +17,7 @@ askama.workspace = true
 async-stream.workspace = true
 auth.workspace = true
 axum.workspace = true
+base64.workspace = true
 clap.workspace = true
 coulisse-core.workspace = true
 experiments.workspace = true

@@ -18,7 +18,7 @@ use coulisse_core::{AgentResolver, ScoreLookup};
 use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
-use mcp::McpServers;
+use mcp::{McpServers, VaultMigrator, TokenVault, OAuthRouterState, oauth_router};
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
@@ -73,6 +73,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         judge_store,
         judges_list,
         memory,
+        mcp_vault,
         settings_view,
         smoke_list,
         smoke_store,
@@ -129,13 +130,44 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }));
     let proxy_router = auth.wrap_proxy(server::router(proxy_state));
 
+    // Mount OAuth routes outside auth wrappers — they have their own
+    // consumer-secret check via the Authorization: Bearer header.
+    let oauth_routes = if let Some(vault) = mcp_vault {
+        // COULISSE_HMAC_KEY is validated as present at startup (Config::validate);
+        // base64-decode it here so the raw key bytes are passed to HMAC.
+        let hmac_key = {
+            use base64::Engine as _;
+            let raw = std::env::var("COULISSE_HMAC_KEY")
+                .expect("COULISSE_HMAC_KEY validated present at startup");
+            base64::engine::general_purpose::STANDARD
+                .decode(raw.trim())
+                .expect("COULISSE_HMAC_KEY must be valid base64")
+        };
+        let consumer_secret = config
+            .auth
+            .mcp_consumer_secret
+            .clone()
+            .unwrap_or_default();
+        Some(oauth_router(OAuthRouterState {
+            configs: config.mcp.clone(),
+            consumer_secret,
+            hmac_key,
+            vault,
+        }))
+    } else {
+        None
+    };
+
     // WHY: axum 0.8 nests asymmetrically — `nest("/admin", ...)` matches
     // the inner `/` route at `/admin`, but a request to `/admin/` returns
     // 404. Redirect the trailing-slash form so bookmarks don't break.
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(proxy_router)
         .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
         .nest("/admin", admin_router);
+    if let Some(oauth) = oauth_routes {
+        app = app.merge(oauth);
+    }
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -151,6 +183,7 @@ struct Stores {
     judge_store: Arc<Judges>,
     judges_list: judges::JudgeList,
     memory: Arc<Store>,
+    mcp_vault: Option<Arc<TokenVault>>,
     pool: memory::SqlitePool,
     settings_view: crate::admin::SettingsHandle,
     smoke_list: smoke::SmokeList,
@@ -187,6 +220,22 @@ async fn boot_stores(
     ));
 
     let pool = memory::open_pool(&memory_config.backend).await?;
+
+    // Open the MCP token vault if any server has an oauth block.
+    let has_oauth = config.mcp.values().any(|c| c.oauth.is_some());
+    let mcp_vault = if has_oauth {
+        let vault_key = std::env::var("COULISSE_VAULT_KEY").map_err(|_| {
+            Box::<dyn std::error::Error>::from(
+                "COULISSE_VAULT_KEY env var is required when any MCP server has an oauth block",
+            )
+        })?;
+        coulisse_core::migrate::run(&pool, &VaultMigrator)
+            .await
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+        Some(Arc::new(TokenVault::new(pool.clone(), &vault_key)?))
+    } else {
+        None
+    };
     let dynamic_agents = Arc::new(DynamicAgents::open(pool.clone()).await?);
     let report = dynamic_agents.rebuild(&agents_list, &config.agents).await?;
     log_agents_merge(&report);
@@ -227,6 +276,7 @@ async fn boot_stores(
         judge_store,
         judges_list,
         memory,
+        mcp_vault,
         pool,
         settings_view,
         smoke_list,
@@ -298,7 +348,13 @@ async fn build_runtime(
     // The HashMap itself is rebuilt only at boot — runtime hot-reload of
     // the Judge instances is a follow-up.
     let judges = build_judges(&stores.judges_list.load())?;
-    let mcp = Arc::new(McpServers::connect(config.mcp.clone()).await?);
+    let mcp = Arc::new(
+        McpServers::connect_with_vault(
+            config.mcp.clone(),
+            stores.mcp_vault.clone(),
+        )
+        .await?,
+    );
     let experiments = Arc::new(ExperimentRouter::new(
         stores.experiments_list.load().to_vec(),
     ));
