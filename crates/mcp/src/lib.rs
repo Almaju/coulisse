@@ -5,11 +5,22 @@
 //! Like `providers`, this crate is an interface to the outside world (MCP
 //! servers — separate processes or HTTP endpoints), not a feature in the
 //! same sense as `memory` or `judges`. `agents` depends on it directly.
+//!
+//! OAuth-enabled servers keep their per-user sessions in `UserMcpPool`
+//! (backed by a moka LRU cache); static-token servers share one long-lived
+//! connection from `McpServers`.
 
 mod config;
 mod error;
+pub mod oauth;
+mod pool;
+pub mod routes;
 mod server;
+pub mod vault;
 
-pub use config::{McpServerConfig, McpToolAccess};
+pub use config::{McpOAuthConfig, McpServerConfig, McpToolAccess, McpTransport};
 pub use error::McpError;
+pub use pool::UserMcpPool;
+pub use routes::{OAuthRouterState, router as oauth_router};
 pub use server::McpServers;
+pub use vault::{McpMigrator, StoredToken, TokenVault, VaultMigrator};
