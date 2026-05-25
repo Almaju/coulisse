@@ -78,10 +78,15 @@ This is Coulisse-side filtering — the model never sees the excluded tools, so 
 
 ## Tool loop limits
 
-Coulisse caps a single request at 8 tool-call turns. If the model hasn't produced a final answer by then, the request ends. This keeps runaway loops from billing you forever.
+Coulisse caps a single request at 8 tool-call turns by default. If the model hasn't produced a final answer by then, the request ends. This keeps runaway loops from billing you forever. You can raise or lower the limit per agent with the `max_turns` field (see the [agents YAML reference](../reference/yaml.md#agents)).
 
 ## Capture limitations
 
 Tool-call capture only runs on the **streaming** path — every OpenAI SDK uses streaming for chat completions by default, so this covers normal usage. Non-streaming requests (`"stream": false`) still execute tools correctly; their invocations just aren't captured for the studio trail, because rig's non-streaming API doesn't expose intermediate events.
 
 If a client disconnects mid-stream after a tool call has fired but before the result lands, the call is persisted with `result: null` so the studio UI still shows that the attempt happened.
+
+## Per-user OAuth
+
+For MCP servers that require each user to authorize access with their own account
+(Jira, GitHub, Google, etc.), see [Per-user OAuth for MCP](./mcp-oauth.md).
