@@ -79,15 +79,84 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
 }
 
+fn expand_env_vars(s: &str) -> Result<String, ExpandError> {
+    expand_env_vars_with(s, |var| std::env::var(var).ok())
+}
+
+fn expand_env_vars_with(
+    s: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, ExpandError> {
+    let mut result = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        let offset = (s.len() - rest.len()) + start;
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 2..];
+        let end = rest
+            .find('}')
+            .ok_or(ExpandError::UnclosedEnvVar { offset })?;
+        let var = &rest[..end];
+        let value = lookup(var).ok_or_else(|| ExpandError::EnvVarNotSet {
+            offset,
+            var: var.to_string(),
+        })?;
+        result.push_str(&value);
+        rest = &rest[end + 1..];
+    }
+    result.push_str(rest);
+    Ok(result)
+}
+
+/// Convert a byte offset into the source into (1-indexed line number,
+/// full line content). Used to render env-var expansion errors with
+/// location context.
+fn locate(source: &str, offset: usize) -> (usize, String) {
+    let clamped = offset.min(source.len());
+    let mut line_number = 1;
+    let mut line_start = 0;
+    for (i, b) in source.as_bytes().iter().enumerate() {
+        if i >= clamped {
+            break;
+        }
+        if *b == b'\n' {
+            line_number += 1;
+            line_start = i + 1;
+        }
+    }
+    let line_end = source[line_start..]
+        .find('\n')
+        .map_or(source.len(), |n| line_start + n);
+    let line_content = source[line_start..line_end].to_string();
+    (line_number, line_content)
+}
+
 impl Config {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
-        let contents = fs::read_to_string(path).map_err(|source| ConfigError::ReadConfig {
+        let raw = fs::read_to_string(path).map_err(|source| ConfigError::ReadConfig {
             path: path.display().to_string(),
             source,
+        })?;
+        let contents = expand_env_vars(&raw).map_err(|e| {
+            let path = path.display().to_string();
+            let (line_number, line_content) = locate(&raw, e.offset());
+            match e {
+                ExpandError::EnvVarNotSet { var, .. } => ConfigError::EnvVarNotSet {
+                    line_content,
+                    line_number,
+                    path,
+                    var,
+                },
+                ExpandError::UnclosedEnvVar { .. } => ConfigError::UnclosedEnvVar {
+                    line_content,
+                    line_number,
+                    path,
+                },
+            }
         })?;
         let config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
         config.validate()?;
@@ -111,11 +180,64 @@ impl Config {
             return Err(ConfigError::BlankDefaultUserId);
         }
         self.auth.validate().map_err(ConfigError::Auth)?;
+        self.validate_mcp_oauth()?;
         let judge_names = self.validate_judges()?;
         let agent_names = self.validate_agents(&judge_names)?;
         let experiment_names = self.validate_experiments(&agent_names)?;
         self.validate_smoke_tests(&agent_names, &experiment_names)?;
         self.validate_subagents(&agent_names, &experiment_names)?;
+        Ok(())
+    }
+
+    fn validate_mcp_oauth(&self) -> Result<(), ConfigError> {
+        let has_oauth = self.mcp.values().any(|c| c.oauth.is_some());
+        if !has_oauth {
+            return Ok(());
+        }
+        if self.auth.mcp_consumer_secret.is_none() {
+            return Err(ConfigError::McpOAuthMissingConsumerSecret);
+        }
+        if std::env::var("COULISSE_VAULT_KEY").is_err() {
+            return Err(ConfigError::McpOAuthMissingVaultKey);
+        }
+        if std::env::var("COULISSE_HMAC_KEY").is_err() {
+            return Err(ConfigError::McpOAuthMissingHmacKey);
+        }
+        for (name, cfg) in &self.mcp {
+            let Some(oauth) = &cfg.oauth else {
+                continue;
+            };
+            if oauth.authorization_url.is_empty() {
+                return Err(ConfigError::McpOAuthBlankField {
+                    field: "authorization_url",
+                    server: name.clone(),
+                });
+            }
+            if oauth.client_id.is_empty() {
+                return Err(ConfigError::McpOAuthBlankField {
+                    field: "client_id",
+                    server: name.clone(),
+                });
+            }
+            if oauth.client_secret.is_empty() {
+                return Err(ConfigError::McpOAuthBlankField {
+                    field: "client_secret",
+                    server: name.clone(),
+                });
+            }
+            if oauth.redirect_uri.is_empty() {
+                return Err(ConfigError::McpOAuthBlankField {
+                    field: "redirect_uri",
+                    server: name.clone(),
+                });
+            }
+            if oauth.token_url.is_empty() {
+                return Err(ConfigError::McpOAuthBlankField {
+                    field: "token_url",
+                    server: name.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -483,6 +605,15 @@ pub enum ConfigError {
     #[error("agent '{agent}' lists subagent '{subagent}' more than once")]
     DuplicateSubagent { agent: String, subagent: String },
     #[error(
+        "environment variable '{var}' referenced in config is not set\n  at {path}:{line_number}\n   | {line_content}\n   = help: export {var}=... in your shell before starting coulisse"
+    )]
+    EnvVarNotSet {
+        line_content: String,
+        line_number: usize,
+        path: String,
+        var: String,
+    },
+    #[error(
         "experiment '{0}' shares a name with an agent; rename one — experiment and agent names share a single namespace"
     )]
     ExperimentAgentNameCollision(String),
@@ -557,6 +688,25 @@ pub enum ConfigError {
     JudgeWithoutRubrics(String),
     #[error("agent '{agent}' references MCP server '{server}' which is not configured")]
     McpServerNotConfigured { agent: String, server: String },
+    #[error(
+        "mcp server '{server}' has an oauth block but field '{field}' is blank"
+    )]
+    McpOAuthBlankField {
+        field: &'static str,
+        server: String,
+    },
+    #[error(
+        "at least one MCP server has an oauth block, but auth.mcp_consumer_secret is not set"
+    )]
+    McpOAuthMissingConsumerSecret,
+    #[error(
+        "COULISSE_HMAC_KEY env var must be set when any MCP server has an oauth block"
+    )]
+    McpOAuthMissingHmacKey,
+    #[error(
+        "COULISSE_VAULT_KEY env var must be set when any MCP server has an oauth block"
+    )]
+    McpOAuthMissingVaultKey,
     #[error("config must declare at least one agent")]
     NoAgents,
     #[error("failed to parse config: {0}")]
@@ -595,6 +745,33 @@ pub enum ConfigError {
     SmokeUnknownTarget { target: String, test: String },
     #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
     UnknownSubagent { agent: String, subagent: String },
+    #[error(
+        "unclosed '${{' in config — every '${{' must have a matching '}}'\n  at {path}:{line_number}\n   | {line_content}"
+    )]
+    UnclosedEnvVar {
+        line_content: String,
+        line_number: usize,
+        path: String,
+    },
+}
+
+/// Errors raised while expanding `${VAR}` placeholders in the raw YAML
+/// text. Internal — `Config::from_path` enriches these into the
+/// path/line-aware `ConfigError::EnvVarNotSet` and `UnclosedEnvVar`.
+#[derive(Debug, Error)]
+enum ExpandError {
+    #[error("environment variable '{var}' is not set")]
+    EnvVarNotSet { offset: usize, var: String },
+    #[error("unclosed '${{' in config")]
+    UnclosedEnvVar { offset: usize },
+}
+
+impl ExpandError {
+    fn offset(&self) -> usize {
+        match self {
+            Self::EnvVarNotSet { offset, .. } | Self::UnclosedEnvVar { offset } => *offset,
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1282,6 +1459,187 @@ smoke_tests:
         match parse(&yaml) {
             Err(ConfigError::DuplicateSmokeTest(name)) => assert_eq!(name, "same"),
             other => panic!("expected DuplicateSmokeTest, got {other:?}"),
+        }
+    }
+
+    fn lookup(var: &str) -> Option<String> {
+        match var {
+            "KEY" => Some("hello".into()),
+            "A" => Some("foo".into()),
+            "B" => Some("bar".into()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_substitutes_set_variables() {
+        let result = expand_env_vars_with("prefix_${KEY}_suffix", lookup).unwrap();
+        assert_eq!(result, "prefix_hello_suffix");
+    }
+
+    #[test]
+    fn expand_env_vars_multiple_vars_in_one_string() {
+        let result = expand_env_vars_with("${A}:${B}", lookup).unwrap();
+        assert_eq!(result, "foo:bar");
+    }
+
+    #[test]
+    fn expand_env_vars_no_placeholders_returns_input_unchanged() {
+        let result = expand_env_vars_with("no variables here", lookup).unwrap();
+        assert_eq!(result, "no variables here");
+    }
+
+    #[test]
+    fn expand_env_vars_unset_variable_errors() {
+        match expand_env_vars_with("${MISSING}", lookup) {
+            Err(ExpandError::EnvVarNotSet { var, offset }) => {
+                assert_eq!(var, "MISSING");
+                assert_eq!(offset, 0);
+            }
+            other => panic!("expected EnvVarNotSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_unclosed_brace_errors() {
+        match expand_env_vars_with("${UNCLOSED", lookup) {
+            Err(ExpandError::UnclosedEnvVar { offset }) => assert_eq!(offset, 0),
+            other => panic!("expected UnclosedEnvVar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_records_offset_on_third_line() {
+        let source = "line1: a\nline2: b\nline3: ${MISSING}\n";
+        match expand_env_vars_with(source, lookup) {
+            Err(ExpandError::EnvVarNotSet { var, offset }) => {
+                assert_eq!(var, "MISSING");
+                let (line_number, line_content) = locate(source, offset);
+                assert_eq!(line_number, 3);
+                assert_eq!(line_content, "line3: ${MISSING}");
+            }
+            other => panic!("expected EnvVarNotSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locate_handles_offset_past_end() {
+        let source = "one\ntwo\nthree";
+        let (line_number, line_content) = locate(source, source.len() + 100);
+        assert_eq!(line_number, 3);
+        assert_eq!(line_content, "three");
+    }
+
+    const MCP_OAUTH_BASE: &str = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+auth:
+  mcp_consumer_secret: s3cr3t
+mcp:
+  jira:
+    transport: http
+    url: https://mcp.example.com
+    oauth:
+      authorization_url: https://auth.example.com/authorize
+      client_id: client-id
+      client_secret: client-secret
+      redirect_uri: https://coulisse.example.com/mcp/jira/oauth/callback
+      token_url: https://auth.example.com/oauth/token
+";
+
+    #[test]
+    fn mcp_oauth_missing_consumer_secret_is_rejected() {
+        let yaml = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+mcp:
+  jira:
+    transport: http
+    url: https://mcp.example.com
+    oauth:
+      authorization_url: https://auth.example.com/authorize
+      client_id: client-id
+      client_secret: client-secret
+      redirect_uri: https://coulisse.example.com/mcp/jira/oauth/callback
+      token_url: https://auth.example.com/oauth/token
+";
+        let config: Config = serde_yaml::from_str(yaml).expect("parses");
+        match config.validate() {
+            Err(ConfigError::McpOAuthMissingConsumerSecret) => {}
+            other => panic!("expected McpOAuthMissingConsumerSecret, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_missing_vault_key_is_rejected() {
+        // Ensure COULISSE_VAULT_KEY is not set for this test.
+        std::env::remove_var("COULISSE_VAULT_KEY");
+        std::env::remove_var("COULISSE_HMAC_KEY");
+        let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
+        match config.validate() {
+            Err(ConfigError::McpOAuthMissingVaultKey) => {}
+            other => panic!("expected McpOAuthMissingVaultKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_missing_hmac_key_is_rejected() {
+        std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+        std::env::remove_var("COULISSE_HMAC_KEY");
+        let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
+        let result = config.validate();
+        std::env::remove_var("COULISSE_VAULT_KEY");
+        match result {
+            Err(ConfigError::McpOAuthMissingHmacKey) => {}
+            other => panic!("expected McpOAuthMissingHmacKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_blank_field_is_rejected() {
+        std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+        std::env::set_var("COULISSE_HMAC_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+        let yaml = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+auth:
+  mcp_consumer_secret: s3cr3t
+mcp:
+  jira:
+    transport: http
+    url: https://mcp.example.com
+    oauth:
+      authorization_url: ""
+      client_id: client-id
+      client_secret: client-secret
+      redirect_uri: https://coulisse.example.com/mcp/jira/oauth/callback
+      token_url: https://auth.example.com/oauth/token
+";
+        let config: Config = serde_yaml::from_str(yaml).expect("parses");
+        let result = config.validate();
+        std::env::remove_var("COULISSE_VAULT_KEY");
+        std::env::remove_var("COULISSE_HMAC_KEY");
+        match result {
+            Err(ConfigError::McpOAuthBlankField { field, server }) => {
+                assert_eq!(field, "authorization_url");
+                assert_eq!(server, "jira");
+            }
+            other => panic!("expected McpOAuthBlankField, got {other:?}"),
         }
     }
 }
