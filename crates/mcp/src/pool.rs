@@ -1,0 +1,233 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use coulisse_core::UserId;
+use moka::future::Cache;
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
+use rig::tool::rmcp::McpTool;
+use rig::wasm_compat::WasmBoxedFuture;
+use rmcp::ServiceExt;
+use rmcp::service::{RoleClient, RunningService, ServerSink};
+use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use serde_json::json;
+use tokio::process::Command;
+use tracing::instrument;
+
+use crate::config::{McpServerConfig, McpTransport};
+use crate::error::McpError;
+use crate::vault::TokenVault;
+
+const DEFAULT_SESSION_CACHE_SIZE: u64 = 256;
+
+/// A single connected MCP session for a specific user and server.
+pub(crate) struct UserMcpSession {
+    pub(crate) sink: ServerSink,
+    pub(crate) tools: HashMap<String, rmcp::model::Tool>,
+    _service: RunningService<RoleClient, ()>,
+}
+
+/// LRU cache of per-user MCP sessions keyed by `(UserId, server_name)`.
+pub struct UserMcpPool {
+    cache: Cache<(UserId, String), Arc<UserMcpSession>>,
+    configs: HashMap<String, McpServerConfig>,
+    vault: Arc<TokenVault>,
+}
+
+impl UserMcpPool {
+    #[must_use]
+    pub fn new(
+        configs: HashMap<String, McpServerConfig>,
+        vault: Arc<TokenVault>,
+        session_cache_size: Option<u64>,
+    ) -> Self {
+        let cap = session_cache_size.unwrap_or(DEFAULT_SESSION_CACHE_SIZE);
+        let cache = Cache::builder()
+            .max_capacity(cap)
+            .time_to_idle(std::time::Duration::from_secs(1800))
+            .build();
+        Self {
+            cache,
+            configs,
+            vault,
+        }
+    }
+
+    /// Get or spawn a session for the given user and OAuth-enabled server.
+    /// Returns `McpError::NotConnected` if the user hasn't authorized yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault lookup, process spawn, or connection fails.
+    #[instrument(skip(self), fields(server = %server_name))]
+    pub async fn get_or_spawn(
+        &self,
+        server_name: &str,
+        user_id: UserId,
+    ) -> Result<Arc<UserMcpSession>, McpError> {
+        let key = (user_id, server_name.to_string());
+        if let Some(session) = self.cache.get(&key).await {
+            return Ok(session);
+        }
+        let config = self
+            .configs
+            .get(server_name)
+            .ok_or_else(|| McpError::ServerNotConfigured {
+                agent: "<pool>".to_string(),
+                server: server_name.to_string(),
+            })?;
+
+        let user_id_str = user_id.0.to_string();
+        let stored = self
+            .vault
+            .get_token(server_name, &user_id_str)
+            .await?
+            .ok_or_else(|| McpError::NotConnected {
+                server: server_name.to_string(),
+                user_id: user_id_str.clone(),
+            })?;
+
+        // Token expired or within 60 seconds of expiry — no refresh in Phase 1-3.
+        if let Some(exp) = stored.expires_at {
+            let now = coulisse_core::now_secs() as i64;
+            if now >= exp - 60 {
+                return Err(McpError::NotConnected {
+                    server: server_name.to_string(),
+                    user_id: user_id_str,
+                });
+            }
+        }
+
+        let session =
+            Arc::new(connect_user_session(server_name, config, &stored.access_token).await?);
+        self.cache.insert(key, Arc::clone(&session)).await;
+        Ok(session)
+    }
+}
+
+async fn connect_user_session(
+    name: &str,
+    config: &McpServerConfig,
+    access_token: &str,
+) -> Result<UserMcpSession, McpError> {
+    let service = match &config.transport {
+        McpTransport::Http { url } => {
+            // Build the transport config with Bearer auth header so the MCP HTTP
+            // server receives it on every request.
+            let transport_config = StreamableHttpClientTransportConfig::with_uri(url.as_str())
+                .auth_header(format!("Bearer {access_token}"));
+            let transport = StreamableHttpClientTransport::from_config(transport_config);
+            ().serve(transport)
+                .await
+                .map_err(|source| McpError::Connect {
+                    server: name.to_string(),
+                    source: Box::new(source),
+                })?
+        }
+        McpTransport::Stdio { args, command, env } => {
+            let mut cmd = Command::new(command);
+            cmd.args(args);
+            if !env.is_empty() {
+                cmd.envs(env);
+            }
+            // Inject the OAuth token so the stdio MCP server can authenticate.
+            cmd.env("MCP_OAUTH_TOKEN", access_token);
+            let transport =
+                TokioChildProcess::new(cmd).map_err(|source| McpError::Spawn {
+                    server: name.to_string(),
+                    source,
+                })?;
+            ().serve(transport)
+                .await
+                .map_err(|source| McpError::Connect {
+                    server: name.to_string(),
+                    source: Box::new(source),
+                })?
+        }
+    };
+
+    let listed = service
+        .list_tools(Option::default())
+        .await
+        .map_err(|source| McpError::ListTools {
+            server: name.to_string(),
+            source,
+        })?;
+    let tools = listed
+        .tools
+        .into_iter()
+        .map(|tool| (tool.name.to_string(), tool))
+        .collect();
+    let sink = service.peer().clone();
+    Ok(UserMcpSession {
+        _service: service,
+        sink,
+        tools,
+    })
+}
+
+/// Placeholder tool that always returns the "not connected" message so the
+/// LLM can surface it naturally without causing a hard error.
+pub(crate) struct NotConnectedTool {
+    pub(crate) definition: ToolDefinition,
+    pub(crate) message: String,
+}
+
+impl NotConnectedTool {
+    pub(crate) fn new(server: &str, tool: rmcp::model::Tool, _user_id: &str) -> Self {
+        let params = tool
+            .input_schema
+            .as_ref()
+            .and_then(|s| serde_json::to_value(s).ok())
+            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+        let message = format!(
+            "Not connected: the user has not authorized access to the '{server}' MCP server. \
+             Ask them to visit the connect URL to link their account."
+        );
+        Self {
+            definition: ToolDefinition {
+                description: tool.description.map(|d| d.to_string()).unwrap_or_default(),
+                name: tool.name.to_string(),
+                parameters: params,
+            },
+            message,
+        }
+    }
+}
+
+impl ToolDyn for NotConnectedTool {
+    fn call(&self, _args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
+        let msg = self.message.clone();
+        Box::pin(async move { Ok(msg) })
+    }
+
+    fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+        let def = self.definition.clone();
+        Box::pin(async move { def })
+    }
+
+    fn name(&self) -> String {
+        self.definition.name.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn not_connected_tool_returns_message() {
+        let tool = rmcp::model::Tool {
+            name: "do_thing".into(),
+            description: Some("does a thing".into()),
+            input_schema: None,
+            annotations: None,
+        };
+        let nct = NotConnectedTool::new("github", tool, "user-1");
+        assert_eq!(nct.name(), "do_thing");
+        let result = nct.call("{}".to_string()).await.unwrap();
+        assert!(result.contains("github"));
+        assert!(result.contains("connect URL"));
+    }
+}
