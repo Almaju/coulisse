@@ -7,7 +7,7 @@ version.workspace = true
 [dependencies]
 axum.workspace = true
 axum-oidc = "0.6"
-base64 = "0.22"
+base64.workspace = true
 http = "1"
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
