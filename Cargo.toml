@@ -12,8 +12,11 @@ members = [
     "crates/mcp",
     "crates/memory",
     "crates/proxy",
+    "crates/sidecars",
     "crates/smoke",
+    "crates/tasks",
     "crates/telemetry",
+    "crates/triggers",
 ]
 
 [workspace.package]
@@ -65,9 +68,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+sidecars = { path = "crates/sidecars" }
 smoke = { path = "crates/smoke" }
 sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
+tasks = { path = "crates/tasks" }
 telemetry = { path = "crates/telemetry" }
+triggers = { path = "crates/triggers" }
 thiserror = "2"
 tokio = "1"
 tracing = "0.1"

@@ -12,6 +12,7 @@ use tokio::process::Command;
 use crate::config::{McpServerConfig, McpToolAccess, McpTransport};
 use crate::error::McpError;
 use crate::pool::{NotConnectedTool, UserMcpPool};
+use crate::sanitize;
 use crate::vault::TokenVault;
 
 /// Pool of connected MCP servers for non-OAuth servers, keyed by YAML name.
@@ -101,7 +102,7 @@ impl McpServers {
                 tools.push(Box::new(McpTool::from_mcp_server(tool, server.sink.clone())));
             }
         }
-        Ok(tools)
+        Ok(sanitize::apply(tools))
     }
 
     /// Build tools for a specific user. OAuth-enabled servers look up the
@@ -180,7 +181,7 @@ impl McpServers {
                 }
             }
         }
-        Ok(tools)
+        Ok(sanitize::apply(tools))
     }
 }
 

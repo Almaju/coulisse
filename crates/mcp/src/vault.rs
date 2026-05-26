@@ -247,35 +247,47 @@ mod tests {
         assert_eq!(token.refresh_token.as_deref(), Some("new-refresh"));
     }
 
-    #[test]
-    fn invalid_key_length_rejected() {
-        let pool = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async {
-                SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect("sqlite::memory:")
-                    .await
-                    .unwrap()
-            });
+    #[tokio::test]
+    async fn invalid_key_length_rejected() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         // Only 16 bytes, not 32
         let short_key = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
         let result = TokenVault::new(pool, &short_key);
         assert!(matches!(result, Err(McpError::VaultKeyInvalid)));
     }
 
-    #[test]
-    fn invalid_base64_rejected() {
-        let pool = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async {
-                SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect("sqlite::memory:")
-                    .await
-                    .unwrap()
-            });
+    #[tokio::test]
+    async fn invalid_base64_rejected() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         let result = TokenVault::new(pool, "!!!not-base64!!!");
         assert!(matches!(result, Err(McpError::VaultKeyInvalid)));
+    }
+
+    #[tokio::test]
+    async fn user_cannot_read_another_users_token() {
+        let vault = make_vault().await;
+        vault
+            .upsert_token("github", "user-1", "secret-token-1", None, None)
+            .await
+            .unwrap();
+        vault
+            .upsert_token("github", "user-2", "secret-token-2", None, None)
+            .await
+            .unwrap();
+
+        let token1 = vault.get_token("github", "user-1").await.unwrap().unwrap();
+        let token2 = vault.get_token("github", "user-2").await.unwrap().unwrap();
+
+        assert_eq!(token1.access_token, "secret-token-1");
+        assert_eq!(token2.access_token, "secret-token-2");
+        assert_ne!(token1.access_token, token2.access_token);
     }
 }

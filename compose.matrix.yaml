@@ -1,0 +1,46 @@
+# Local Matrix homeserver + web client + MCP bridge for Coulisse.
+#
+# One-time setup: `just matrix-init`
+# Day-to-day:     `just matrix-up` / `just matrix-down`
+#
+# Ports:
+#   8008 — Synapse (Matrix client-server API)
+#   8009 — Element Web
+#   7421 — matrix-mcp (MCP HTTP server, consumed by Coulisse via mcp.matrix)
+
+services:
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: coulisse-synapse
+    environment:
+      SYNAPSE_REPORT_STATS: "no"
+      SYNAPSE_SERVER_NAME: localhost
+    ports:
+      - "8008:8008"
+    restart: unless-stopped
+    volumes:
+      - ./docker/matrix/synapse-data:/data
+
+  element:
+    image: vectorim/element-web:latest
+    container_name: coulisse-element
+    depends_on:
+      - synapse
+    ports:
+      - "8009:80"
+    restart: unless-stopped
+    volumes:
+      - ./docker/matrix/element-config.json:/app/config.json:ro
+
+  matrix-mcp:
+    image: ghcr.io/ricelines/matrix-mcp:v0.1
+    container_name: coulisse-matrix-mcp
+    depends_on:
+      - synapse
+    environment:
+      MATRIX_HOMESERVER_URL: http://synapse:8008
+      MATRIX_PASSWORD: ${COULISSE_BOT_PASSWORD:-coulisse-dev}
+      MATRIX_USERNAME: coulisse
+    ports:
+      - "7421:8080"
+    restart: unless-stopped

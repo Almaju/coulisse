@@ -15,6 +15,7 @@ mod error;
 pub mod oauth;
 mod pool;
 pub mod routes;
+mod sanitize;
 mod server;
 pub mod vault;
 

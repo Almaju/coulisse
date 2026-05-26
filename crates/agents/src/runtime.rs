@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, UserId};
+use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, TaskQueue, UserId};
 use mcp::McpServers;
 use providers::{
     Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
@@ -12,7 +12,7 @@ use rig::tool::ToolDyn;
 
 use crate::AgentsError;
 use crate::config::{AgentConfig, AgentList};
-use crate::tools::{SubagentTool, TelemetryTool};
+use crate::tools::{DispatchTaskTool, SubagentTool, TelemetryTool};
 
 /// How many nested subagent calls are allowed before the hop limit kicks in.
 /// A→B→A→… is cut off once the depth reaches this number. Four levels is
@@ -42,6 +42,10 @@ pub(crate) struct AgentsInner {
     /// runtime never sees `experiments` directly — it just asks the
     /// resolver. Cli wires the impl (currently `ExperimentResolver`).
     pub(crate) resolver: Arc<dyn AgentResolver>,
+    /// Background-task submission surface. When present, agents see a
+    /// built-in `dispatch_task` tool that enqueues fire-and-forget runs;
+    /// when `None`, agents only have synchronous subagent dispatch.
+    task_queue: Option<Arc<dyn TaskQueue>>,
 }
 
 /// Result of `AgentsInner::build_tools`: the full `ToolDyn` list to hand
@@ -113,6 +117,9 @@ pub struct BootConfig {
     /// agent names at call time. Cli builds this from
     /// `experiments::ExperimentResolver`.
     pub resolver: Arc<dyn AgentResolver>,
+    /// Optional background-task queue. When `Some`, agents see a built-in
+    /// `dispatch_task` tool that enqueues fire-and-forget runs.
+    pub task_queue: Option<Arc<dyn TaskQueue>>,
 }
 
 impl RigAgents {
@@ -133,6 +140,7 @@ impl RigAgents {
                 mcp: config.mcp,
                 providers,
                 resolver: config.resolver,
+                task_queue: config.task_queue,
             }),
         })
     }
@@ -265,6 +273,12 @@ impl AgentsInner {
                 inner: Arc::clone(self),
                 purpose,
                 target_name: sub_name.clone(),
+                user_id,
+            }));
+        }
+        if let Some(queue) = &self.task_queue {
+            tools.push(Box::new(DispatchTaskTool {
+                queue: Arc::clone(queue),
                 user_id,
             }));
         }

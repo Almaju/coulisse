@@ -211,6 +211,79 @@ impl ToolDyn for NotConnectedTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn make_vault_with_token(
+        server: &str,
+        user_id_str: &str,
+        expires_at: Option<i64>,
+    ) -> Arc<TokenVault> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE mcp_oauth_tokens (\
+                access_token_enc  BLOB    NOT NULL, \
+                created_at        INTEGER NOT NULL, \
+                expires_at        INTEGER, \
+                refresh_token_enc BLOB, \
+                server_name       TEXT    NOT NULL, \
+                updated_at        INTEGER NOT NULL, \
+                user_id           TEXT    NOT NULL, \
+                PRIMARY KEY (server_name, user_id) \
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let key = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
+        let vault = Arc::new(TokenVault::new(pool, &key).unwrap());
+        vault
+            .upsert_token(server, user_id_str, "tok", expires_at, None)
+            .await
+            .unwrap();
+        vault
+    }
+
+    /// `expires_at = None` means no expiry information — token must not be
+    /// rejected as expired. We verify the session lookup reaches the connect
+    /// step (which fails here since there's no real server) rather than
+    /// `NotConnected`.
+    #[tokio::test]
+    async fn token_without_expiry_not_rejected_as_expired() {
+        let user_id = coulisse_core::UserId::new();
+        let user_id_str = user_id.0.to_string();
+        let vault = make_vault_with_token("github", &user_id_str, None).await;
+        let configs = HashMap::new();
+        let pool = UserMcpPool::new(configs, vault, None);
+
+        // No server config → ServerNotConfigured, not NotConnected.
+        // This proves the token expiry check was passed.
+        let err = pool.get_or_spawn("github", user_id).await.unwrap_err();
+        assert!(
+            matches!(err, McpError::ServerNotConfigured { .. }),
+            "expected ServerNotConfigured, got {err:?}"
+        );
+    }
+
+    /// A token with `expires_at` in the past must yield `NotConnected`.
+    #[tokio::test]
+    async fn expired_token_returns_not_connected() {
+        let user_id = coulisse_core::UserId::new();
+        let user_id_str = user_id.0.to_string();
+        // Expiry set to Unix epoch — definitely in the past.
+        let vault = make_vault_with_token("github", &user_id_str, Some(1)).await;
+        let configs = HashMap::new();
+        let pool = UserMcpPool::new(configs, vault, None);
+
+        let err = pool.get_or_spawn("github", user_id).await.unwrap_err();
+        assert!(
+            matches!(err, McpError::NotConnected { .. }),
+            "expected NotConnected for expired token, got {err:?}"
+        );
+    }
 
     #[tokio::test]
     async fn not_connected_tool_returns_message() {

@@ -1,0 +1,11 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Live activity</h1>
+    <p class="mt-1 text-sm text-slate-400">Background tasks and recent tool calls. Refreshes every 2 seconds.</p>
+  </div>
+  <div hx-get="/admin/live/feed"
+       hx-trigger="load, every 2s"
+       hx-swap="innerHTML">
+    <p class="text-sm italic text-slate-500">Loading…</p>
+  </div>
+</div>

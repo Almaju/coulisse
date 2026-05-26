@@ -14,11 +14,12 @@ use axum::Router;
 use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
-use coulisse_core::{AgentResolver, ScoreLookup};
+use coulisse_core::{AgentResolver, ScoreLookup, TaskQueue};
 use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::{McpServers, VaultMigrator, TokenVault, OAuthRouterState, oauth_router};
+use tasks::Tasks;
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
@@ -51,7 +52,17 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let stores = boot_stores(&config, &memory_config).await?;
     let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
     let runtime = build_runtime(&config, &memory_config, &stores).await?;
+    let worker_tasks = Arc::clone(&runtime.tasks);
+    let worker_agents = Arc::clone(&runtime.prompter);
     let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
+    crate::workers::spawn(Arc::clone(&worker_tasks), worker_agents, 4);
+    let trigger_user_id = default_user_id.unwrap_or_else(|| coulisse_core::UserId::from_string("cron"));
+    triggers::spawn_cron(
+        &config.triggers,
+        Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
+        trigger_user_id,
+    );
+    sidecars::spawn_all(&config.sidecars);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port.unwrap_or(8421)));
     print_banner(
@@ -122,6 +133,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         settings_view,
         smoke_list: Arc::clone(&smoke_list),
         smoke_store: Arc::clone(&smoke_store),
+        tasks: Arc::clone(&worker_tasks),
         telemetry,
         yaml_agents,
         yaml_experiments,
@@ -168,6 +180,14 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(oauth) = oauth_routes {
         app = app.merge(oauth);
     }
+    // Webhook triggers — `/hooks/<name>` routes declared under `triggers:`.
+    // Coulisse stays platform-agnostic: external bridges POST JSON here,
+    // we substitute it into the configured prompt template and enqueue.
+    app = app.merge(triggers::webhook_router(
+        &config.triggers,
+        Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
+        trigger_user_id,
+    ));
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -335,6 +355,7 @@ struct Runtime {
     extractor: Option<Arc<Extractor>>,
     judges: HashMap<String, Arc<Judge>>,
     prompter: Arc<RigAgents>,
+    tasks: Arc<Tasks>,
     tracker: Tracker,
 }
 
@@ -362,11 +383,13 @@ async fn build_runtime(
         Arc::clone(&experiments),
         Some(Arc::clone(&stores.judge_store) as Arc<dyn ScoreLookup>),
     ));
+    let tasks = Arc::new(Tasks::open(stores.pool.clone()).await?);
     let prompter = Arc::new(RigAgents::new(BootConfig {
         agents: Arc::clone(&stores.agents_list),
         mcp,
         providers: config.providers.clone(),
         resolver,
+        task_queue: Some(Arc::clone(&tasks) as Arc<dyn TaskQueue>),
     })?);
     let extractor = memory_config
         .extractor
@@ -378,6 +401,7 @@ async fn build_runtime(
         extractor,
         judges,
         prompter,
+        tasks,
         tracker,
     })
 }
@@ -544,6 +568,7 @@ struct AdminWiring {
     settings_view: crate::admin::SettingsHandle,
     smoke_list: smoke::SmokeList,
     smoke_store: Arc<SmokeStore>,
+    tasks: Arc<Tasks>,
     telemetry: Arc<TelemetrySink>,
     yaml_agents: agents::AgentList,
     yaml_experiments: experiments::ExperimentList,
@@ -586,7 +611,11 @@ fn build_admin_router(w: AdminWiring) -> Router {
             smoke_runner,
             w.yaml_smoke,
         ))
-        .merge(telemetry::admin::router(w.telemetry))
+        .merge(telemetry::admin::router(Arc::clone(&w.telemetry)))
+        .merge(crate::admin::live::router(crate::admin::live::State {
+            tasks: w.tasks,
+            telemetry: w.telemetry,
+        }))
         .merge(
             Router::new()
                 .route("/settings", get(crate::admin::settings))

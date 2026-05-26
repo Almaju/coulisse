@@ -17,3 +17,4 @@ pub mod server;
 pub mod shadow;
 pub mod smoke_runner;
 pub mod stream;
+pub(crate) mod workers;

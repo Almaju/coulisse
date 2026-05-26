@@ -9,12 +9,132 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (recipe).** Matrix flips from a *narration sink* to the *chat
+  UI itself*. The `mcp.matrix` server entry, every agent's
+  `mcp_tools: - server: matrix` grant, and every `Reporting Matrix:` block
+  in agent preambles are gone. Matrix integration now lives entirely in
+  the bidirectional Python bridge at `local/matrix-bridge/bridge.py`
+  (run as a sidecar): it watches rooms for `@<agent>` mentions, calls
+  `/v1/chat/completions` with `model: <agent>` and the recent room
+  history as conversation context, then posts the agent's reply back to
+  the same room. A `m.coulisse.hop` field on each posted message caps
+  agent ↔ agent chains at `COULISSE_MAX_HOPS` (3 by default). Coulisse
+  itself loses *all* Matrix awareness — there's no Matrix code anywhere
+  in the Rust binary. The same recipe works for Slack, Discord, etc. by
+  swapping the bridge. Old `docs/src/features/agent-narration.md` is
+  replaced by `docs/src/features/matrix-chat.md`.
+
+### Fixed
+
+- MCP tool names with characters outside `[a-zA-Z0-9_-]` are now sanitized
+  before being handed to the LLM provider. Anthropic enforces that pattern
+  on tool names; several MCP servers in the wild (e.g.
+  `ricelines/matrix-mcp`) use dots as namespace separators
+  (`matrix.v1.messages.send_text`), which previously caused the provider to
+  reject the entire request with `tools.N.custom.name: String should match
+  pattern`. The fix lives in `crates/mcp`: invalid characters become `_`,
+  names get truncated to 128 chars, and collisions are resolved with a
+  numeric suffix. The inner `McpTool` keeps the original name so MCP
+  dispatch still resolves correctly.
+
 ### Added
 
 - SSE heartbeat during subagent handoff: a `handoff_started` event is emitted
   within 3 s of delegation start, then a `: heartbeat` SSE comment every 20 s
   until the subagent responds. Eliminates the silent-spinner problem (#42).
   Heartbeat loop is cancelled cleanly on client disconnect via `select!`.
+- Sidecars. New top-level `sidecars:` YAML section + new `sidecars` crate
+  let Coulisse spawn long-lived helper processes alongside itself —
+  bridge scripts, listeners, exporters, anything you'd otherwise launch
+  in a separate terminal. Coulisse captures stdout/stderr into its own
+  log (tagged `sidecar=<name>`), restarts on crash per policy
+  (`always` / `on-failure` (default) / `never`), and lets you pass env
+  vars with `${VAR}` expansion. The canonical use case is paired with
+  the new webhook trigger: declare the Matrix bridge at
+  `local/matrix-bridge/bridge.py` as a sidecar and "one YAML, one
+  start command" now actually starts everything. Known limitations
+  documented in `docs/src/features/sidecars.md`: orphan processes on
+  abrupt shutdown, no retry backoff, no health checks, no admin
+  surface yet.
+- Webhook triggers. New `type: webhook` variant of the `triggers:` YAML
+  section. Coulisse exposes `POST <path>` for each entry (path must start
+  with `/hooks/`); inbound JSON payloads are run through a simple
+  `{{a.b.c}}` template substitution against the trigger's `prompt`, then
+  enqueued as a task on the queue — same shape as cron and `dispatch_task`.
+
+  ```yaml
+  triggers:
+    - name: matrix-mention
+      type: webhook
+      path: /hooks/matrix-mention
+      agent: pm
+      prompt: "{{sender}} dans {{room_name}}: {{body}}"
+  ```
+
+  Lives in the `triggers` crate (`webhook_router(triggers, queue, user_id)`
+  returns an `axum::Router` the cli merges into the main app). Validates
+  paths at startup: must start with `/hooks/`, must be unique. Coulisse
+  stays platform-agnostic — there's no Matrix or Slack code in the binary.
+  External bridges (Matrix, Slack outgoing webhooks, Discord, GitHub repo
+  hooks, anything HTTP-capable) POST JSON to the configured path. A
+  worked example ships at `local/matrix-bridge/bridge.py` — a 90-line
+  Python script using `matrix-nio` that listens for `@coulisse` mentions
+  and POSTs to Coulisse.
+- Cron triggers. New top-level `triggers:` YAML section lets you declare
+  agents that fire on a schedule, no HTTP request needed:
+
+  ```yaml
+  triggers:
+    - name: daily-standup
+      type: cron
+      schedule: "0 9 * * *"
+      agent: pm
+      prompt: "Résume l'activité d'hier."
+  ```
+
+  Schedules accept either 5-field POSIX cron (`min hour dom mon dow`) or
+  6-field with leading seconds; the 5-field form is normalised
+  automatically. Schedules are validated at startup — bad expressions
+  refuse to boot. Lives in a new `triggers` crate; each cron entry runs as
+  a tokio task that sleeps until next-fire and enqueues a task via the
+  same `TaskQueue` trait that `dispatch_task` already uses, so workers
+  don't know cron exists. Webhook triggers (the path that lets any HTTP
+  source — Matrix bridge, Slack, GitHub — summon agents without coupling
+  Coulisse to any specific tool) land in a follow-up.
+- `/admin/live` activity board. Cross-feature admin page that polls itself
+  every two seconds via htmx and renders two panels: the most recent rows
+  from the `tasks` queue (queued / running / done / errored, with relative
+  ages) and the most recent tool calls from the telemetry crate (MCP and
+  subagent kinds, with error markers). Lives in `cli/src/admin/live.rs`
+  because the data sources span two feature crates; uses the existing
+  base.html shell and matches the studio's visual style. Two new helper
+  query methods land alongside: `telemetry::Sink::recent_tool_calls(limit)`
+  and `tasks::Tasks::recent(limit)`.
+- Async task queue. New `tasks` crate stores fire-and-forget agent runs in a
+  `tasks` SQLite table with a `queued → running → done | errored` state
+  machine. A worker pool in `cli` (four workers by default) polls
+  `Tasks::next_runnable` and drives each task through the same
+  `Agents::complete` path the sync `/v1/chat/completions` endpoint uses, so a
+  background run gets the same MCP tools, subagent dispatch, and narration
+  it would get from a synchronous request. Agents see a built-in
+  `dispatch_task` tool — they call it with a target agent and prompt, get a
+  `task_id` back immediately, and the worker pool runs the dispatched agent
+  in the background. The new `TaskQueue` trait in `coulisse-core` keeps
+  `agents` from depending on `tasks` directly; mirrors the existing
+  `ScoreLookup` / `OneShotPrompt` pattern. No new YAML section yet —
+  triggers (cron, webhook, MCP-event) and a configurable `tasks:` block are
+  follow-ups.
+- Matrix-based agent narration recipe. A `compose.matrix.yaml` at the repo root
+  brings up a local Synapse homeserver, Element Web client, and the
+  `ricelines/matrix-mcp` bridge; `just matrix-init` performs the one-time
+  bootstrap (Synapse config + bot user registration). The shipped
+  `coulisse.yaml` adds an `mcp.matrix` HTTP entry and each agent's preamble
+  instructs it to post one-line status updates to a dedicated room
+  (`#standup`, `#product`, `#engineering`, `#release`). Users watch the
+  agents work in Element (web or mobile) without any custom UI. Documented
+  in `docs/src/features/agent-narration.md`.
 - `coulisse schema` subcommand emits a JSON Schema for `coulisse.yaml`
   derived from the Rust types via `schemars`. The repo ships
   `coulisse.schema.json` at the root; reference it from the top of your

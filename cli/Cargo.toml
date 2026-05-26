@@ -35,10 +35,13 @@ self_update.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
+sidecars.workspace = true
 smoke.workspace = true
+tasks.workspace = true
 telemetry.workspace = true
+triggers.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

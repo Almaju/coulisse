@@ -92,6 +92,26 @@ impl Default for MessageId {
     }
 }
 
+/// Stable identity for a background task. Returned by `TaskQueue::submit`,
+/// surfaced to whichever agent dispatched the work so it can refer back to
+/// the task in subsequent narration.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct TaskId(pub Uuid);
+
+impl TaskId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for TaskId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct UserId(pub Uuid);
@@ -287,6 +307,76 @@ pub trait OneShotPrompt: Send + Sync {
 pub struct OneShotError(pub String);
 
 impl OneShotError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
+/// Enqueue background agent work. Implemented by the `tasks` crate;
+/// consumed by `agents` so the dispatch-task tool can submit fire-and-forget
+/// work to a worker pool without taking a hard dep on `tasks`.
+pub trait TaskQueue: Send + Sync {
+    fn submit<'a>(
+        &'a self,
+        agent: &'a str,
+        prompt: &'a str,
+        user_id: UserId,
+    ) -> Pin<Box<dyn Future<Output = Result<TaskId, TaskQueueError>> + Send + 'a>>;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct TaskQueueError(pub String);
+
+impl TaskQueueError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
+/// Snapshot of one queued/running/finished task. Carries just the fields the
+/// `tasks_status` tool surfaces to an agent — the full `Task` row stays
+/// internal to the `tasks` crate.
+#[derive(Clone, Debug)]
+pub struct TaskSummary {
+    pub agent: String,
+    pub created_at: u64,
+    pub error: Option<String>,
+    pub finished_at: Option<u64>,
+    pub id: TaskId,
+    pub prompt: String,
+    pub result: Option<String>,
+    pub started_at: Option<u64>,
+    pub state: String,
+}
+
+/// Read-only view onto the task queue. Implemented by the `tasks` crate;
+/// consumed by `agents` so the `tasks_status` tool can report what's in
+/// flight without taking a hard dep on `tasks`.
+pub trait TaskStatus: Send + Sync {
+    /// Most recent tasks, newest first.
+    fn recent<'a>(
+        &'a self,
+        limit: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>>;
+
+    /// Mark every `running` task whose `started_at` is older than
+    /// `started_before_secs` as `errored` with `reason`. Returns the
+    /// number of rows touched. The cli calls this on startup to reap
+    /// tasks that were running when coulisse stopped, so PM sees them
+    /// on the next wakeup instead of believing they're still in flight.
+    fn reap_stale_running<'a>(
+        &'a self,
+        started_before_secs: u64,
+        reason: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, TaskStatusError>> + Send + 'a>>;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct TaskStatusError(pub String);
+
+impl TaskStatusError {
     pub fn new(msg: impl Into<String>) -> Self {
         Self(msg.into())
     }

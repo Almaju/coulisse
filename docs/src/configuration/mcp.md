@@ -113,4 +113,4 @@ When a request arrives for an agent with tools:
 
 Your client doesn't see any of this — the tool loop is invisible, and only the final assistant message is returned.
 
-See [MCP tool integration](../features/tools.md) for a full walkthrough.
+See [MCP tool integration](../features/tools.md) for a full walkthrough. For the Matrix integration story (which is *not* MCP-based — it's an external bridge), see [Matrix as the chat UI](../features/matrix-chat.md).

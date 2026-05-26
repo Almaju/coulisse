@@ -20,6 +20,10 @@
 # Features
 
 - [Studio UI](./features/studio-ui.md)
+- [Matrix as the chat UI](./features/matrix-chat.md)
+- [Async tasks](./features/async-tasks.md)
+- [Triggers (cron, webhook)](./features/triggers.md)
+- [Sidecars](./features/sidecars.md)
 - [Multi-agent routing](./features/multi-agent.md)
 - [Per-user memory](./features/memory.md)
 - [MCP tool integration](./features/tools.md)

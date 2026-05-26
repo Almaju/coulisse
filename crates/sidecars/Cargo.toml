@@ -1,0 +1,14 @@
+[package]
+name = "sidecars"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["io-util", "process", "rt", "time"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

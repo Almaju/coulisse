@@ -17,9 +17,11 @@ use mcp::McpServerConfig;
 use memory::MemoryYaml;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
+use sidecars::SidecarConfig;
 use smoke::SmokeTestConfig;
 use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
+use triggers::TriggerConfig;
 
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct Config {
@@ -64,6 +66,13 @@ pub struct Config {
     #[serde(default)]
     pub port: Option<u16>,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
+    /// Long-lived helper processes Coulisse spawns alongside itself
+    /// (chat-platform bridges, monitoring agents, anything you'd otherwise
+    /// launch in a separate terminal). Each entry declares a command,
+    /// optional args/env/cwd, and a restart policy. Coulisse captures
+    /// stdout/stderr into its own log; non-zero exits restart per policy.
+    #[serde(default)]
+    pub sidecars: Vec<SidecarConfig>,
     /// Synthetic-user evaluation tests. Each entry pairs a persona prompt
     /// with a target agent (or experiment); admin UI exposes a "Run now"
     /// button that drives the conversation, persists every turn, and
@@ -77,6 +86,14 @@ pub struct Config {
     /// Grafana / `SigNoz` / Jaeger / etc.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Time-based and event-based triggers that drop tasks on the
+    /// background queue without anyone making an HTTP request. Cron is
+    /// supported today; webhooks arrive in a follow-up. Each trigger
+    /// names a target `agent` and a `prompt`; firing enqueues a task
+    /// that workers run through the same handler as the sync chat
+    /// endpoint.
+    #[serde(default)]
+    pub triggers: Vec<TriggerConfig>,
 }
 
 fn expand_env_vars(s: &str) -> Result<String, ExpandError> {
@@ -186,6 +203,59 @@ impl Config {
         let experiment_names = self.validate_experiments(&agent_names)?;
         self.validate_smoke_tests(&agent_names, &experiment_names)?;
         self.validate_subagents(&agent_names, &experiment_names)?;
+        self.validate_triggers(&agent_names, &experiment_names)?;
+        self.validate_sidecars()?;
+        Ok(())
+    }
+
+    fn validate_sidecars(&self) -> Result<(), ConfigError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for s in &self.sidecars {
+            if s.command.trim().is_empty() {
+                return Err(ConfigError::SidecarBlankCommand(s.name.clone()));
+            }
+            if !seen.insert(s.name.as_str()) {
+                return Err(ConfigError::DuplicateSidecar(s.name.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_triggers(
+        &self,
+        agent_names: &HashSet<&str>,
+        experiment_names: &HashSet<&str>,
+    ) -> Result<(), ConfigError> {
+        let mut seen_names: HashSet<&str> = HashSet::new();
+        let mut seen_paths: HashSet<&str> = HashSet::new();
+        for t in &self.triggers {
+            if !seen_names.insert(t.name.as_str()) {
+                return Err(ConfigError::DuplicateTrigger(t.name.clone()));
+            }
+            if !agent_names.contains(t.agent.as_str())
+                && !experiment_names.contains(t.agent.as_str())
+            {
+                return Err(ConfigError::TriggerUnknownAgent {
+                    agent: t.agent.clone(),
+                    trigger: t.name.clone(),
+                });
+            }
+            if let triggers::TriggerKind::Webhook { path } = &t.kind {
+                if !path.starts_with("/hooks/") {
+                    return Err(ConfigError::TriggerWebhookPathInvalid {
+                        path: path.clone(),
+                        trigger: t.name.clone(),
+                    });
+                }
+                if !seen_paths.insert(path.as_str()) {
+                    return Err(ConfigError::TriggerWebhookPathDuplicate {
+                        path: path.clone(),
+                        trigger: t.name.clone(),
+                    });
+                }
+            }
+        }
+        triggers::validate_all(&self.triggers).map_err(ConfigError::Trigger)?;
         Ok(())
     }
 
@@ -600,10 +670,14 @@ pub enum ConfigError {
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
     DuplicateJudge(String),
+    #[error("duplicate sidecar name in config: {0}")]
+    DuplicateSidecar(String),
     #[error("duplicate smoke test name in config: {0}")]
     DuplicateSmokeTest(String),
     #[error("agent '{agent}' lists subagent '{subagent}' more than once")]
     DuplicateSubagent { agent: String, subagent: String },
+    #[error("duplicate trigger name in config: {0}")]
+    DuplicateTrigger(String),
     #[error(
         "environment variable '{var}' referenced in config is not set\n  at {path}:{line_number}\n   | {line_content}\n   = help: export {var}=... in your shell before starting coulisse"
     )]
@@ -726,6 +800,8 @@ pub enum ConfigError {
     SelfSubagent(String),
     #[error("experiment '{0}' uses strategy 'shadow' but does not declare a primary variant")]
     ShadowWithoutPrimary(String),
+    #[error("sidecar '{0}' has a blank command — the executable to spawn is required")]
+    SidecarBlankCommand(String),
     #[error("smoke test '{0}' has max_turns=0; set it to at least 1")]
     SmokeMaxTurnsZero(String),
     #[error(
@@ -743,6 +819,17 @@ pub enum ConfigError {
     SmokeRepetitionsZero(String),
     #[error("smoke test '{test}' targets '{target}' which is neither an agent nor an experiment")]
     SmokeUnknownTarget { target: String, test: String },
+    #[error(transparent)]
+    Trigger(triggers::TriggerError),
+    #[error("trigger '{trigger}' targets '{agent}' which is neither an agent nor an experiment")]
+    TriggerUnknownAgent { agent: String, trigger: String },
+    #[error("trigger '{trigger}' webhook path '{path}' is already used by another trigger")]
+    TriggerWebhookPathDuplicate { path: String, trigger: String },
+    #[error(
+        "trigger '{trigger}' webhook path '{path}' must start with '/hooks/' \
+         (keeps webhook routes namespaced away from /v1, /admin, and /mcp)"
+    )]
+    TriggerWebhookPathInvalid { path: String, trigger: String },
     #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
     UnknownSubagent { agent: String, subagent: String },
     #[error(

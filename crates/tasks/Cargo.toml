@@ -1,0 +1,18 @@
+[package]
+name = "tasks"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+coulisse-core.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

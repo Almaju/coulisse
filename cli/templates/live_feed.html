@@ -1,0 +1,45 @@
+<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+  <section class="rounded-lg border border-slate-800 bg-slate-900 px-5 py-4">
+    <div class="mb-3 flex items-baseline justify-between">
+      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Tasks</h2>
+      <span class="text-xs text-slate-500">{{ tasks.len() }} shown</span>
+    </div>
+    {% if tasks.is_empty() %}
+      <p class="text-sm italic text-slate-500">No tasks yet. Dispatch one and it'll show up here.</p>
+    {% else %}
+      <ul class="space-y-2">
+        {% for t in tasks %}
+          <li class="flex items-center gap-3 text-sm">
+            <span class="font-mono text-xs text-slate-500">{{ t.id_short }}</span>
+            <span class="text-slate-200">{{ t.agent }}</span>
+            <span class="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-300">{{ t.state }}</span>
+            <span class="ml-auto text-xs text-slate-500">{{ t.age }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <section class="rounded-lg border border-slate-800 bg-slate-900 px-5 py-4">
+    <div class="mb-3 flex items-baseline justify-between">
+      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Recent tool calls</h2>
+      <span class="text-xs text-slate-500">{{ calls.len() }} shown</span>
+    </div>
+    {% if calls.is_empty() %}
+      <p class="text-sm italic text-slate-500">Nothing recent.</p>
+    {% else %}
+      <ul class="space-y-2">
+        {% for c in calls %}
+          <li class="flex items-center gap-3 text-sm">
+            <span class="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-300">{{ c.kind }}</span>
+            <span class="font-mono text-slate-200">{{ c.tool_name }}</span>
+            {% if c.error %}
+              <span class="rounded bg-red-900/50 px-2 py-0.5 text-xs text-red-300">error</span>
+            {% endif %}
+            <span class="ml-auto text-xs text-slate-500">{{ c.age }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+</div>

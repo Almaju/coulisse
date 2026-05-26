@@ -79,6 +79,8 @@ pub async fn shell(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(html))
 }
 
+pub mod live;
+
 #[derive(Template)]
 #[template(path = "overview.html")]
 struct OverviewPage;
