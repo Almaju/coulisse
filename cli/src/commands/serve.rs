@@ -325,6 +325,10 @@ async fn boot_stores(
     log_smoke_merge(&report);
 
     let blob_backend = match config.storage.backend {
+        // WHY: a runtime Err is more operator-friendly than a compile-time
+        // non-exhaustive-patterns error when the 's3' feature is absent.
+        // Someone who sets `backend: s3` in YAML gets a clear message instead
+        // of a cryptic build failure.
         BackendKind::S3 => {
             return Err("storage: s3 backend requires the 's3' feature — build with --features storage/s3".into());
         }
