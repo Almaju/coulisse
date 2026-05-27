@@ -53,7 +53,7 @@ providers = { path = "crates/providers" }
 proxy = { path = "crates/proxy" }
 rand = "0.9"
 reqwest = { version = "0.12", features = ["json"] }
-rig-core = { version = "0.35", features = ["rmcp"] }
+rig-core = { version = "0.37", features = ["rmcp"] }
 schemars = { version = "0.8", features = ["preserve_order"] }
 rmcp = { version = "1", features = [
     "client",
