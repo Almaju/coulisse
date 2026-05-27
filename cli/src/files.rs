@@ -16,15 +16,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use serde_json::json;
-use storage::{FileObject, Store, StorageError};
+use storage::{FileObject, StorageError, Store};
 
 pub fn router(store: Arc<Store>) -> Router {
     Router::new()
         .route("/v1/files", post(upload).get(list))
-        .route(
-            "/v1/files/:id",
-            get(get_metadata).delete(delete_file),
-        )
+        .route("/v1/files/:id", get(get_metadata).delete(delete_file))
         .route("/v1/files/:id/content", get(get_content))
         .with_state(store)
 }
@@ -36,9 +33,11 @@ async fn upload(
     let mut file_bytes: Option<(String, String, Vec<u8>)> = None; // (filename, content_type, bytes)
     let mut purpose = String::from("assistants");
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        FilesError::BadRequest(format!("multipart error: {e}"))
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| FilesError::BadRequest(format!("multipart error: {e}")))?
+    {
         match field.name() {
             Some("purpose") => {
                 purpose = field
