@@ -29,6 +29,7 @@
 - [File attachments](./features/attachments.md)
 - [MCP tool integration](./features/tools.md)
 - [Per-user OAuth for MCP](./features/mcp-oauth.md)
+- [Admin MCP server](./features/admin-mcp.md)
 - [Multi-backend support](./features/backends.md)
 - [Streaming responses](./features/streaming.md)
 - [Rate limiting](./features/rate-limiting.md)
