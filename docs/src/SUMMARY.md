@@ -2,6 +2,15 @@
 
 [Introduction](./introduction.md)
 
+# Use Cases
+
+- [Overview](./use-cases/README.md)
+- [Personal assistant with memory](./use-cases/personal-assistant.md)
+- [Multi-model app](./use-cases/multi-model.md)
+- [Slack / webhook bot](./use-cases/webhook-bot.md)
+- [Daily briefing (cron)](./use-cases/daily-briefing.md)
+- [Orchestrator + specialists](./use-cases/orchestrator-specialists.md)
+
 # Getting Started
 
 - [Installation](./getting-started/installation.md)
