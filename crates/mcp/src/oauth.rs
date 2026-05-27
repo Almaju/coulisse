@@ -15,6 +15,7 @@ pub struct StateToken {
     pub user_id: String,
 }
 
+#[must_use]
 pub fn generate_state(hmac_key: &[u8], server: &str, user_id: &str) -> String {
     let exp = coulisse_core::now_secs() + 600;
     let payload = serde_json::json!({

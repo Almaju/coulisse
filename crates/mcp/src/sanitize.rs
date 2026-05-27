@@ -1,7 +1,7 @@
 //! Tool-name sanitization layer.
 //!
 //! MCP servers are free to expose any UTF-8 tool name they like. LLM
-//! providers are not: Anthropic enforces `^[a-zA-Z0-9_-]{1,128}$` and OpenAI
+//! providers are not: Anthropic enforces `^[a-zA-Z0-9_-]{1,128}$` and `OpenAI`
 //! is similar. The `ricelines/matrix-mcp` server, for instance, names every
 //! tool with dots (`matrix.v1.messages.send_text`), which fails outright at
 //! the provider boundary.

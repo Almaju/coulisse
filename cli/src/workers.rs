@@ -22,6 +22,10 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Spawn `count` worker tokio tasks. The handles are detached — callers
 /// hold no reference; workers exit when the runtime drops.
+//
+// `tasks` and `agents` taken by value because each spawned worker
+// clones them; the `Arc::clone(&...)` inside is the idiomatic shape.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn spawn(tasks: Arc<Tasks>, agents: Arc<RigAgents>, count: u32) {
     if count == 0 {
         return;

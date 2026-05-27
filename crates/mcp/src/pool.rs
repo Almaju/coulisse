@@ -96,7 +96,7 @@ impl UserMcpPool {
 
         // Token expired or within 60 seconds of expiry — no refresh in Phase 1-3.
         if let Some(exp) = stored.expires_at {
-            let now = coulisse_core::now_secs() as i64;
+            let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
             if now >= exp - 60 {
                 return Err(McpError::NotConnected {
                     server: server_name.to_string(),

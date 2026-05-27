@@ -10,7 +10,6 @@ use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
 use judges::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
-use tokio::sync::mpsc;
 use tracing::{Instrument, Span};
 
 use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
@@ -127,7 +126,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
             };
             let Some(event) = event else {
                 // Tick fired — emit a heartbeat comment.
-                yield Ok(meta.heartbeat_event());
+                yield Ok(StreamMeta::heartbeat_event());
                 continue;
             };
             match event {
@@ -146,10 +145,10 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                     *final_usage.lock().unwrap() = usage;
                 }
                 Ok(StreamEvent::HandoffStarted { agent }) => {
-                    yield Ok(meta.handoff_event(&agent));
+                    yield Ok(StreamMeta::handoff_event(&agent));
                 }
                 Ok(StreamEvent::Heartbeat) => {
-                    yield Ok(meta.heartbeat_event());
+                    yield Ok(StreamMeta::heartbeat_event());
                 }
                 Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
             }
@@ -301,7 +300,7 @@ impl StreamMeta {
 
     /// Emitted when a subagent handoff begins. Non-standard extension;
     /// clients that don't understand it safely ignore the event type.
-    fn handoff_event(&self, agent: &str) -> Event {
+    fn handoff_event(agent: &str) -> Event {
         Event::default()
             .event("handoff_started")
             .json_data(serde_json::json!({ "agent": agent }))
@@ -309,7 +308,7 @@ impl StreamMeta {
     }
 
     /// SSE comment — invisible to most clients, but keeps TCP alive.
-    fn heartbeat_event(&self) -> Event {
+    fn heartbeat_event() -> Event {
         Event::default().comment("heartbeat")
     }
 

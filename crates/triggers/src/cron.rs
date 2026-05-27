@@ -39,6 +39,10 @@ pub fn validate_all(triggers: &[TriggerConfig]) -> Result<(), TriggerError> {
 /// silently skips triggers with unparseable schedules to keep the runtime
 /// crash-free, but the boot-time validator is the right place to surface
 /// those errors.
+//
+// `queue: Arc` taken by value because it's cloned into each spawned
+// task; `Arc::clone(&queue)` inside is the idiomatic shape.
+#[allow(clippy::needless_pass_by_value)]
 pub fn spawn_cron(triggers: &[TriggerConfig], queue: Arc<dyn TaskQueue>, user_id: UserId) {
     for trigger in triggers {
         let TriggerKind::Cron { schedule } = &trigger.kind else {

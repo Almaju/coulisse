@@ -22,7 +22,7 @@ pub struct StoredToken {
     pub refresh_token: Option<String>,
 }
 
-/// Token vault backed by the shared SQLite pool. Tokens are stored
+/// Token vault backed by the shared `SQLite` pool. Tokens are stored
 /// AES-256-GCM encrypted with a nonce prepended (12 bytes || ciphertext).
 pub struct TokenVault {
     cipher: Aes256Gcm,
@@ -115,7 +115,7 @@ impl TokenVault {
         expires_at: Option<i64>,
         refresh_token: Option<&str>,
     ) -> Result<(), McpError> {
-        let now = coulisse_core::now_secs() as i64;
+        let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
         let access_enc = self.encrypt(server_name, access_token)?;
         let refresh_enc = refresh_token
             .map(|rt| self.encrypt(server_name, rt))
@@ -155,7 +155,8 @@ impl TokenVault {
         server_name: &str,
         user_id: &str,
     ) -> Result<Option<StoredToken>, McpError> {
-        let row: Option<(Vec<u8>, Option<i64>, Option<Vec<u8>>)> = sqlx::query_as(
+        type TokenRow = (Vec<u8>, Option<i64>, Option<Vec<u8>>);
+        let row: Option<TokenRow> = sqlx::query_as(
             "SELECT access_token_enc, expires_at, refresh_token_enc \
              FROM mcp_oauth_tokens \
              WHERE server_name = ? AND user_id = ?",

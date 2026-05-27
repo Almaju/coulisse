@@ -40,6 +40,10 @@ struct HookState {
 ///
 /// The returned router uses the unit state `()`; each handler holds its
 /// own per-trigger state baked in.
+//
+// `queue: Arc` taken by value because it's cloned into each per-trigger
+// `HookState`; the `Arc::clone(&queue)` inside is the idiomatic shape.
+#[allow(clippy::needless_pass_by_value)]
 pub fn webhook_router(
     triggers: &[TriggerConfig],
     queue: Arc<dyn TaskQueue>,

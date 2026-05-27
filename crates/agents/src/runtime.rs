@@ -211,17 +211,11 @@ impl Agents for RigAgents {
                                 (inner, rx),
                             )),
                             // Sender dropped: channel closed, just drain inner.
-                            None => match inner.next().await {
-                                None => None,
-                                Some(item) => Some((item, (inner, rx))),
-                            },
+                            None => inner.next().await.map(|item| (item, (inner, rx))),
                         }
                     }
                     item = inner.next() => {
-                        match item {
-                            None => None,
-                            Some(item) => Some((item, (inner, rx))),
-                        }
+                        item.map(|item| (item, (inner, rx)))
                     }
                 }
             },

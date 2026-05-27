@@ -37,6 +37,13 @@ use crate::smoke_runner::SmokeRunner;
 /// # Errors
 ///
 /// Returns an error if the underlying operation fails.
+///
+/// # Panics
+///
+/// Panics if the boot-time task reaper fails (the only way to reach
+/// this state is filesystem permission errors on the `SQLite` WAL,
+/// which would prevent the server from doing useful work anyway).
+#[allow(clippy::too_many_lines)] // top-level wiring; readable as a flat sequence
 pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_path(config_path)?;
     let auth = Auth::from_config(config.auth.clone()).await?;

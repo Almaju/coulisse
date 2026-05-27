@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::Router;
@@ -89,9 +90,9 @@ async fn connect_link_handler(
         urlenccode(&oauth.redirect_uri),
     );
     if !scopes.is_empty() {
-        url.push_str(&format!("&scope={}", urlenccode(&scopes)));
+        write!(url, "&scope={}", urlenccode(&scopes)).expect("write to String");
     }
-    url.push_str(&format!("&state={}", urlenccode(&state_token)));
+    write!(url, "&state={}", urlenccode(&state_token)).expect("write to String");
 
     Json(ConnectLinkResponse { url }).into_response()
 }
@@ -168,7 +169,7 @@ async fn oauth_callback_handler(
 
     let expires_at = token_response
         .expires_in
-        .map(|secs| coulisse_core::now_secs() as i64 + secs as i64);
+        .map(|secs| coulisse_core::u64_to_i64(coulisse_core::now_secs() + secs));
 
     if let Err(e) = state
         .vault

@@ -1933,7 +1933,9 @@ mcp:
 
     #[test]
     fn mcp_oauth_missing_vault_key_is_rejected() {
-        let _guard = OAUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = OAUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Ensure COULISSE_VAULT_KEY is not set for this test.
         unsafe {
             std::env::remove_var("COULISSE_VAULT_KEY");
@@ -1948,7 +1950,9 @@ mcp:
 
     #[test]
     fn mcp_oauth_missing_hmac_key_is_rejected() {
-        let _guard = OAUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = OAUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             std::env::set_var(
                 "COULISSE_VAULT_KEY",
@@ -1969,7 +1973,9 @@ mcp:
 
     #[test]
     fn mcp_oauth_blank_field_is_rejected() {
-        let _guard = OAUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = OAUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             std::env::set_var(
                 "COULISSE_VAULT_KEY",

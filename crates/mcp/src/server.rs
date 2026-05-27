@@ -98,7 +98,7 @@ impl McpServers {
                         agent: agent.to_string(),
                         server: access.server.clone(),
                     })?;
-            let picked = pick_tools(agent, &access.server, &access.only, &server.tools)?;
+            let picked = pick_tools(agent, &access.server, access.only.as_deref(), &server.tools)?;
             for tool in picked {
                 tools.push(Box::new(McpTool::from_mcp_server(
                     tool,
@@ -143,8 +143,12 @@ impl McpServers {
 
                 match pool.get_or_spawn(&access.server, user_id).await {
                     Ok(session) => {
-                        let picked =
-                            pick_tools(agent, &access.server, &access.only, &session.tools)?;
+                        let picked = pick_tools(
+                            agent,
+                            &access.server,
+                            access.only.as_deref(),
+                            &session.tools,
+                        )?;
                         for tool in picked {
                             tools.push(Box::new(McpTool::from_mcp_server(
                                 tool,
@@ -183,7 +187,8 @@ impl McpServers {
                         server: access.server.clone(),
                     }
                 })?;
-                let picked = pick_tools(agent, &access.server, &access.only, &server.tools)?;
+                let picked =
+                    pick_tools(agent, &access.server, access.only.as_deref(), &server.tools)?;
                 for tool in picked {
                     tools.push(Box::new(McpTool::from_mcp_server(
                         tool,
@@ -199,7 +204,7 @@ impl McpServers {
 fn pick_tools(
     agent: &str,
     server_name: &str,
-    only: &Option<Vec<String>>,
+    only: Option<&[String]>,
     available: &HashMap<String, rmcp::model::Tool>,
 ) -> Result<Vec<rmcp::model::Tool>, McpError> {
     match only {
