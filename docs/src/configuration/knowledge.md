@@ -37,7 +37,7 @@ Names follow the `[a-z0-9_]` slug format (slug itself max 57 chars, so the gener
 - Lowercased automatically.
 - Hyphens and slashes replaced by underscores.
 - Any other non-alphanumeric character is also replaced by an underscore.
-- Startup fails with a clear error if the result is empty or longer than 64 characters.
+- Startup fails with a clear error if the result is empty or longer than 57 characters (which would make the generated tool name exceed 64 characters).
 
 This keeps tool names compatible with every client that calls your agents, including strict MCP clients that only accept `[a-z0-9_]`.
 
