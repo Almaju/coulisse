@@ -22,6 +22,7 @@ use mcp::{McpServers, OAuthRouterState, TokenVault, VaultMigrator, oauth_router}
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
+use storage::{BlobBackend, FsBackend, QuotaConfig, Store as FileStore, StorageYaml};
 use tasks::Tasks;
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
@@ -111,6 +112,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         dynamic_agents,
         experiments_list,
         experiments_store,
+        file_store,
         judge_store,
         judges_list,
         memory,
@@ -171,6 +173,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         yaml_smoke,
     }));
     let proxy_router = auth.wrap_proxy(server::router(proxy_state));
+    let files_router = auth.wrap_proxy(crate::files::router(file_store));
 
     // Mount OAuth routes outside auth wrappers — they have their own
     // consumer-secret check via the Authorization: Bearer header.
@@ -201,6 +204,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // 404. Redirect the trailing-slash form so bookmarks don't break.
     let mut app = Router::new()
         .merge(proxy_router)
+        .merge(files_router)
         .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
         .nest("/admin", admin_router);
     if let Some(oauth) = oauth_routes {
@@ -226,6 +230,7 @@ struct Stores {
     dynamic_agents: Arc<DynamicAgents>,
     experiments_list: experiments::ExperimentList,
     experiments_store: Arc<Experiments>,
+    file_store: Arc<FileStore>,
     judge_store: Arc<Judges>,
     judges_list: judges::JudgeList,
     memory: Arc<Store>,
@@ -295,6 +300,8 @@ async fn boot_stores(
         .await?,
     );
 
+    let file_store = Arc::new(open_file_store(pool.clone(), &config.storage).await?);
+
     let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
     let report = judge_store
@@ -319,6 +326,7 @@ async fn boot_stores(
         dynamic_agents,
         experiments_list,
         experiments_store,
+        file_store,
         judge_store,
         judges_list,
         memory,
@@ -333,6 +341,25 @@ async fn boot_stores(
         yaml_judges,
         yaml_smoke,
     })
+}
+
+/// Construct the blob backend and open the file store from YAML config.
+async fn open_file_store(
+    pool: memory::SqlitePool,
+    yaml: &StorageYaml,
+) -> Result<FileStore, storage::StorageError> {
+    let backend = match yaml.backend {
+        storage::BackendKind::Fs => {
+            let fs = FsBackend::new(&yaml.fs.path).await?;
+            BlobBackend::Fs(fs)
+        }
+        #[cfg(feature = "s3")]
+        storage::BackendKind::S3 => {
+            let s3_cfg = yaml.s3.as_ref().expect("s3 config required for s3 backend");
+            BlobBackend::S3(storage::S3Backend::from_config(s3_cfg).await?)
+        }
+    };
+    FileStore::open(pool, backend, QuotaConfig::from(yaml)).await
 }
 
 fn log_agents_merge(report: &agents::MergeReport) {

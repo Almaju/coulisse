@@ -37,6 +37,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 sidecars.workspace = true
 smoke.workspace = true
+storage.workspace = true
 tasks.workspace = true
 telemetry.workspace = true
 triggers.workspace = true

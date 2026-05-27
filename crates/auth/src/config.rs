@@ -10,12 +10,25 @@ use thiserror::Error;
 pub struct Config {
     #[serde(default)]
     pub admin: Option<ScopeConfig>,
+    /// Bearer token that guards the `/mcp-admin` MCP server endpoint.
+    /// Distinct from `auth.admin` (HTTP Basic / OIDC studio) — this is a
+    /// shared secret for IDE clients (Claude Code, Cursor) that use the
+    /// Model Context Protocol to inspect and manage a deployed Coulisse
+    /// instance.
+    #[serde(default)]
+    pub mcp_admin: Option<McpAdminConfig>,
     /// Shared secret that guards `POST /mcp/{server}/connect-link`.
     /// Required when any MCP server declares an `oauth:` block.
     #[serde(default)]
     pub mcp_consumer_secret: Option<String>,
     #[serde(default)]
     pub proxy: Option<ScopeConfig>,
+}
+
+/// Bearer-token auth for the MCP admin endpoint.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+pub struct McpAdminConfig {
+    pub token: String,
 }
 
 /// One scope's auth method. Exactly one of `basic` or `oidc` must be set
@@ -74,6 +87,11 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if let Some(scope) = &self.admin {
             scope.validate("admin")?;
+        }
+        if let Some(mcp_admin) = &self.mcp_admin
+            && mcp_admin.token.trim().is_empty()
+        {
+            return Err(ConfigError::BlankMcpAdminToken);
         }
         if let Some(scope) = &self.proxy {
             scope.validate("proxy")?;
@@ -139,6 +157,8 @@ pub enum ConfigError {
         field: &'static str,
         scope: &'static str,
     },
+    #[error("auth.mcp_admin.token must be non-empty when set")]
+    BlankMcpAdminToken,
     #[error("auth.mcp_consumer_secret must be non-empty when set")]
     BlankMcpConsumerSecret,
     #[error("auth.{scope}.oidc.{field} must be non-empty")]
