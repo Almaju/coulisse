@@ -14,6 +14,7 @@
 - [Agents](./configuration/agents.md)
 - [MCP tools](./configuration/mcp.md)
 - [Memory](./configuration/memory.md)
+- [Knowledge & RAG](./configuration/knowledge.md)
 - [Telemetry](./configuration/telemetry.md)
 - [User identification](./configuration/user-id.md)
 
