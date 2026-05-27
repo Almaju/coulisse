@@ -1,15 +1,3 @@
-//! MCP admin server — exposes a set of read+write tools for IDE clients
-//! (Claude Code, Cursor) to inspect and manage a running Coulisse instance.
-//!
-//! The endpoint is `/mcp-admin` and uses Axum HTTP/SSE transport.
-//! Auth is a bearer token checked per-request against `auth.mcp_admin.token`.
-//! Every write tool emits a telemetry audit span via `tracing`.
-//!
-//! This module follows the rules:
-//! - No new crate: lives in `cli/src/` because it depends on all feature crates.
-//! - `auth.mcp_admin` scope is distinct from `auth.admin` (no crossover).
-//! - Each write emits a `tracing::info!` audit event with `tool`, `caller`, `outcome`.
-
 use std::sync::Arc;
 
 use agents::DynamicAgents;

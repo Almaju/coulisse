@@ -197,6 +197,29 @@ impl Tasks {
         row.map(TaskRow::into_task).transpose()
     }
 
+    /// Transition `id` from `errored` back to `queued` so a worker can retry
+    /// it. Returns `Ok(true)` when the row was found and transitioned, or
+    /// `Ok(false)` when no `errored` row with that id exists (either the id is
+    /// unknown or the task is in a state that cannot be re-queued).
+    /// Intentionally accepts only `errored` — requeueing `done` or `running`
+    /// tasks would cause double-execution or data loss.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database write fails.
+    pub async fn requeue(&self, id: TaskId) -> Result<bool, TaskError> {
+        let rows = sqlx::query(
+            "UPDATE tasks \
+             SET error = NULL, finished_at = NULL, started_at = NULL, state = 'queued' \
+             WHERE id = ? AND state = 'errored'",
+        )
+        .bind(id.0.to_string())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(rows > 0)
+    }
+
     /// Transition `id` to `done` with the agent's final reply as `result`.
     ///
     /// # Errors
@@ -348,6 +371,37 @@ mod tests {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
         let pool = SqlitePool::connect_with(opts).await.unwrap();
         Tasks::open(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn requeue_errored_task_back_to_queued() {
+        let q = queue().await;
+        let id = q.enqueue("pm", "p", UserId::new()).await.unwrap();
+        let _ = q.next_runnable().await.unwrap().unwrap();
+        q.mark_errored(id, "transient failure").await.unwrap();
+
+        let requeued = q.requeue(id).await.unwrap();
+        assert!(requeued);
+        let t = q.get(id).await.unwrap().unwrap();
+        assert_eq!(t.state, TaskState::Queued);
+        assert!(t.error.is_none());
+        assert!(t.started_at.is_none());
+        assert!(t.finished_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn requeue_done_task_returns_false() {
+        let q = queue().await;
+        let id = q.enqueue("pm", "p", UserId::new()).await.unwrap();
+        let _ = q.next_runnable().await.unwrap().unwrap();
+        q.mark_done(id, "done").await.unwrap();
+        assert!(!q.requeue(id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn requeue_unknown_id_returns_false() {
+        let q = queue().await;
+        assert!(!q.requeue(coulisse_core::TaskId::new()).await.unwrap());
     }
 
     #[tokio::test]
