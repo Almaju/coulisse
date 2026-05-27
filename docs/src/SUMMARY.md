@@ -2,6 +2,15 @@
 
 [Introduction](./introduction.md)
 
+# Use Cases
+
+- [Overview](./use-cases/README.md)
+- [Personal assistant with memory](./use-cases/personal-assistant.md)
+- [Multi-model app](./use-cases/multi-model.md)
+- [Slack / webhook bot](./use-cases/webhook-bot.md)
+- [Daily briefing (cron)](./use-cases/daily-briefing.md)
+- [Orchestrator + specialists](./use-cases/orchestrator-specialists.md)
+
 # Getting Started
 
 - [Installation](./getting-started/installation.md)
@@ -26,7 +35,6 @@
 - [Sidecars](./features/sidecars.md)
 - [Multi-agent routing](./features/multi-agent.md)
 - [Per-user memory](./features/memory.md)
-- [File attachments](./features/attachments.md)
 - [MCP tool integration](./features/tools.md)
 - [Per-user OAuth for MCP](./features/mcp-oauth.md)
 - [Multi-backend support](./features/backends.md)
