@@ -71,12 +71,20 @@ pub struct Completion {
 /// token usage. `ToolCall` and `ToolResult` expose rig's multi-turn tool
 /// dispatch so callers (the studio UI, observability sinks) can record what
 /// the agent tried and what came back. Correlate the pair by `call_id`.
+/// `HandoffStarted` is emitted immediately before a subagent is invoked so
+/// the SSE client knows the silence is intentional. `Heartbeat` is emitted
+/// periodically during long-running subagent calls to prevent the connection
+/// from timing out.
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
     Delta(String),
     Done {
         usage: Usage,
     },
+    HandoffStarted {
+        agent: String,
+    },
+    Heartbeat,
     ToolCall {
         args: String,
         call_id: String,

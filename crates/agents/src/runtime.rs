@@ -2,17 +2,19 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, TaskQueue, UserId};
+use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, TaskQueue, TaskStatus, UserId};
+use futures::StreamExt as _;
 use mcp::McpServers;
 use providers::{
-    Completion, CompletionStream, Conversation, Message, ProviderKind, Providers, Role,
-    ToolCallKind, MAX_TURNS,
+    Completion, CompletionStream, Conversation, MAX_TURNS, Message, ProviderKind, Providers, Role,
+    StreamEvent, ToolCallKind,
 };
 use rig::tool::ToolDyn;
+use tokio::sync::mpsc;
 
 use crate::AgentsError;
 use crate::config::{AgentConfig, AgentList};
-use crate::tools::{DispatchTaskTool, SubagentTool, TelemetryTool};
+use crate::tools::{DispatchTaskTool, SubagentTool, TasksStatusTool, TelemetryTool};
 
 /// How many nested subagent calls are allowed before the hop limit kicks in.
 /// A→B→A→… is cut off once the depth reaches this number. Four levels is
@@ -46,6 +48,10 @@ pub(crate) struct AgentsInner {
     /// built-in `dispatch_task` tool that enqueues fire-and-forget runs;
     /// when `None`, agents only have synchronous subagent dispatch.
     task_queue: Option<Arc<dyn TaskQueue>>,
+    /// Read-only view onto the task queue. When present, agents see a
+    /// built-in `tasks_status` tool that reports recent tasks across
+    /// every agent.
+    task_status: Option<Arc<dyn TaskStatus>>,
 }
 
 /// Result of `AgentsInner::build_tools`: the full `ToolDyn` list to hand
@@ -120,6 +126,11 @@ pub struct BootConfig {
     /// Optional background-task queue. When `Some`, agents see a built-in
     /// `dispatch_task` tool that enqueues fire-and-forget runs.
     pub task_queue: Option<Arc<dyn TaskQueue>>,
+    /// Optional read-only view onto the task queue. When `Some`, agents
+    /// see a built-in `tasks_status` tool reporting recent tasks. Usually
+    /// the same underlying object as `task_queue`, but split because the
+    /// dispatch and report concerns are independent.
+    pub task_status: Option<Arc<dyn TaskStatus>>,
 }
 
 impl RigAgents {
@@ -141,6 +152,7 @@ impl RigAgents {
                 providers,
                 resolver: config.resolver,
                 task_queue: config.task_queue,
+                task_status: config.task_status,
             }),
         })
     }
@@ -166,8 +178,55 @@ impl Agents for RigAgents {
         messages: Vec<Message>,
         user_id: UserId,
     ) -> Result<CompletionStream, AgentsError> {
-        AgentsInner::complete_streaming_with_depth(&self.inner, agent_name, messages, 0, user_id)
-            .await
+        // WHY: create the handoff channel here so SubagentTool can send the
+        // resolved agent name before blocking. We merge it into the
+        // CompletionStream so sse_response sees HandoffStarted events without
+        // needing to know about the channel.
+        let (handoff_tx, handoff_rx) = mpsc::channel::<String>(8);
+        let inner_stream = AgentsInner::complete_streaming_with_depth(
+            &self.inner,
+            agent_name,
+            Some(handoff_tx),
+            messages,
+            0,
+            user_id,
+        )
+        .await?;
+        // Merge the handoff receiver into the stream. We use `select!` so a
+        // handoff signal emitted by SubagentTool while the inner stream is
+        // blocked is forwarded immediately — without waiting for the next
+        // inner item to unblock the unfold loop.
+        let combined = futures::stream::unfold(
+            (inner_stream, handoff_rx),
+            |(mut inner, mut rx)| async move {
+                tokio::select! {
+                    biased;
+                    // Prefer pending handoff signals — they should arrive
+                    // first so the SSE client sees HandoffStarted before the
+                    // subagent result.
+                    agent = rx.recv() => {
+                        match agent {
+                            Some(agent) => Some((
+                                Ok(StreamEvent::HandoffStarted { agent }),
+                                (inner, rx),
+                            )),
+                            // Sender dropped: channel closed, just drain inner.
+                            None => match inner.next().await {
+                                None => None,
+                                Some(item) => Some((item, (inner, rx))),
+                            },
+                        }
+                    }
+                    item = inner.next() => {
+                        match item {
+                            None => None,
+                            Some(item) => Some((item, (inner, rx))),
+                        }
+                    }
+                }
+            },
+        );
+        Ok(Box::pin(combined))
     }
 
     async fn prompt_with(
@@ -230,7 +289,7 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, _) = self.build_tools(&agent, depth, user_id).await?;
+        let (tools, _) = self.build_tools(&agent, depth, None, user_id).await?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         let max_turns = agent.max_turns.unwrap_or(MAX_TURNS);
         provider
@@ -248,6 +307,7 @@ impl AgentsInner {
         self: &Arc<Self>,
         agent: &AgentConfig,
         depth: usize,
+        handoff_tx: Option<mpsc::Sender<String>>,
         user_id: UserId,
     ) -> Result<BuiltTools, AgentsError> {
         let raw_mcp_tools = self
@@ -270,6 +330,7 @@ impl AgentsInner {
             let purpose = self.subagent_purpose(sub_name);
             tools.push(Box::new(SubagentTool {
                 depth,
+                handoff_tx: handoff_tx.clone(),
                 inner: Arc::clone(self),
                 purpose,
                 target_name: sub_name.clone(),
@@ -282,12 +343,18 @@ impl AgentsInner {
                 user_id,
             }));
         }
+        if let Some(status) = &self.task_status {
+            tools.push(Box::new(TasksStatusTool {
+                status: Arc::clone(status),
+            }));
+        }
         Ok((tools, subagent_names))
     }
 
     async fn complete_streaming_with_depth(
         self: &Arc<Self>,
         agent_name: &str,
+        handoff_tx: Option<mpsc::Sender<String>>,
         messages: Vec<Message>,
         depth: usize,
         user_id: UserId,
@@ -307,7 +374,8 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, subagent_names) = self.build_tools(&agent, depth, user_id).await?;
+        let (tools, subagent_names) =
+            self.build_tools(&agent, depth, handoff_tx, user_id).await?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         let max_turns = agent.max_turns.unwrap_or(MAX_TURNS);
         provider

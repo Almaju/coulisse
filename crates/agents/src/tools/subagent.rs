@@ -6,6 +6,7 @@ use rig::completion::ToolDefinition;
 use rig::tool::{ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
 use serde_json::json;
+use tokio::sync::mpsc;
 use tracing::{Instrument, info_span};
 
 use crate::runtime::AgentsInner;
@@ -23,8 +24,15 @@ use crate::runtime::AgentsInner;
 ///
 /// Each invocation opens a `tool_call` tracing span so the subagent's
 /// inner tool calls nest underneath it in the studio tree.
+///
+/// When `handoff_tx` is `Some`, the tool sends the resolved agent name
+/// on it before starting the subagent call, so the parent SSE stream can
+/// emit a `handoff_started` event immediately.
 pub(crate) struct SubagentTool {
     pub(crate) depth: usize,
+    /// Sends the resolved agent name to the parent streaming loop before
+    /// the blocking subagent call starts, enabling immediate SSE notification.
+    pub(crate) handoff_tx: Option<mpsc::Sender<String>>,
     pub(crate) inner: Arc<AgentsInner>,
     pub(crate) purpose: String,
     pub(crate) target_name: String,
@@ -36,6 +44,7 @@ pub(crate) struct SubagentTool {
 impl ToolDyn for SubagentTool {
     fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
         let depth = self.depth;
+        let handoff_tx = self.handoff_tx.clone();
         let inner = Arc::clone(&self.inner);
         let target = self.target_name.clone();
         let user_id = self.user_id;
@@ -70,6 +79,13 @@ impl ToolDyn for SubagentTool {
                 // time, consistent with the sticky-by-user hashing the proxy
                 // applies at the top level.
                 let agent_name = inner.resolver.resolve(&target, user_id).await;
+
+                // Notify the parent SSE stream immediately so the client sees
+                // a `handoff_started` event rather than silence.
+                if let Some(tx) = &handoff_tx {
+                    let _ = tx.try_send(agent_name.clone());
+                }
+
                 let outcome = AgentsInner::complete_with_depth(
                     &inner,
                     &agent_name,

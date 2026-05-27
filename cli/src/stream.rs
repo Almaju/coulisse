@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agents::{Agents, CompletionStream, StreamEvent, Usage as ProviderUsage};
 use async_stream::stream;
@@ -9,11 +10,16 @@ use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
 use judges::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
+use tokio::sync::mpsc;
 use tracing::{Instrument, Span};
 
 use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
 
 use crate::server::{AppState, judges_for_agent, record_llm_call};
+
+/// Interval between SSE heartbeat events during subagent handoff.
+/// 20 s gives comfortable margin against the common 60 s proxy idle timeout.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
 /// the rest of the per-request state (user id, tracker key, user message)
@@ -93,6 +99,12 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
 
         let mut inner = inner;
         let mut errored = false;
+        // Heartbeat ticker: when a subagent blocks the inner stream for
+        // more than HEARTBEAT_INTERVAL, we emit a comment to prevent
+        // proxy / load-balancer idle-timeout disconnects. The ticker is
+        // reset on each real event so it fires only during silence.
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        heartbeat.reset();
         // NOTE: tool-call observability is owned by the agents-side
         // wrappers (which emit `tool_call` spans the SqliteLayer mirrors
         // into events / tool_calls). The streaming path only needs to
@@ -100,8 +112,24 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         // Each `inner.next()` poll runs inside `stream_span` so any
         // `tool_call` spans rig drives during that poll nest under it.
         loop {
-            let event = inner.next().instrument(stream_span.clone()).await;
-            let Some(event) = event else { break };
+            let event = tokio::select! {
+                biased;
+                ev = inner.next().instrument(stream_span.clone()) => {
+                    match ev {
+                        None => break,
+                        Some(e) => {
+                            heartbeat.reset();
+                            Some(e)
+                        }
+                    }
+                }
+                _ = heartbeat.tick() => None,
+            };
+            let Some(event) = event else {
+                // Tick fired — emit a heartbeat comment.
+                yield Ok(meta.heartbeat_event());
+                continue;
+            };
             match event {
                 Err(err) => {
                     yield Ok(meta.error_event(&err.to_string()));
@@ -116,6 +144,12 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
                 }
                 Ok(StreamEvent::Done { usage }) => {
                     *final_usage.lock().unwrap() = usage;
+                }
+                Ok(StreamEvent::HandoffStarted { agent }) => {
+                    yield Ok(meta.handoff_event(&agent));
+                }
+                Ok(StreamEvent::Heartbeat) => {
+                    yield Ok(meta.heartbeat_event());
                 }
                 Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
             }
@@ -263,6 +297,20 @@ impl StreamMeta {
             None,
             None,
         )
+    }
+
+    /// Emitted when a subagent handoff begins. Non-standard extension;
+    /// clients that don't understand it safely ignore the event type.
+    fn handoff_event(&self, agent: &str) -> Event {
+        Event::default()
+            .event("handoff_started")
+            .json_data(serde_json::json!({ "agent": agent }))
+            .expect("handoff event serializes")
+    }
+
+    /// SSE comment — invisible to most clients, but keeps TCP alive.
+    fn heartbeat_event(&self) -> Event {
+        Event::default().comment("heartbeat")
     }
 
     /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
