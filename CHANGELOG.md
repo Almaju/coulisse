@@ -11,6 +11,13 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- **SSE heartbeat during subagent handoff** (closes #42). When an agent
+  delegates to a subagent, the stream emits `event: handoff_started` with
+  the agent name within 3 seconds, then a `': heartbeat'` SSE comment
+  every 20 seconds until the subagent finishes. Prevents proxies and
+  browsers from closing the connection during long subagent turns; reduces
+  client abandon rate. Heartbeat loop is cancelled cleanly on client
+  disconnect via `select!` — no orphaned tasks.
 - **Boot trigger** (`type: boot` under `triggers:`). Fires exactly once when
   `coulisse start` runs, then never again. Same submission path as cron and
   webhook — the prompt enqueues a task; a worker drains it through the
