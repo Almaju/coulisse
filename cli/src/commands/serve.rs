@@ -22,7 +22,7 @@ use mcp::{McpServers, OAuthRouterState, TokenVault, VaultMigrator, oauth_router}
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
-use storage::{BlobBackend, FsBackend, QuotaConfig, Store as FileStore, StorageYaml};
+use storage::{BackendKind, BlobBackend, FsBackend, QuotaConfig, StorageYaml, Store as FileStore};
 use tasks::Tasks;
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
@@ -31,6 +31,7 @@ use crate::admin::shell as admin_shell;
 use crate::banner::Banner;
 use crate::config::Config;
 use crate::config_store::ConfigStore;
+use crate::files;
 use crate::memory_resolve;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
@@ -173,7 +174,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         yaml_smoke,
     }));
     let proxy_router = auth.wrap_proxy(server::router(proxy_state));
-    let files_router = auth.wrap_proxy(crate::files::router(file_store));
+    let files_router = auth.wrap_proxy(files::router(file_store));
 
     // Mount OAuth routes outside auth wrappers — they have their own
     // consumer-secret check via the Authorization: Bearer header.

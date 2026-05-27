@@ -24,6 +24,98 @@ use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 use triggers::TriggerConfig;
 
+/// One document source for the RAG knowledge index.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+pub struct KnowledgeSource {
+    /// Optional human-readable name. If omitted, derived from `source` path.
+    /// Normalized to `[a-z0-9_]`; the slug itself must be ≤ 57 chars so
+    /// the full tool name (`search_<slug>`, 7-char prefix) fits within 64.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Local directory or file path to index.
+    pub source: String,
+    /// Chunking strategy: `chunk`, `page`, or `line`. Defaults to `chunk`.
+    #[serde(default)]
+    pub strategy: ChunkStrategy,
+}
+
+/// How source files are split into chunks for embedding.
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChunkStrategy {
+    #[default]
+    Chunk,
+    Line,
+    Page,
+}
+
+/// Which embedding provider powers the knowledge index.
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingsProvider {
+    #[default]
+    Local,
+    Ollama,
+    Openai,
+}
+
+/// Embedding configuration for the knowledge index.
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct EmbeddingsConfig {
+    /// Embedding model name. Ignored when `provider: local`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Embedding provider. Defaults to `local` (BGE-small-EN-v1.5 via fastembed).
+    #[serde(default)]
+    pub provider: EmbeddingsProvider,
+}
+
+/// Internal error for slug normalization.
+#[derive(Debug)]
+enum SlugError {
+    /// Name contains non-ASCII characters; user must use ASCII instead.
+    NonAscii,
+}
+
+/// Normalize a raw knowledge source name into a `[a-z0-9_]` slug.
+///
+/// Rules (in order):
+/// 1. Reject if any character is non-ASCII — no transliteration magic.
+/// 2. Lowercase the whole string.
+/// 3. Replace hyphens, slashes, and any other non-`[a-z0-9]` characters
+///    with underscores.
+/// 4. Collapse consecutive underscores into one.
+/// 5. Trim leading and trailing underscores.
+///
+/// Returns `SlugError::NonAscii` if the input contains non-ASCII bytes.
+/// An empty result after trimming is valid here; the caller rejects it.
+pub(crate) fn to_slug(name: &str) -> Result<String, SlugError> {
+    if !name.is_ascii() {
+        return Err(SlugError::NonAscii);
+    }
+    let lowered = name.to_ascii_lowercase();
+    let replaced: String = lowered
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    // Collapse runs of underscores.
+    let mut collapsed = String::with_capacity(replaced.len());
+    let mut prev_underscore = false;
+    for c in replaced.chars() {
+        if c == '_' {
+            if !prev_underscore {
+                collapsed.push('_');
+            }
+            prev_underscore = true;
+        } else {
+            collapsed.push(c);
+            prev_underscore = false;
+        }
+    }
+    let trimmed = collapsed.trim_matches('_').to_string();
+    Ok(trimmed)
+}
+
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct Config {
     pub agents: Vec<AgentConfig>,
@@ -55,6 +147,15 @@ pub struct Config {
     pub judges: Vec<JudgeConfig>,
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Embedding configuration for the knowledge index. Defaults to local
+    /// provider (BGE-small-EN-v1.5 via fastembed, ~130 MB, downloaded once).
+    #[serde(default)]
+    pub embeddings: EmbeddingsConfig,
+    /// RAG knowledge sources. Each entry is indexed at startup and exposes a
+    /// `search_<name>` tool. Names are normalized to `[a-z0-9_]`; collisions
+    /// after normalization are rejected before boot.
+    #[serde(default)]
+    pub knowledge: Vec<KnowledgeSource>,
     /// Memory subsystem config. Two pillars: `storage` (where data lives)
     /// and `user_state` (long-term per-user memory; off by default).
     /// Omit the whole block for sensible defaults — history-only on a
@@ -81,10 +182,9 @@ pub struct Config {
     /// iterating on agent prompts and comparing experiment variants.
     #[serde(default)]
     pub smoke_tests: Vec<SmokeTestConfig>,
-    /// OpenAI-compatible file storage (`/v1/files/*`). Defaults to
-    /// filesystem backend under `./coulisse-files` with no quota. Set
-    /// `max_total_bytes` / `max_file_bytes` to enable FIFO eviction
-    /// and per-file size limits.
+    /// File storage for multimodal uploads. Implements the OpenAI Files API
+    /// (`POST /v1/files`, `GET /v1/files`, `DELETE /v1/files/:id`, etc.).
+    /// Omit to disable file uploads entirely.
     #[serde(default)]
     pub storage: StorageYaml,
     /// Observability wiring: stderr fmt logs (always on by default),
@@ -325,6 +425,7 @@ impl Config {
         }
         self.auth.validate().map_err(ConfigError::Auth)?;
         self.validate_mcp_oauth()?;
+        self.validate_knowledge()?;
         let judge_names = self.validate_judges()?;
         let agent_names = self.validate_agents(&judge_names)?;
         let experiment_names = self.validate_experiments(&agent_names)?;
@@ -332,6 +433,38 @@ impl Config {
         self.validate_subagents(&agent_names, &experiment_names)?;
         self.validate_triggers(&agent_names, &experiment_names)?;
         self.validate_sidecars()?;
+        Ok(())
+    }
+
+    fn validate_knowledge(&self) -> Result<(), ConfigError> {
+        // Maps normalized slug → original name for collision detection.
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for source in &self.knowledge {
+            let raw = source.name.as_deref().unwrap_or(&source.source);
+            let slug = to_slug(raw).map_err(|_| ConfigError::KnowledgeNonAsciiName {
+                name: raw.to_string(),
+            })?;
+            if slug.is_empty() {
+                return Err(ConfigError::KnowledgeEmptySlug {
+                    name: raw.to_string(),
+                });
+            }
+            // Tool will be exposed as `search_<slug>` (7-char prefix).
+            if slug.len() + 7 > 64 {
+                return Err(ConfigError::KnowledgeSlugTooLong {
+                    name: raw.to_string(),
+                    slug,
+                });
+            }
+            if let Some(prev) = seen.get(&slug) {
+                return Err(ConfigError::KnowledgeSlugCollision {
+                    name_a: prev.clone(),
+                    name_b: raw.to_string(),
+                    slug,
+                });
+            }
+            seen.insert(slug, raw.to_string());
+        }
         Ok(())
     }
 
@@ -813,6 +946,26 @@ pub enum ConfigError {
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
     DuplicateJudge(String),
+    #[error(
+        "knowledge source '{name}' has an empty slug after normalization; use ASCII letters, digits, hyphens, or underscores"
+    )]
+    KnowledgeEmptySlug { name: String },
+    #[error(
+        "knowledge source '{name}' contains non-ASCII characters; use ASCII letters, digits, hyphens, underscores, slashes"
+    )]
+    KnowledgeNonAsciiName { name: String },
+    #[error(
+        "knowledge sources '{name_a}' and '{name_b}' both normalize to slug '{slug}'; rename one"
+    )]
+    KnowledgeSlugCollision {
+        name_a: String,
+        name_b: String,
+        slug: String,
+    },
+    #[error(
+        "knowledge source '{name}' normalizes to slug '{slug}' which makes tool name 'search_{slug}' exceed 64 characters"
+    )]
+    KnowledgeSlugTooLong { name: String, slug: String },
     #[error("duplicate sidecar name in config: {0}")]
     DuplicateSidecar(String),
     #[error("duplicate smoke test name in config: {0}")]
@@ -983,7 +1136,7 @@ enum ExpandError {
     ConfigVarNotSet { offset: usize, var: String },
     #[error("environment variable '{var}' is not set")]
     EnvVarNotSet { offset: usize, var: String },
-    #[error("unclosed '${{' in config")]
+    #[error("unclosed '${{'  in config")]
     UnclosedEnvVar { offset: usize },
 }
 
@@ -1823,6 +1976,200 @@ smoke_tests:
         match expand_config_vars("${vars.unterminated", &vars) {
             Err(ExpandError::UnclosedEnvVar { offset }) => assert_eq!(offset, 0),
             other => panic!("expected UnclosedEnvVar, got {other:?}"),
+        }
+    }
+
+    // ── to_slug ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_slug_hyphens_become_underscores() {
+        assert_eq!(to_slug("rust-book").unwrap(), "rust_book");
+    }
+
+    #[test]
+    fn to_slug_mixed_case_is_lowercased() {
+        assert_eq!(to_slug("Rust-Book").unwrap(), "rust_book");
+    }
+
+    #[test]
+    fn to_slug_slashes_become_underscores() {
+        assert_eq!(to_slug("docs/v2/api").unwrap(), "docs_v2_api");
+    }
+
+    #[test]
+    fn to_slug_consecutive_underscores_collapsed() {
+        assert_eq!(to_slug("__foo__").unwrap(), "foo");
+        assert_eq!(to_slug("foo__bar").unwrap(), "foo_bar");
+    }
+
+    #[test]
+    fn to_slug_spaces_and_special_chars_produce_empty_after_trim() {
+        assert_eq!(to_slug(" ").unwrap(), "");
+        assert_eq!(to_slug("---").unwrap(), "");
+    }
+
+    #[test]
+    fn to_slug_non_ascii_is_rejected() {
+        match to_slug("café") {
+            Err(SlugError::NonAscii) => {}
+            other => panic!("expected NonAscii, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_slug_all_lower_alphanumeric_unchanged() {
+        assert_eq!(to_slug("already_fine").unwrap(), "already_fine");
+    }
+
+    // ── validate_knowledge ─────────────────────────────────────────────────────────
+
+    const KNOWLEDGE_BASE: &str = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+";
+
+    #[test]
+    fn knowledge_source_with_valid_name_parses() {
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: rust-book
+    source: ./docs/rust
+"
+        );
+        let config = parse(&yaml).expect("valid knowledge source");
+        assert_eq!(config.knowledge.len(), 1);
+        assert_eq!(config.knowledge[0].name.as_deref(), Some("rust-book"));
+    }
+
+    #[test]
+    fn knowledge_empty_slug_is_rejected() {
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: '---'
+    source: ./docs
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::KnowledgeEmptySlug { name }) => {
+                assert_eq!(name, "---");
+            }
+            other => panic!("expected KnowledgeEmptySlug, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn knowledge_slug_too_long_is_rejected() {
+        // 58-char slug → tool name would be 65 chars, over the 64-char limit.
+        let long_name = "a".repeat(58);
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: {long_name}
+    source: ./docs
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::KnowledgeSlugTooLong { name, slug }) => {
+                assert_eq!(name, long_name);
+                assert_eq!(slug.len(), 58);
+            }
+            other => panic!("expected KnowledgeSlugTooLong, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn knowledge_slug_exactly_57_chars_is_accepted() {
+        let name_57 = "a".repeat(57);
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: {name_57}
+    source: ./docs
+"
+        );
+        parse(&yaml).expect("57-char slug should be accepted");
+    }
+
+    #[test]
+    fn knowledge_non_ascii_name_is_rejected() {
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: \"café\"
+    source: ./docs
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::KnowledgeNonAsciiName { name }) => {
+                assert_eq!(name, "café");
+            }
+            other => panic!("expected KnowledgeNonAsciiName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn knowledge_slug_collision_order_a_is_rejected() {
+        // rust-book → rust_book, then rust_book → rust_book: collision.
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: rust-book
+    source: ./docs/a
+  - name: rust_book
+    source: ./docs/b
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::KnowledgeSlugCollision {
+                name_a,
+                name_b,
+                slug,
+            }) => {
+                assert_eq!(name_a, "rust-book");
+                assert_eq!(name_b, "rust_book");
+                assert_eq!(slug, "rust_book");
+            }
+            other => panic!("expected KnowledgeSlugCollision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn knowledge_slug_collision_order_b_is_rejected() {
+        // rust_book first, then rust-book → same slug: collision regardless of order.
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: rust_book
+    source: ./docs/a
+  - name: rust-book
+    source: ./docs/b
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::KnowledgeSlugCollision {
+                name_a,
+                name_b,
+                slug,
+            }) => {
+                assert_eq!(name_a, "rust_book");
+                assert_eq!(name_b, "rust-book");
+                assert_eq!(slug, "rust_book");
+            }
+            other => panic!("expected KnowledgeSlugCollision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn knowledge_spaces_only_name_produces_empty_slug() {
+        let yaml = format!(
+            "{KNOWLEDGE_BASE}knowledge:
+  - name: \"   \"
+    source: ./docs
+"
+        );
+        match parse(&yaml) {
+            Err(ConfigError::KnowledgeEmptySlug { .. }) => {}
+            other => panic!("expected KnowledgeEmptySlug, got {other:?}"),
         }
     }
 
