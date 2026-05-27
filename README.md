@@ -55,9 +55,12 @@ Any OpenAI SDK works — just set `base_url` to `http://localhost:8421/v1`.
 ```yaml
 providers:
   anthropic:
-    api_key: sk-ant-...
+    api_key: ${ANTHROPIC_API_KEY}
   openai:
-    api_key: sk-...
+    api_key: ${OPENAI_API_KEY}
+
+vars:
+  footer: "Team wiki: https://wiki.example.com"
 
 memory:
   storage: ./coulisse-memory.db
@@ -73,7 +76,9 @@ agents:
   - name: claude-assistant
     provider: anthropic
     model: claude-sonnet-4-5-20250929
-    preamble: You are a helpful general-purpose assistant.
+    preamble: |
+      You are a helpful general-purpose assistant.
+      ${vars.footer}
     mcp_tools:
       - server: hello
 
@@ -81,6 +86,13 @@ agents:
     provider: openai
     model: gpt-4o
     preamble: You are a helpful general-purpose assistant.
+
+triggers:
+  - name: daily-check
+    type: cron
+    schedule: "0 9 * * *"
+    agent: claude-assistant
+    prompt: "Good morning. Summarise yesterday in five bullets."
 ```
 
 Request a specific agent by setting `model` to its name. Conversation history is kept per `safety_identifier`.
@@ -94,17 +106,33 @@ Request a specific agent by setting `model` to its name. Conversation history is
 | Multi-backend | Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq. |
 | OpenAI-compatible | `/v1/chat/completions` and `/v1/models` — drop-in for any OpenAI SDK. |
 | MCP tools | Attach Model Context Protocol servers over stdio or HTTP. Per-agent filtering. |
+| Async tasks | `dispatch_task` / `tasks_status` built-in tools; background worker pool with a studio queue view. |
+| Triggers | Cron, webhook (`POST /hooks/*`), and boot triggers fire agents without an HTTP client. |
+| Sidecars | Declare long-lived helper processes (bridges, listeners) under `sidecars:` with restart policy. |
+| Config variables | Top-level `vars:` block — declare a snippet once, splice it anywhere with `${vars.name}`. |
 | Rate limiting | Per-user token quotas on hour / day / month windows. |
-| Triggers | Start agents on a schedule (`cron`), via HTTP POST (`webhook`), or at boot. |
-| Async tasks | `dispatch_task` enqueues background work; `tasks_status` reads the queue from chat. |
-| Sidecars | Long-lived helper processes (bridges, exporters) managed by Coulisse. |
 | Studio UI | `/admin/` — browse history, edit agents live, watch the real-time task board. |
-| YAML-driven | Every setting lives in `coulisse.yaml` with startup validation. |
+| YAML-driven | Every setting lives in `coulisse.yaml`. `coulisse schema` emits a JSON Schema for IDE validation. |
 
 Status: pre-1.0 — usable for prototypes and personal projects. Minor version
 bumps may include breaking changes until 1.0. See the
 [changelog](CHANGELOG.md) for what's shipped and the
 [roadmap](docs/src/reference/roadmap.md) for what's next.
+
+## Upgrading from v0.1.0
+
+The `memory:` block was reshaped. The old fields `backend`, `embedder`, `extractor`,
+`context_budget`, `memory_budget_fraction`, and `recall_k` are gone. Replace the whole
+block with:
+
+```yaml
+memory:
+  storage: ./coulisse-memory.db
+  user_state: true   # add this only if you had long-term memory enabled before
+```
+
+Run `coulisse migrate` (or just start — the migrator runs at boot). See the
+[memory configuration guide](docs/src/configuration/memory.md) for the full schema.
 
 ## Documentation
 
