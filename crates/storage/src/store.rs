@@ -87,7 +87,7 @@ impl Store {
     /// Order of operations:
     /// 1. Validate MIME via magic bytes and per-file size limit (fast).
     /// 2. Write blob to backend (before touching SQLite — crash-safe).
-    /// 3. Open an EXCLUSIVE SQLite transaction.
+    /// 3. Open a SQLite transaction.
     /// 4. Check for SHA-256 dedup; if duplicate, delete the backend blob
     ///    and return the existing record.
     /// 5. Evict FIFO until the new file fits within `max_total_bytes`.
@@ -269,8 +269,14 @@ impl Store {
     }
 
     /// Evict the oldest files until the total stored bytes + `incoming` is
-    /// within `max_total_bytes`. Must be called inside an EXCLUSIVE
-    /// transaction.
+    /// within `max_total_bytes`. Must be called inside an open transaction.
+    ///
+    /// v1 limitation: concurrent uploads from separate processes are not
+    /// serialised at the SQLite level — two processes can both pass the
+    /// quota check and both insert, temporarily exceeding the limit. The
+    /// next upload from either process will then evict back to within the
+    /// quota. Within a single process the `pool.begin()` in `upload`
+    /// serialises writes via the connection pool's write lock.
     async fn evict_for_size(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -279,15 +285,6 @@ impl Store {
         let Some(max_total) = self.quota.max_total_bytes else {
             return Ok(());
         };
-
-        // Acquire EXCLUSIVE lock to serialize concurrent uploads within the
-        // same process. In WAL mode, this promotes the read transaction to
-        // a write transaction immediately rather than at first write, which
-        // prevents the TOCTOU race between quota check and insert.
-        sqlx::query("BEGIN EXCLUSIVE")
-            .execute(&mut **tx)
-            .await
-            .ok();
 
         let total: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(bytes), 0) FROM storage_files")
             .fetch_one(&mut **tx)
