@@ -15,14 +15,21 @@ use tower::ServiceBuilder;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
-use crate::config::{Config, OidcConfig, ScopeConfig};
+use crate::config::{Config, McpAdminConfig, OidcConfig, ScopeConfig};
 
 /// Runtime auth state, built once from YAML at startup. Each scope (`proxy`
 /// for `/v1/*`, `admin` for `/admin/*`) holds its own optional [`Scheme`].
+/// The `mcp_admin` field holds a bearer token for the MCP admin endpoint.
 #[derive(Clone)]
 pub struct Auth {
     admin: Option<Scheme>,
+    mcp_admin: Option<McpAdminRuntime>,
     proxy: Option<Scheme>,
+}
+
+#[derive(Clone)]
+struct McpAdminRuntime {
+    token: String,
 }
 
 #[derive(Clone)]
@@ -112,11 +119,40 @@ impl Auth {
             None => None,
             Some(scope) => Some(Scheme::from_config(scope).await?),
         };
+        let mcp_admin = config.mcp_admin.map(|c| McpAdminRuntime::from_config(&c));
         let proxy = match config.proxy {
             None => None,
             Some(scope) => Some(Scheme::from_config(scope).await?),
         };
-        Ok(Self { admin, proxy })
+        Ok(Self {
+            admin,
+            mcp_admin,
+            proxy,
+        })
+    }
+
+    /// Check a bearer token against the `mcp_admin` scope. Returns `true`
+    /// only when `mcp_admin` auth is configured and the token matches.
+    /// An unconfigured `mcp_admin` always returns `false` — the caller
+    /// should treat unconfigured routes as absent, not open.
+    #[must_use]
+    pub fn check_mcp_admin_bearer(&self, header_value: &str) -> bool {
+        let Some(runtime) = &self.mcp_admin else {
+            return false;
+        };
+        let Some(token) = header_value
+            .strip_prefix("Bearer ")
+            .or_else(|| header_value.strip_prefix("bearer "))
+        else {
+            return false;
+        };
+        constant_time_eq(token.trim().as_bytes(), runtime.token.as_bytes())
+    }
+
+    /// Whether the MCP admin endpoint is configured (i.e. has a token).
+    #[must_use]
+    pub fn mcp_admin_enabled(&self) -> bool {
+        self.mcp_admin.is_some()
     }
 
     fn summary(scheme: Option<&Scheme>) -> &'static str {
@@ -156,6 +192,14 @@ impl Auth {
         match &self.proxy {
             None => router,
             Some(scheme) => apply(router, scheme),
+        }
+    }
+}
+
+impl McpAdminRuntime {
+    fn from_config(config: &McpAdminConfig) -> Self {
+        Self {
+            token: config.token.clone(),
         }
     }
 }
@@ -268,6 +312,55 @@ pub enum BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bearer_header(token: &str) -> String {
+        format!("Bearer {token}")
+    }
+
+    fn mcp_auth_with(token: &str) -> Auth {
+        Auth {
+            admin: None,
+            mcp_admin: Some(McpAdminRuntime {
+                token: token.to_string(),
+            }),
+            proxy: None,
+        }
+    }
+
+    #[test]
+    fn mcp_admin_valid_token_accepted() {
+        let auth = mcp_auth_with("secret-token");
+        assert!(auth.check_mcp_admin_bearer(&bearer_header("secret-token")));
+    }
+
+    #[test]
+    fn mcp_admin_wrong_token_rejected() {
+        let auth = mcp_auth_with("secret-token");
+        assert!(!auth.check_mcp_admin_bearer(&bearer_header("wrong")));
+    }
+
+    #[test]
+    fn mcp_admin_no_config_always_rejected() {
+        let auth = Auth {
+            admin: None,
+            mcp_admin: None,
+            proxy: None,
+        };
+        assert!(!auth.check_mcp_admin_bearer(&bearer_header("secret-token")));
+    }
+
+    #[test]
+    fn mcp_admin_basic_scheme_rejected() {
+        let auth = mcp_auth_with("secret-token");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:secret-token");
+        assert!(!auth.check_mcp_admin_bearer(&format!("Basic {encoded}")));
+    }
+
+    #[test]
+    fn mcp_admin_lowercase_bearer_accepted() {
+        let auth = mcp_auth_with("tok");
+        assert!(auth.check_mcp_admin_bearer("bearer tok"));
+    }
 
     fn header_for(user: &str, pass: &str) -> String {
         let pair = format!("{user}:{pass}");
