@@ -39,43 +39,6 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
   were mid-flight when the process stopped (worker died before
   `mark_done`/`mark_errored` could run). The sweep happens before
   workers spawn so they never claim stale rows.
-
-### Changed
-
-- **Breaking (recipe).** Matrix flips from a *narration sink* to the *chat
-  UI itself*. The `mcp.matrix` server entry, every agent's
-  `mcp_tools: - server: matrix` grant, and every `Reporting Matrix:` block
-  in agent preambles are gone. Matrix integration now lives entirely in
-  the bidirectional Python bridge at `local/matrix-bridge/bridge.py`
-  (run as a sidecar): it watches rooms for `@<agent>` mentions, calls
-  `/v1/chat/completions` with `model: <agent>` and the recent room
-  history as conversation context, then posts the agent's reply back to
-  the same room. A `m.coulisse.hop` field on each posted message caps
-  agent ↔ agent chains at `COULISSE_MAX_HOPS` (3 by default). Coulisse
-  itself loses *all* Matrix awareness — there's no Matrix code anywhere
-  in the Rust binary. The same recipe works for Slack, Discord, etc. by
-  swapping the bridge. Old `docs/src/features/agent-narration.md` is
-  replaced by `docs/src/features/matrix-chat.md`.
-
-### Fixed
-
-- MCP tool names with characters outside `[a-zA-Z0-9_-]` are now sanitized
-  before being handed to the LLM provider. Anthropic enforces that pattern
-  on tool names; several MCP servers in the wild (e.g.
-  `ricelines/matrix-mcp`) use dots as namespace separators
-  (`matrix.v1.messages.send_text`), which previously caused the provider to
-  reject the entire request with `tools.N.custom.name: String should match
-  pattern`. The fix lives in `crates/mcp`: invalid characters become `_`,
-  names get truncated to 128 chars, and collisions are resolved with a
-  numeric suffix. The inner `McpTool` keeps the original name so MCP
-  dispatch still resolves correctly.
-
-### Added
-
-- SSE heartbeat during subagent handoff: a `handoff_started` event is emitted
-  within 3 s of delegation start, then a `: heartbeat` SSE comment every 20 s
-  until the subagent responds. Eliminates the silent-spinner problem (#42).
-  Heartbeat loop is cancelled cleanly on client disconnect via `select!`.
 - Sidecars. New top-level `sidecars:` YAML section + new `sidecars` crate
   let Coulisse spawn long-lived helper processes alongside itself —
   bridge scripts, listeners, exporters, anything you'd otherwise launch
@@ -187,6 +150,20 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
+- **Breaking (recipe).** Matrix flips from a *narration sink* to the *chat
+  UI itself*. The `mcp.matrix` server entry, every agent's
+  `mcp_tools: - server: matrix` grant, and every `Reporting Matrix:` block
+  in agent preambles are gone. Matrix integration now lives entirely in
+  the bidirectional Python bridge at `local/matrix-bridge/bridge.py`
+  (run as a sidecar): it watches rooms for `@<agent>` mentions, calls
+  `/v1/chat/completions` with `model: <agent>` and the recent room
+  history as conversation context, then posts the agent's reply back to
+  the same room. A `m.coulisse.hop` field on each posted message caps
+  agent ↔ agent chains at `COULISSE_MAX_HOPS` (3 by default). Coulisse
+  itself loses *all* Matrix awareness — there's no Matrix code anywhere
+  in the Rust binary. The same recipe works for Slack, Discord, etc. by
+  swapping the bridge. Old `docs/src/features/agent-narration.md` is
+  replaced by `docs/src/features/matrix-chat.md`.
 - **Breaking:** the `memory:` YAML block was reshaped around two pillars —
   `storage` (where data lives) and `user_state` (long-term memory; off by
   default). The old `memory.backend`, `memory.embedder`, `memory.extractor`,
@@ -213,6 +190,19 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
   `/admin/smoke` no longer write to `coulisse.yaml` — they write to the
   database. Each gains a `POST /admin/<crate>/{name}/reset` route that
   drops the database row.
+
+### Fixed
+
+- MCP tool names with characters outside `[a-zA-Z0-9_-]` are now sanitized
+  before being handed to the LLM provider. Anthropic enforces that pattern
+  on tool names; several MCP servers in the wild (e.g.
+  `ricelines/matrix-mcp`) use dots as namespace separators
+  (`matrix.v1.messages.send_text`), which previously caused the provider to
+  reject the entire request with `tools.N.custom.name: String should match
+  pattern`. The fix lives in `crates/mcp`: invalid characters become `_`,
+  names get truncated to 128 chars, and collisions are resolved with a
+  numeric suffix. The inner `McpTool` keeps the original name so MCP
+  dispatch still resolves correctly.
 
 ## [0.1.0] - 2026-04-26
 
