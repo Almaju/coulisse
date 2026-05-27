@@ -286,10 +286,7 @@ impl Store {
         // same process. In WAL mode, this promotes the read transaction to
         // a write transaction immediately rather than at first write, which
         // prevents the TOCTOU race between quota check and insert.
-        sqlx::query("BEGIN EXCLUSIVE")
-            .execute(&mut **tx)
-            .await
-            .ok();
+        sqlx::query("BEGIN EXCLUSIVE").execute(&mut **tx).await.ok();
 
         let total: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(bytes), 0) FROM storage_files")
             .fetch_one(&mut **tx)
