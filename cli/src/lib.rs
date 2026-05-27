@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod admin_extras;
+pub mod admin_mcp;
 pub mod banner;
 pub mod commands;
 pub mod config;
