@@ -74,6 +74,56 @@ Streaming responses use the same per-user memory bucket and rate-limit accountin
 
 Agents with MCP tools attached stream the same way. Tool-call internals run inside the rig multi-turn loop and are not surfaced to the client; you'll see a pause while a tool runs, then the model's text continues. The `delta.content` field is the only delta variant Coulisse currently emits.
 
+## Subagent handoff events
+
+When an agent delegates to a subagent, the stream doesn't go silent — Coulisse signals the handoff so your UI can show meaningful feedback instead of a frozen spinner.
+
+### `handoff_started`
+
+Emitted within 3 seconds of delegation, before the subagent starts its own turn:
+
+```text
+event: handoff_started
+data: {"agent":"resume_critic"}
+```
+
+Use this to update your UI: *"Passing to resume_critic…"* is better than a silent spinner.
+
+### Heartbeat
+
+While a subagent is running, Coulisse emits a keep-alive comment every 20 seconds:
+
+```text
+: heartbeat
+```
+
+This is a standard SSE comment (lines starting with `:`). Most SSE clients ignore it automatically — it exists to prevent proxies and load balancers from closing the connection during long subagent turns.
+
+**If your SSE stream goes silent for more than 20 seconds during a subagent turn, that's a bug** — open an issue.
+
+### Sequence during a handoff
+
+```text
+# Parent agent starts responding
+data: {"choices":[{"delta":{"content":"Let me get the resume critic on this."}}]}
+
+# Handoff announced
+event: handoff_started
+data: {"agent":"resume_critic"}
+
+# Heartbeats while subagent works
+: heartbeat
+: heartbeat
+
+# Subagent result flows back as normal content
+data: {"choices":[{"delta":{"content":"Here's the revised resume…"}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+data: [DONE]
+```
+
+The subagent's internal turns are not surfaced — you only see the final result as `delta.content` from the parent.
+
 ## Errors mid-stream
 
 If the upstream provider fails after the stream has started, Coulisse emits one terminal frame containing an `error` field with the failure reason, then `[DONE]`. The HTTP status is already `200` by then — clients should check for the `error` field on the final chunk.
