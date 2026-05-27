@@ -35,6 +35,7 @@
 - [Sidecars](./features/sidecars.md)
 - [Multi-agent routing](./features/multi-agent.md)
 - [Per-user memory](./features/memory.md)
+- [File attachments](./features/attachments.md)
 - [MCP tool integration](./features/tools.md)
 - [Per-user OAuth for MCP](./features/mcp-oauth.md)
 - [Multi-backend support](./features/backends.md)
