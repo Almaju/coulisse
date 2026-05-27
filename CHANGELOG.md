@@ -11,6 +11,10 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- SSE heartbeat during subagent handoff: a `handoff_started` event is emitted
+  within 3 s of delegation start, then a `: heartbeat` SSE comment every 20 s
+  until the subagent responds. Eliminates the silent-spinner problem (#42).
+  Heartbeat loop is cancelled cleanly on client disconnect via `select!`.
 - `coulisse schema` subcommand emits a JSON Schema for `coulisse.yaml`
   derived from the Rust types via `schemars`. The repo ships
   `coulisse.schema.json` at the root; reference it from the top of your
