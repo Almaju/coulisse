@@ -4,8 +4,8 @@ use agents::DynamicAgents;
 use auth::Auth;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Json, Path, Query, State};
 use axum::extract::Request;
+use axum::extract::{Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -48,11 +48,7 @@ pub fn router(state: McpAdminState) -> Option<Router> {
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 
-async fn mcp_admin_auth(
-    State(state): State<McpAdminState>,
-    req: Request,
-    next: Next,
-) -> Response {
+async fn mcp_admin_auth(State(state): State<McpAdminState>, req: Request, next: Next) -> Response {
     let ok = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -110,10 +106,7 @@ async fn list_agents(State(state): State<McpAdminState>) -> Response {
     }
 }
 
-async fn get_agent(
-    State(state): State<McpAdminState>,
-    Path(name): Path<String>,
-) -> Response {
+async fn get_agent(State(state): State<McpAdminState>, Path(name): Path<String>) -> Response {
     match state.dynamic_agents.list().await {
         Ok(rows) => match rows.into_iter().find(|r| r.name == name) {
             Some(row) => Json(serde_json::json!({
@@ -148,11 +141,7 @@ async fn update_agent(
     Json(body): Json<UpdateAgentBody>,
 ) -> Response {
     let caller = caller_hash(&headers);
-    match state
-        .dynamic_agents
-        .put_active(&name, &body.config)
-        .await
-    {
+    match state.dynamic_agents.put_active(&name, &body.config).await {
         Ok(()) => {
             tracing::info!(
                 tool = "update_agent",
@@ -235,10 +224,7 @@ async fn list_tasks(
     }
 }
 
-async fn get_task(
-    State(state): State<McpAdminState>,
-    Path(id): Path<String>,
-) -> Response {
+async fn get_task(State(state): State<McpAdminState>, Path(id): Path<String>) -> Response {
     let task_id = match parse_task_id(&id) {
         Some(id) => id,
         None => {
@@ -447,7 +433,5 @@ async fn reset_rate_limit(
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn parse_task_id(s: &str) -> Option<coulisse_core::TaskId> {
-    uuid::Uuid::parse_str(s)
-        .ok()
-        .map(coulisse_core::TaskId)
+    uuid::Uuid::parse_str(s).ok().map(coulisse_core::TaskId)
 }
