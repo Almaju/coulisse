@@ -113,7 +113,10 @@ Eviction is FIFO: when a new upload would push the total over `max_total_bytes`,
 
 Coulisse computes a SHA-256 of each uploaded file. If you upload the same bytes twice, the second call returns the *same `file_id`* — no storage is consumed and no blob is written twice.
 
-**v1 limitation — deduplication is global, not per-user.** If two different callers upload identical bytes, they receive the same `file_id` and share the underlying blob. A `DELETE` by either caller removes the file for both. This is safe when Coulisse runs as a single-tenant tool (one team, one trusted process). **Do not expose Coulisse to mutually untrusted users until per-user deduplication is implemented** (tracked in [#61](https://github.com/Almaju/coulisse/issues/61)).
+> **⚠ v1 limitation — single-tenant only.**
+> Deduplication is **global**: two different users uploading identical bytes share the same `file_id` and the same underlying blob. This means a `DELETE` by user A removes the file for user B as well.
+>
+> Coulisse v1 is designed for single-tenant use or for environments where all users trust each other (e.g. a team's internal tooling). **Do not expose Coulisse to mutually untrusted users until per-user scoped deduplication is implemented** (tracked in [#61](https://github.com/Almaju/coulisse/issues/61)).
 
 ## What Coulisse does NOT do
 
