@@ -34,6 +34,35 @@ Coulisse expands all `${...}` placeholders before parsing the YAML, so substitut
 
 If a referenced variable is not set in the environment, the server refuses to start and prints an error naming the missing variable. An unclosed `${` with no matching `}` is also rejected at startup.
 
+## Config variables
+
+Named text snippets declared under a top-level `vars:` block and spliced into other string fields with `${vars.<name>}`. Useful for sharing a preamble footer across agents, repeating a path, or factoring any string that would otherwise duplicate.
+
+```yaml
+vars:
+  team_footer: |
+    Team: @pm, @coder, @qa
+    Rooms: #standup, #engineering, #worklog
+
+agents:
+  - name: pm
+    provider: anthropic
+    model: claude-opus-4-7
+    preamble: |
+      You are the PM.
+      ${vars.team_footer}
+  - name: coder
+    provider: anthropic
+    model: claude-sonnet-4-6
+    preamble: |
+      You are the coder.
+      ${vars.team_footer}
+```
+
+`${vars.<name>}` is resolved **after** environment-variable expansion, so a var's value can itself contain `${VAR}` references. Substitution is **single-pass**: a substituted value containing `${vars.x}` is not re-expanded. Unknown `${vars.x}` references abort startup with the offending line.
+
+Multi-line var values inherit the placeholder's leading indent — every line after the first gets prefixed with the same whitespace as the line containing `${vars.x}`. This lets a snippet splice cleanly into a YAML block scalar (`preamble: |`) without breaking the indentation contract.
+
 ## Top-level
 
 ```yaml
@@ -48,6 +77,8 @@ port: <int>                   # optional; defaults to 8421
 providers: { ... }            # required
 smoke_tests: [ ... ]          # optional; synthetic-user evaluation runs
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
+triggers: [ ... ]             # optional; cron / webhook / boot
+vars: { name: value, ... }    # optional; named snippets referenced via ${vars.<name>}
 ```
 
 ## `auth`

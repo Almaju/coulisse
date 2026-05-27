@@ -374,8 +374,7 @@ impl AgentsInner {
                 provider: agent.provider,
             }
         })?;
-        let (tools, subagent_names) =
-            self.build_tools(&agent, depth, handoff_tx, user_id).await?;
+        let (tools, subagent_names) = self.build_tools(&agent, depth, handoff_tx, user_id).await?;
         let conversation = Conversation::from_messages(messages, &agent.preamble)?;
         let max_turns = agent.max_turns.unwrap_or(MAX_TURNS);
         provider

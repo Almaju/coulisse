@@ -19,6 +19,7 @@ tracing.workspace = true
 [dev-dependencies]
 serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

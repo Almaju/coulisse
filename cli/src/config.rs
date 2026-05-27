@@ -94,6 +94,22 @@ pub struct Config {
     /// endpoint.
     #[serde(default)]
     pub triggers: Vec<TriggerConfig>,
+    /// Named text snippets you can splice into any string field using
+    /// `${vars.<name>}`. Resolved after env-var expansion, single-pass
+    /// (a var's value is not itself re-expanded). Useful for sharing
+    /// preamble footers across agents, common paths, repeated strings.
+    #[serde(default)]
+    pub vars: HashMap<String, String>,
+}
+
+/// Tiny pre-parse target used to extract the `vars:` table before the
+/// full `Config` deserialization. Lets us substitute `${vars.x}` in the
+/// raw YAML *before* fields like `preamble` get parsed, so the
+/// substitution is field-agnostic and works anywhere a string lives.
+#[derive(Debug, Deserialize)]
+struct VarsOnly {
+    #[serde(default)]
+    vars: HashMap<String, String>,
 }
 
 fn expand_env_vars(s: &str) -> Result<String, ExpandError> {
@@ -114,6 +130,15 @@ fn expand_env_vars_with(
             .find('}')
             .ok_or(ExpandError::UnclosedEnvVar { offset })?;
         let var = &rest[..end];
+        // `${vars.*}` is resolved by `expand_config_vars` in a second
+        // pass once the `vars:` table has been parsed — leave it intact.
+        if var.starts_with("vars.") {
+            result.push_str("${");
+            result.push_str(var);
+            result.push('}');
+            rest = &rest[end + 1..];
+            continue;
+        }
         let value = lookup(var).ok_or_else(|| ExpandError::EnvVarNotSet {
             offset,
             var: var.to_string(),
@@ -123,6 +148,63 @@ fn expand_env_vars_with(
     }
     result.push_str(rest);
     Ok(result)
+}
+
+/// Resolve `${vars.<name>}` placeholders against the `vars:` table.
+/// Runs after env-var expansion, so any `${VAR}` is already gone.
+/// Single-pass: a substituted value containing `${vars.x}` is **not**
+/// itself re-expanded — keeps the loader simple and prevents cycles.
+///
+/// Multi-line values inherit the placeholder's leading indent so they
+/// don't break YAML block scalars. The first line lands wherever the
+/// `${...}` was in the source; every subsequent line gets prefixed with
+/// the same leading whitespace as the placeholder's line. Without this,
+/// splicing a multi-line snippet into `preamble: |` would collapse the
+/// block's indentation contract and fail to parse.
+fn expand_config_vars(s: &str, vars: &HashMap<String, String>) -> Result<String, ExpandError> {
+    let mut result = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("${vars.") {
+        let offset = (s.len() - rest.len()) + start;
+        result.push_str(&rest[..start]);
+        // Capture indent of the placeholder's line from what we've
+        // written so far, *before* advancing `rest`.
+        let indent = leading_indent_of_last_line(&result);
+        rest = &rest[start + "${vars.".len()..];
+        let end = rest
+            .find('}')
+            .ok_or(ExpandError::UnclosedEnvVar { offset })?;
+        let name = &rest[..end];
+        let value = vars.get(name).ok_or_else(|| ExpandError::ConfigVarNotSet {
+            offset,
+            var: name.to_string(),
+        })?;
+        let mut lines = value.split('\n');
+        if let Some(first) = lines.next() {
+            result.push_str(first);
+        }
+        for line in lines {
+            result.push('\n');
+            if !line.is_empty() {
+                result.push_str(&indent);
+            }
+            result.push_str(line);
+        }
+        rest = &rest[end + 1..];
+    }
+    result.push_str(rest);
+    Ok(result)
+}
+
+/// Leading whitespace of the last line of `s` — everything from the most
+/// recent `\n` (or start of string) up to the first non-whitespace
+/// character. Empty when the last line begins with non-whitespace.
+fn leading_indent_of_last_line(s: &str) -> String {
+    let line_start = s.rfind('\n').map_or(0, |i| i + 1);
+    s[line_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect()
 }
 
 /// Convert a byte offset into the source into (1-indexed line number,
@@ -158,21 +240,59 @@ impl Config {
             path: path.display().to_string(),
             source,
         })?;
-        let contents = expand_env_vars(&raw).map_err(|e| {
-            let path = path.display().to_string();
-            let (line_number, line_content) = locate(&raw, e.offset());
+        Self::from_str(&raw, &path.display().to_string())
+    }
+
+    /// Load a config from a YAML string, using `path` only for error
+    /// messages. Same pipeline as `from_path`: env-var expansion →
+    /// `vars:` extraction → `${vars.x}` substitution → full parse →
+    /// validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if expansion, parsing, or validation fails.
+    pub fn from_str(raw: &str, path: &str) -> Result<Self, ConfigError> {
+        let env_expanded = expand_env_vars(raw).map_err(|e| {
+            let (line_number, line_content) = locate(raw, e.offset());
             match e {
                 ExpandError::EnvVarNotSet { var, .. } => ConfigError::EnvVarNotSet {
                     line_content,
                     line_number,
-                    path,
+                    path: path.to_string(),
                     var,
                 },
                 ExpandError::UnclosedEnvVar { .. } => ConfigError::UnclosedEnvVar {
                     line_content,
                     line_number,
-                    path,
+                    path: path.to_string(),
                 },
+                ExpandError::ConfigVarNotSet { .. } => {
+                    unreachable!("env-var pass cannot emit config-var errors")
+                }
+            }
+        })?;
+        let vars_only: VarsOnly =
+            serde_yaml::from_str(&env_expanded).map_err(ConfigError::ParseConfig)?;
+        let contents = expand_config_vars(&env_expanded, &vars_only.vars).map_err(|e| {
+            // Locate against the env-expanded text — that's where the
+            // offset points. Multi-line env-var values may shift line
+            // numbers; the line content still shows the placeholder.
+            let (line_number, line_content) = locate(&env_expanded, e.offset());
+            match e {
+                ExpandError::ConfigVarNotSet { var, .. } => ConfigError::ConfigVarNotSet {
+                    line_content,
+                    line_number,
+                    path: path.to_string(),
+                    var,
+                },
+                ExpandError::UnclosedEnvVar { .. } => ConfigError::UnclosedEnvVar {
+                    line_content,
+                    line_number,
+                    path: path.to_string(),
+                },
+                ExpandError::EnvVarNotSet { .. } => {
+                    unreachable!("config-var pass cannot emit env-var errors")
+                }
             }
         })?;
         let config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
@@ -232,7 +352,14 @@ impl Config {
             if !seen_names.insert(t.name.as_str()) {
                 return Err(ConfigError::DuplicateTrigger(t.name.clone()));
             }
-            if !agent_names.contains(t.agent.as_str())
+            // Templated `agent:` fields (e.g. `agent: "{{agent}}"` for
+            // webhooks) cannot be cross-validated at load time — the
+            // value isn't known until a request arrives. Skip the check
+            // and let the worker surface unknown-agent errors at run
+            // time via the task's error state.
+            let is_templated = t.agent.contains("{{");
+            if !is_templated
+                && !agent_names.contains(t.agent.as_str())
                 && !experiment_names.contains(t.agent.as_str())
             {
                 return Err(ConfigError::TriggerUnknownAgent {
@@ -666,6 +793,15 @@ pub enum ConfigError {
     BanditWithoutMetric(String),
     #[error("default_user_id must be non-empty when set")]
     BlankDefaultUserId,
+    #[error(
+        "config variable '{var}' referenced via ${{vars.{var}}} is not declared in the `vars:` block\n  at {path}:{line_number}\n   | {line_content}\n   = help: add `{var}: ...` under the top-level `vars:` block"
+    )]
+    ConfigVarNotSet {
+        line_content: String,
+        line_number: usize,
+        path: String,
+        var: String,
+    },
     #[error("duplicate agent name in config: {0}")]
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
@@ -836,6 +972,8 @@ pub enum ConfigError {
 /// path/line-aware `ConfigError::EnvVarNotSet` and `UnclosedEnvVar`.
 #[derive(Debug, Error)]
 enum ExpandError {
+    #[error("config variable 'vars.{var}' is not declared")]
+    ConfigVarNotSet { offset: usize, var: String },
     #[error("environment variable '{var}' is not set")]
     EnvVarNotSet { offset: usize, var: String },
     #[error("unclosed '${{' in config")]
@@ -845,7 +983,9 @@ enum ExpandError {
 impl ExpandError {
     fn offset(&self) -> usize {
         match self {
-            Self::EnvVarNotSet { offset, .. } | Self::UnclosedEnvVar { offset } => *offset,
+            Self::ConfigVarNotSet { offset, .. }
+            | Self::EnvVarNotSet { offset, .. }
+            | Self::UnclosedEnvVar { offset } => *offset,
         }
     }
 }
@@ -1605,6 +1745,134 @@ smoke_tests:
         let (line_number, line_content) = locate(source, source.len() + 100);
         assert_eq!(line_number, 3);
         assert_eq!(line_content, "three");
+    }
+
+    #[test]
+    fn env_var_pass_leaves_config_vars_intact() {
+        let result = expand_env_vars_with("hello ${vars.team} ${KEY}", lookup).unwrap();
+        assert_eq!(result, "hello ${vars.team} hello");
+    }
+
+    #[test]
+    fn config_var_pass_substitutes_known_vars() {
+        let mut vars = HashMap::new();
+        vars.insert("team".to_string(), "alice, bob".to_string());
+        let result = expand_config_vars("members: ${vars.team}", &vars).unwrap();
+        assert_eq!(result, "members: alice, bob");
+    }
+
+    #[test]
+    fn config_var_pass_errors_on_unknown_var() {
+        let vars = HashMap::new();
+        match expand_config_vars("${vars.ghost}", &vars) {
+            Err(ExpandError::ConfigVarNotSet { var, offset }) => {
+                assert_eq!(var, "ghost");
+                assert_eq!(offset, 0);
+            }
+            other => panic!("expected ConfigVarNotSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_var_pass_preserves_indent_for_multiline_values() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "rooms".to_string(),
+            "**Rooms:**\n- #standup\n- #engineering".to_string(),
+        );
+        // 6 spaces of leading indent — matches what a YAML block scalar
+        // would carry.
+        let src = "      ${vars.rooms}";
+        let out = expand_config_vars(src, &vars).unwrap();
+        assert_eq!(
+            out,
+            "      **Rooms:**\n      - #standup\n      - #engineering"
+        );
+    }
+
+    #[test]
+    fn config_var_pass_does_not_indent_empty_lines() {
+        let mut vars = HashMap::new();
+        vars.insert("snippet".to_string(), "line one\n\nline three".to_string());
+        let out = expand_config_vars("    ${vars.snippet}", &vars).unwrap();
+        // Empty lines should not get indent — they stay blank.
+        assert_eq!(out, "    line one\n\n    line three");
+    }
+
+    #[test]
+    fn config_var_pass_does_not_recurse() {
+        // A var's value is substituted verbatim. If the value itself contains
+        // `${vars.x}`, that text is left as-is — single-pass by design.
+        let mut vars = HashMap::new();
+        vars.insert("a".to_string(), "before ${vars.b} after".to_string());
+        vars.insert("b".to_string(), "B".to_string());
+        let result = expand_config_vars("${vars.a}", &vars).unwrap();
+        assert_eq!(result, "before ${vars.b} after");
+    }
+
+    #[test]
+    fn config_var_pass_handles_unclosed_brace() {
+        let vars = HashMap::new();
+        match expand_config_vars("${vars.unterminated", &vars) {
+            Err(ExpandError::UnclosedEnvVar { offset }) => assert_eq!(offset, 0),
+            other => panic!("expected UnclosedEnvVar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_var_in_preamble_resolves_through_from_str() {
+        let yaml = "
+vars:
+  team_footer: |
+    Team: @pm, @coder, @qa
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: pm
+    provider: openai
+    model: gpt-4
+    preamble: |
+      You are the PM.
+      ${vars.team_footer}
+";
+        let config = Config::from_str(yaml, "<test>").expect("valid config with vars");
+        let pm = config.agents.iter().find(|a| a.name == "pm").unwrap();
+        assert!(
+            pm.preamble.contains("Team: @pm, @coder, @qa"),
+            "preamble should contain substituted team footer, got: {:?}",
+            pm.preamble
+        );
+    }
+
+    #[test]
+    fn unknown_config_var_errors_with_line_context() {
+        let yaml = "
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: pm
+    provider: openai
+    model: gpt-4
+    preamble: ${vars.ghost}
+";
+        match Config::from_str(yaml, "<test>") {
+            Err(ConfigError::ConfigVarNotSet {
+                var,
+                line_number,
+                line_content,
+                ..
+            }) => {
+                assert_eq!(var, "ghost");
+                assert!(line_number > 0);
+                assert!(
+                    line_content.contains("${vars.ghost}"),
+                    "line content should include the offending placeholder, got: {line_content:?}"
+                );
+            }
+            other => panic!("expected ConfigVarNotSet, got {other:?}"),
+        }
     }
 
     // WHY: the mcp_oauth_* tests below mutate process-global env vars

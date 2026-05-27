@@ -93,6 +93,7 @@ Fields beyond the cron shape:
 
 - **type: webhook** — discriminator.
 - **path** — HTTP path Coulisse exposes. Must start with `/hooks/` to stay clear of the proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks (`/mcp/*`). Must be unique across all webhook triggers.
+- **agent** — name of the agent (or experiment) to invoke. Accepts the same `{{a.b.c}}` templating as `prompt`, so one webhook can route to different agents based on the inbound payload (see [Templated agent](#templated-agent) below).
 - **prompt** — template. `{{a.b.c}}` placeholders pull values from the JSON payload by dot-path. Missing paths render as the literal `{{ a.b.c }}` so debugging is obvious. Static prompts (no placeholders) work too — they pass through unchanged.
 
 Fire it with curl:
@@ -110,6 +111,33 @@ Response:
 ```
 
 The task appears in `/admin/live` like any other.
+
+### Templated agent
+
+The `agent` field accepts the same `{{a.b.c}}` templating as `prompt`. This lets one webhook fan out to different agents based on whatever the inbound payload carries — useful when a bridge POSTs one event per mentioned agent:
+
+```yaml
+triggers:
+  - name: matrix-mention
+    type: webhook
+    path: /hooks/matrix-mention
+    agent: "{{agent}}"
+    prompt: "@{{sender}} in #{{room}}: {{body}}"
+```
+
+The bridge does the iteration on its side and calls the same webhook N times, once per mentioned agent:
+
+```bash
+curl -X POST http://localhost:8421/hooks/matrix-mention \
+  -d '{"agent":"pm","sender":"almaju","room":"standup","body":"any release blockers?"}'
+
+curl -X POST http://localhost:8421/hooks/matrix-mention \
+  -d '{"agent":"coder","sender":"almaju","room":"standup","body":"any release blockers?"}'
+```
+
+Two tasks land on the queue, one per agent.
+
+A templated `agent` field is **not** cross-validated at config load — the value isn't known until a request arrives. If the resolved name doesn't match any agent, the worker errors the task with an "unknown agent" message; you'll see it in `/admin/live`. If the placeholder fails to resolve at all (the path is missing from the payload), the webhook returns `400 Bad Request` and nothing is enqueued.
 
 ### Worked example: Matrix mentions
 

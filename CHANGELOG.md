@@ -11,6 +11,34 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- **`vars:` top-level YAML block + `${vars.<name>}` interpolation.** Declare
+  named text snippets once under a top-level `vars:` map and splice them into
+  any string field — preambles, prompts, URLs, env values — with
+  `${vars.<name>}`. Resolved in a second pass *after* env-var expansion, so a
+  var's value can itself contain `${VAR}` references. Single-pass: a
+  substituted value containing `${vars.x}` is not re-expanded. Multi-line
+  values inherit the placeholder's leading indent so they splice cleanly into
+  YAML block scalars (`preamble: |`) without breaking the indentation
+  contract. Useful for collapsing the duplicated team-table footer that every
+  multi-agent setup ends up writing six times.
+- **Templated `agent:` field on webhook triggers.** The `agent:` field on a
+  `type: webhook` trigger now accepts the same `{{a.b.c}}` templating as
+  `prompt:`, so one webhook can fan out to different agents based on the
+  inbound payload (e.g. `agent: "{{agent}}"` lets a bridge POST one event
+  per mentioned agent without declaring N webhooks). Templated values are
+  not cross-validated at config load — the worker surfaces unknown-agent
+  errors via the task's error state. Payloads that leave the placeholder
+  unresolved get rejected with `400 Bad Request` before enqueueing.
+- **`matrix_post` and `matrix_read` tools in `local/office-mcp`.**
+  `matrix_post(room, body, as_agent, hop=0)` posts into any Matrix room
+  (alias, bare name, or `!room_id`) with full markdown rendering and real
+  mention pills (`@name` → `m.mentions` + notification chip). Agents are
+  force-joined into the target room idempotently. `matrix_read(room,
+  limit, since)` returns recent `m.text` events oldest-first plus a
+  `next_batch` pagination token, so agents can poll for new activity
+  inside a long-running task. Both tools lift logic that previously
+  lived in the standalone bridge — first step toward retiring the
+  bridge's posting/reading responsibilities to MCP.
 - **SSE heartbeat during subagent handoff** (closes #42). When an agent
   delegates to a subagent, the stream emits `event: handoff_started` with
   the agent name within 3 seconds, then a `': heartbeat'` SSE comment

@@ -28,7 +28,7 @@ use crate::config::{TriggerConfig, TriggerKind};
 
 #[derive(Clone)]
 struct HookState {
-    agent: String,
+    agent_template: String,
     name: String,
     prompt_template: String,
     queue: Arc<dyn TaskQueue>,
@@ -51,7 +51,7 @@ pub fn webhook_router(
             continue;
         };
         let state = HookState {
-            agent: t.agent.clone(),
+            agent_template: t.agent.clone(),
             name: t.name.clone(),
             prompt_template: t.prompt.clone(),
             queue: Arc::clone(&queue),
@@ -66,16 +66,26 @@ async fn handle(
     State(state): State<HookState>,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
+    let agent = substitute(&state.agent_template, &payload);
     let prompt = substitute(&state.prompt_template, &payload);
-    match state
-        .queue
-        .submit(&state.agent, &prompt, state.user_id)
-        .await
-    {
+    // Reject payloads that left the `agent` field unresolved. A literal
+    // `{{ name }}` survives substitution when the path is missing — at
+    // that point we can't enqueue, the worker would just fail later
+    // with an "unknown agent" task error.
+    if agent.contains("{{") || agent.trim().is_empty() {
+        error!(
+            trigger = %state.name,
+            template = %state.agent_template,
+            resolved = %agent,
+            "webhook agent template did not resolve to a name"
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    match state.queue.submit(&agent, &prompt, state.user_id).await {
         Ok(task_id) => {
             info!(
                 trigger = %state.name,
-                agent = %state.agent,
+                agent = %agent,
                 task_id = %task_id.0,
                 "webhook trigger fired"
             );
@@ -184,5 +194,106 @@ mod tests {
         let payload = json!({});
         let out = substitute("{{unterminated", &payload);
         assert_eq!(out, "{{unterminated");
+    }
+
+    use std::sync::Mutex;
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::response::Response;
+    use coulisse_core::{TaskId, TaskQueue, TaskQueueError, UserId};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    use crate::config::{TriggerConfig, TriggerKind};
+    use crate::webhook_router;
+
+    #[derive(Default)]
+    struct CapturingQueue {
+        calls: Mutex<Vec<(String, String)>>,
+    }
+
+    impl TaskQueue for CapturingQueue {
+        fn submit<'a>(
+            &'a self,
+            agent: &'a str,
+            prompt: &'a str,
+            _user_id: UserId,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<TaskId, TaskQueueError>> + Send + 'a>,
+        > {
+            let captured = (agent.to_string(), prompt.to_string());
+            Box::pin(async move {
+                self.calls.lock().unwrap().push(captured);
+                Ok(TaskId::new())
+            })
+        }
+    }
+
+    fn router_with(triggers: &[TriggerConfig], queue: Arc<CapturingQueue>) -> Router {
+        webhook_router(triggers, queue as Arc<dyn TaskQueue>, UserId::new())
+    }
+
+    fn matrix_trigger(agent_template: &str) -> TriggerConfig {
+        TriggerConfig {
+            agent: agent_template.to_string(),
+            kind: TriggerKind::Webhook {
+                path: "/hooks/matrix".to_string(),
+            },
+            name: "matrix-mention".to_string(),
+            prompt: "@{{sender}}: {{body}}".to_string(),
+        }
+    }
+
+    async fn post_json(app: Router, body: serde_json::Value) -> Response {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/hooks/matrix")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        app.oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn templated_agent_resolves_from_payload() {
+        let queue = Arc::new(CapturingQueue::default());
+        let app = router_with(&[matrix_trigger("{{agent}}")], Arc::clone(&queue));
+        let resp = post_json(
+            app,
+            serde_json::json!({"agent": "pm", "sender": "almaju", "body": "hi"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let calls = queue.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "pm");
+        assert_eq!(calls[0].1, "@almaju: hi");
+    }
+
+    #[tokio::test]
+    async fn static_agent_still_works() {
+        let queue = Arc::new(CapturingQueue::default());
+        let app = router_with(&[matrix_trigger("coder")], Arc::clone(&queue));
+        let resp = post_json(app, serde_json::json!({"sender": "almaju", "body": "x"})).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let calls = queue.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "coder");
+    }
+
+    #[tokio::test]
+    async fn unresolved_agent_template_returns_400() {
+        let queue = Arc::new(CapturingQueue::default());
+        let app = router_with(&[matrix_trigger("{{agent}}")], Arc::clone(&queue));
+        // Payload is missing the `agent` field — the placeholder survives
+        // substitution and the handler should reject before enqueueing.
+        let resp = post_json(app, serde_json::json!({"sender": "almaju", "body": "x"})).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        assert!(queue.calls.lock().unwrap().is_empty());
     }
 }
