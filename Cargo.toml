@@ -30,7 +30,7 @@ version = "0.1.0"
 agents = { path = "crates/agents" }
 aes-gcm = "0.10"
 arc-swap = "1"
-askama = "0.15"
+askama = "0.16"
 async-stream = "0.3"
 auth = { path = "crates/auth" }
 axum = "0.8"
