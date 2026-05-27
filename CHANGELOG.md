@@ -9,6 +9,8 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-07-26
+
 ### Added
 
 - **`vars:` top-level YAML block + `${vars.<name>}` interpolation.** Declare
@@ -232,6 +234,12 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
   numeric suffix. The inner `McpTool` keeps the original name so MCP
   dispatch still resolves correctly.
 
+### Notes de migration depuis v0.1.0
+
+- Lancer `coulisse migrate` (ou démarrer normalement — le migrator tourne au boot)
+- Vérifier la continuité des sessions si memory était utilisé
+- Relire la config YAML sidecars/triggers si vous en aviez une custom (champs renommés possibles)
+
 ## [0.1.0] - 2026-04-26
 
 Initial release.
@@ -266,4 +274,6 @@ Initial release.
 - Docker image published to `ghcr.io/almaju/coulisse` for `linux/amd64` and
   `linux/arm64`.
 
+[Unreleased]: https://github.com/Almaju/coulisse/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Almaju/coulisse/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Almaju/coulisse/releases/tag/v0.1.0
