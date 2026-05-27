@@ -19,6 +19,7 @@ use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
 use sidecars::SidecarConfig;
 use smoke::SmokeTestConfig;
+use storage::StorageYaml;
 use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 use triggers::TriggerConfig;
@@ -80,6 +81,12 @@ pub struct Config {
     /// iterating on agent prompts and comparing experiment variants.
     #[serde(default)]
     pub smoke_tests: Vec<SmokeTestConfig>,
+    /// OpenAI-compatible file storage (`/v1/files/*`). Defaults to
+    /// filesystem backend under `./coulisse-files` with no quota. Set
+    /// `max_total_bytes` / `max_file_bytes` to enable FIFO eviction
+    /// and per-file size limits.
+    #[serde(default)]
+    pub storage: StorageYaml,
     /// Observability wiring: stderr fmt logs (always on by default),
     /// `SQLite` mirror that drives the studio UI (on by default), and an
     /// optional OpenTelemetry OTLP exporter for shipping traces to
