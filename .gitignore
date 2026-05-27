@@ -1,0 +1,11 @@
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.coulisse/
+/target
+coulisse.yaml
+crates/studio/dist/*
+crates/studio/target/
+docs/book/
+local/
