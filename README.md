@@ -91,9 +91,14 @@ Request a specific agent by setting `model` to its name. Conversation history is
 |---|---|
 | Multi-agent routing | Each agent has its own provider, model, preamble, and tools — pick one via the `model` field. |
 | Per-user memory | Isolated conversation history scoped by `safety_identifier`, with semantic recall. |
+| Async tasks | Fire-and-forget agent runs via the `dispatch_task` tool — persisted in SQLite, drained by a background worker pool. |
+| Triggers | Agents that wake up on a schedule (cron), on an inbound HTTP POST (webhook), or at startup (boot) — no waiting user required. |
+| Sidecars | Long-lived helper processes (Matrix bridge, listeners, exporters) spawned and supervised alongside Coulisse. |
+| MCP OAuth | Per-user OAuth 2.0 for third-party MCP servers — tokens encrypted at rest, injected automatically. |
 | Multi-backend | Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq. |
 | OpenAI-compatible | `/v1/chat/completions` and `/v1/models` — drop-in for any OpenAI SDK. |
 | MCP tools | Attach Model Context Protocol servers over stdio or HTTP. Per-agent filtering. |
+| Streaming | SSE streaming with subagent handoff events and heartbeats — proxies stay alive during long turns. |
 | Rate limiting | Per-user token quotas on hour / day / month windows. |
 | YAML-driven | Every setting lives in `coulisse.yaml` with startup validation. |
 

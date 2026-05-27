@@ -36,20 +36,23 @@ Coulisse collapses this plumbing into one configurable server. You describe the 
 
 ## What's in the box
 
-| Feature                 | Status |
-|-------------------------|--------|
-| Multi-agent routing     | ✅ Working |
-| Per-user memory         | ✅ Persistent (SQLite) with semantic recall |
-| Real embedders          | ✅ OpenAI + Voyage (hash fallback for offline dev) |
-| Auto-extraction         | ✅ Optional — pulls durable facts from each exchange |
-| MCP tool integration    | ✅ Working (stdio + HTTP) |
-| Multi-backend support   | ✅ Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq |
-| OpenAI-compatible API   | ✅ `/v1/chat/completions`, `/v1/models` |
-| Streaming responses     | ✅ Server-Sent Events |
-| Rate limiting           | ✅ Per-user token quotas (hour / day / month, in-memory) |
-| Studio UI               | ✅ Read-only at `/admin/` |
-| Workflow orchestration  | ⏳ Planned |
-| Durable rate-limit state| ⏳ Planned |
+| Feature                        | Status |
+|--------------------------------|--------|
+| Multi-agent routing            | ✅ Working |
+| Per-user memory                | ✅ Persistent (SQLite) with semantic recall |
+| Real embedders                 | ✅ OpenAI + Voyage (hash fallback for offline dev) |
+| Auto-extraction                | ✅ Optional — pulls durable facts from each exchange |
+| MCP tool integration           | ✅ Working (stdio + HTTP) |
+| Per-user OAuth for MCP         | ✅ Token vault, per-user session pool, connect-link flow |
+| Multi-backend support          | ✅ Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq |
+| OpenAI-compatible API          | ✅ `/v1/chat/completions`, `/v1/models` |
+| Streaming responses            | ✅ SSE with subagent handoff events and heartbeats |
+| Async tasks                    | ✅ Fire-and-forget agent runs via `dispatch_task`, worker pool |
+| Triggers                       | ✅ Cron, webhook, and boot triggers |
+| Sidecars                       | ✅ Supervised helper processes (bridges, listeners, exporters) |
+| Rate limiting                  | ✅ Per-user token quotas (hour / day / month, in-memory) |
+| Studio UI                      | ✅ Read-only at `/admin/`, live activity board at `/admin/live` |
+| Durable rate-limit state       | ⏳ Planned |
 
 Continue to [Installation](./getting-started/installation.md) to get started.
 
