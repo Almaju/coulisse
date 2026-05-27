@@ -32,10 +32,10 @@ use crate::admin_mcp::{McpAdminState, router as mcp_admin_router};
 use crate::banner::Banner;
 use crate::config::Config;
 use crate::config_store::ConfigStore;
+use crate::files;
 use crate::memory_resolve;
 use crate::server::{self, AppState};
 use crate::smoke_runner::SmokeRunner;
-use crate::files;
 
 /// # Errors
 ///
@@ -330,7 +330,10 @@ async fn boot_stores(
         // Someone who sets `backend: s3` in YAML gets a clear message instead
         // of a cryptic build failure.
         BackendKind::S3 => {
-            return Err("storage: s3 backend requires the 's3' feature — build with --features storage/s3".into());
+            return Err(
+                "storage: s3 backend requires the 's3' feature — build with --features storage/s3"
+                    .into(),
+            );
         }
         BackendKind::Fs => BlobBackend::Fs(
             FsBackend::new(config.storage.fs.path.clone())
