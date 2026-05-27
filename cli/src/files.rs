@@ -47,10 +47,7 @@ async fn upload(
                     .map_err(|e| FilesError::BadRequest(format!("purpose read error: {e}")))?;
             }
             Some("file") => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("upload")
-                    .to_string();
+                let filename = field.file_name().unwrap_or("upload").to_string();
                 let content_type = field
                     .content_type()
                     .unwrap_or("application/octet-stream")
