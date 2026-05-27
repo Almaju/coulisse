@@ -31,16 +31,6 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
   not cross-validated at config load — the worker surfaces unknown-agent
   errors via the task's error state. Payloads that leave the placeholder
   unresolved get rejected with `400 Bad Request` before enqueueing.
-- **`matrix_post` and `matrix_read` tools in `local/office-mcp`.**
-  `matrix_post(room, body, as_agent, hop=0)` posts into any Matrix room
-  (alias, bare name, or `!room_id`) with full markdown rendering and real
-  mention pills (`@name` → `m.mentions` + notification chip). Agents are
-  force-joined into the target room idempotently. `matrix_read(room,
-  limit, since)` returns recent `m.text` events oldest-first plus a
-  `next_batch` pagination token, so agents can poll for new activity
-  inside a long-running task. Both tools lift logic that previously
-  lived in the standalone bridge — first step toward retiring the
-  bridge's posting/reading responsibilities to MCP.
 - **SSE heartbeat during subagent handoff** (closes #42). When an agent
   delegates to a subagent, the stream emits `event: handoff_started` with
   the agent name within 3 seconds, then a `': heartbeat'` SSE comment
@@ -150,15 +140,6 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
   `ScoreLookup` / `OneShotPrompt` pattern. No new YAML section yet —
   triggers (cron, webhook, MCP-event) and a configurable `tasks:` block are
   follow-ups.
-- Matrix-based agent narration recipe. A `compose.matrix.yaml` at the repo root
-  brings up a local Synapse homeserver, Element Web client, and the
-  `ricelines/matrix-mcp` bridge; `just matrix-init` performs the one-time
-  bootstrap (Synapse config + bot user registration). The shipped
-  `coulisse.yaml` adds an `mcp.matrix` HTTP entry and each agent's preamble
-  instructs it to post one-line status updates to a dedicated room
-  (`#standup`, `#product`, `#engineering`, `#release`). Users watch the
-  agents work in Element (web or mobile) without any custom UI. Documented
-  in `docs/src/features/agent-narration.md`.
 - `coulisse schema` subcommand emits a JSON Schema for `coulisse.yaml`
   derived from the Rust types via `schemars`. The repo ships
   `coulisse.schema.json` at the root; reference it from the top of your
@@ -180,20 +161,6 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
-- **Breaking (recipe).** Matrix flips from a *narration sink* to the *chat
-  UI itself*. The `mcp.matrix` server entry, every agent's
-  `mcp_tools: - server: matrix` grant, and every `Reporting Matrix:` block
-  in agent preambles are gone. Matrix integration now lives entirely in
-  the bidirectional Python bridge at `local/matrix-bridge/bridge.py`
-  (run as a sidecar): it watches rooms for `@<agent>` mentions, calls
-  `/v1/chat/completions` with `model: <agent>` and the recent room
-  history as conversation context, then posts the agent's reply back to
-  the same room. A `m.coulisse.hop` field on each posted message caps
-  agent ↔ agent chains at `COULISSE_MAX_HOPS` (3 by default). Coulisse
-  itself loses *all* Matrix awareness — there's no Matrix code anywhere
-  in the Rust binary. The same recipe works for Slack, Discord, etc. by
-  swapping the bridge. Old `docs/src/features/agent-narration.md` is
-  replaced by `docs/src/features/matrix-chat.md`.
 - **Breaking:** the `memory:` YAML block was reshaped around two pillars —
   `storage` (where data lives) and `user_state` (long-term memory; off by
   default). The old `memory.backend`, `memory.embedder`, `memory.extractor`,
@@ -237,8 +204,11 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 ### Notes de migration depuis v0.1.0
 
 - Lancer `coulisse migrate` (ou démarrer normalement — le migrator tourne au boot)
-- Vérifier la continuité des sessions si memory était utilisé
-- Relire la config YAML sidecars/triggers si vous en aviez une custom (champs renommés possibles)
+- Vérifier la continuité des sessions si `memory:` était configuré — les champs
+  `backend`, `embedder`, `extractor`, `context_budget`, `memory_budget_fraction`,
+  `recall_k` sont supprimés ; remplacer par `user_state: true` pour conserver
+  le comportement précédent.
+- Relire la config YAML `sidecars:` et `triggers:` si vous en aviez une custom.
 
 ## [0.1.0] - 2026-04-26
 
