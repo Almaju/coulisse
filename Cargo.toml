@@ -1,0 +1,106 @@
+[workspace]
+resolver = "3"
+members = [
+    "cli",
+    "crates/agents",
+    "crates/auth",
+    "crates/providers",
+    "crates/core",
+    "crates/experiments",
+    "crates/judges",
+    "crates/limits",
+    "crates/mcp",
+    "crates/memory",
+    "crates/proxy",
+    "crates/sidecars",
+    "crates/smoke",
+    "crates/storage",
+    "crates/tasks",
+    "crates/telemetry",
+    "crates/triggers",
+]
+
+[workspace.package]
+description = "OpenAI-compatible server with memory, tools, and multi-backend routing — configured with one YAML file."
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Almaju/coulisse"
+version = "0.1.0"
+
+[workspace.dependencies]
+agents = { path = "crates/agents" }
+aes-gcm = "0.10"
+arc-swap = "1"
+askama = "0.15"
+async-stream = "0.3"
+auth = { path = "crates/auth" }
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+coulisse-core = { path = "crates/core" }
+experiments = { path = "crates/experiments" }
+futures = "0.3"
+hmac = "0.12"
+hex = "0.4"
+infer = "0.19"
+judges = { path = "crates/judges" }
+limits = { path = "crates/limits" }
+mcp = { path = "crates/mcp" }
+memory = { path = "crates/memory" }
+moka = { version = "0.12", features = ["future"] }
+nix = { version = "0.31", features = ["process", "signal"] }
+notify = "8"
+oxilangtag = "0.1"
+percent-encoding = "2"
+providers = { path = "crates/providers" }
+proxy = { path = "crates/proxy" }
+rand = "0.9"
+reqwest = { version = "0.12", features = ["json"] }
+rig-core = { version = "0.35", features = ["rmcp"] }
+schemars = { version = "0.8", features = ["preserve_order"] }
+rmcp = { version = "1", features = [
+    "client",
+    "reqwest",
+    "transport-child-process",
+    "transport-streamable-http-client",
+    "transport-streamable-http-client-reqwest",
+] }
+self_update = { version = "0.44", features = ["archive-tar", "compression-flate2"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sidecars = { path = "crates/sidecars" }
+smoke = { path = "crates/smoke" }
+storage = { path = "crates/storage" }
+sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
+tasks = { path = "crates/tasks" }
+telemetry = { path = "crates/telemetry" }
+triggers = { path = "crates/triggers" }
+thiserror = "2"
+tokio = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4", "v5"] }
+
+[workspace.lints.rust]
+unreachable_pub = "warn"
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Restrictions: project-wide hygiene rules. Keep small and meaningful;
+# CLAUDE.md handles unwrap/expect/panic culturally rather than via lints
+# because boot-path code legitimately uses them.
+dbg_macro = "deny"
+mod_module_files = "deny"
+todo = "warn"
+unimplemented = "deny"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
