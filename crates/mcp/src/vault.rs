@@ -1,5 +1,10 @@
+// WHY: aes-gcm 0.10 (current stable) uses generic-array 0.x, whose
+// `GenericArray` type is deprecated upstream in favor of generic-array
+// 1.x. Upgrading would require aes-gcm 0.11 (still a release candidate
+// at the time of writing). Suppress at use-sites; revisit when 0.11
+// stabilizes.
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use coulisse_core::migrate::SchemaMigrator;
@@ -51,12 +56,11 @@ impl TokenVault {
     /// Returns `McpError::VaultKeyInvalid` if the key is not valid base64
     /// or not exactly 32 bytes after decoding.
     pub fn new(pool: SqlitePool, key_b64: &str) -> Result<Self, McpError> {
-        let key_bytes = B64.decode(key_b64.trim()).map_err(|_| McpError::VaultKeyInvalid)?;
-        if key_bytes.len() != 32 {
-            return Err(McpError::VaultKeyInvalid);
-        }
-        let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-        let cipher = Aes256Gcm::new(key);
+        let key_bytes = B64
+            .decode(key_b64.trim())
+            .map_err(|_| McpError::VaultKeyInvalid)?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key_bytes).map_err(|_| McpError::VaultKeyInvalid)?;
         Ok(Self { cipher, pool })
     }
 
@@ -74,18 +78,20 @@ impl TokenVault {
         Ok(out)
     }
 
+    #[allow(deprecated)]
     fn decrypt(&self, server: &str, blob: &[u8]) -> Result<String, McpError> {
-        if blob.len() < 12 {
-            return Err(McpError::Decrypt {
-                server: server.to_string(),
-                err: aes_gcm::Error,
-            });
-        }
-        let (nonce_bytes, ciphertext) = blob.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce_arr: [u8; 12] =
+            blob.get(..12)
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| McpError::Decrypt {
+                    server: server.to_string(),
+                    err: aes_gcm::Error,
+                })?;
+        let ciphertext = &blob[12..];
+        let nonce = aes_gcm::aead::generic_array::GenericArray::from(nonce_arr);
         let plaintext =
             self.cipher
-                .decrypt(nonce, ciphertext)
+                .decrypt(&nonce, ciphertext)
                 .map_err(|err| McpError::Decrypt {
                     server: server.to_string(),
                     err,
@@ -212,7 +218,13 @@ mod tests {
     async fn encrypt_decrypt_round_trip() {
         let vault = make_vault().await;
         vault
-            .upsert_token("github", "user-1", "access-abc", Some(9999), Some("refresh-xyz"))
+            .upsert_token(
+                "github",
+                "user-1",
+                "access-abc",
+                Some(9999),
+                Some("refresh-xyz"),
+            )
             .await
             .unwrap();
 
@@ -237,7 +249,13 @@ mod tests {
             .await
             .unwrap();
         vault
-            .upsert_token("github", "user-1", "new-access", Some(42), Some("new-refresh"))
+            .upsert_token(
+                "github",
+                "user-1",
+                "new-access",
+                Some(42),
+                Some("new-refresh"),
+            )
             .await
             .unwrap();
 

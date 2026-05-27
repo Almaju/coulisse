@@ -187,10 +187,7 @@ mod tests {
             .call(r#"{"text":"hi"}"#.to_string())
             .await
             .unwrap();
-        assert_eq!(
-            probe.lock().await.as_deref(),
-            Some(r#"{"text":"hi"}"#)
-        );
+        assert_eq!(probe.lock().await.as_deref(), Some(r#"{"text":"hi"}"#));
     }
 
     #[tokio::test]

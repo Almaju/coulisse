@@ -10,11 +10,13 @@
 //! can speak HTTP, so connecting Matrix or Slack or GitHub is just running
 //! a tiny bridge that POSTs to Coulisse.
 
+mod boot;
 mod config;
 mod cron;
 mod error;
 mod webhook;
 
+pub use boot::fire_boot;
 pub use config::{TriggerConfig, TriggerKind};
 pub use cron::{spawn_cron, validate_all};
 pub use error::TriggerError;

@@ -12,7 +12,6 @@ coulisse-core.workspace = true
 hmac.workspace = true
 moka.workspace = true
 percent-encoding.workspace = true
-rand.workspace = true
 reqwest.workspace = true
 rig-core.workspace = true
 rmcp.workspace = true

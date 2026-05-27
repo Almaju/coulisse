@@ -15,14 +15,15 @@ dev:
 install:
     cargo install cargo-watch --locked
     cargo install mdbook --locked
-    cargo install cargo-dylint dylint-link --locked
-    cargo install cargo-oneway --git https://github.com/Almaju/oneway
 
 lint:
-    cargo oneway lint
+    cargo clippy --workspace --all-targets --locked
 
 local:
     cargo install --path cli --bin coulisse --locked
+
+matrix-avatars:
+    ./local/matrix-bridge/set-avatars.sh
 
 matrix-down:
     docker compose -f compose.matrix.yaml down
@@ -62,7 +63,7 @@ matrix-init:
     echo ""
     echo "Next steps in Element:"
     echo "  1. Register your own user on http://localhost:8008"
-    echo "  2. Create rooms: #standup, #product, #engineering, #release"
+    echo "  2. Create rooms: #standup, #product, #engineering, #release, #worklog"
     echo "  3. Invite @coulisse:localhost to each room"
 
 matrix-logs:

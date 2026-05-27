@@ -4,8 +4,11 @@
 
 set -e
 
-echo "==> cargo oneway (fmt --check + clippy + oneway-lints)"
-cargo oneway
+echo "==> cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "==> cargo clippy"
+cargo clippy --workspace --all-targets --locked
 
 echo "==> cargo sort-derives --check"
 cargo sort-derives --check

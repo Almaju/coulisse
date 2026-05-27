@@ -14,15 +14,15 @@ use axum::Router;
 use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
-use coulisse_core::{AgentResolver, ScoreLookup, TaskQueue};
+use coulisse_core::{AgentResolver, ScoreLookup, TaskQueue, TaskStatus};
 use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
-use mcp::{McpServers, VaultMigrator, TokenVault, OAuthRouterState, oauth_router};
-use tasks::Tasks;
+use mcp::{McpServers, OAuthRouterState, TokenVault, VaultMigrator, oauth_router};
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
 use smoke::{RunDispatcher, SmokeStore};
+use tasks::Tasks;
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
 
@@ -55,13 +55,36 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let worker_tasks = Arc::clone(&runtime.tasks);
     let worker_agents = Arc::clone(&runtime.prompter);
     let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
+    // Reap `running` tasks left over from a previous process before workers
+    // start, so PM sees them as `errored` on the next wakeup instead of
+    // believing the work is still in flight. Cutoff = now: any task still
+    // in `running` is by definition orphaned.
+    let now = coulisse_core::now_secs();
+    match TaskStatus::reap_stale_running(
+        Arc::clone(&worker_tasks).as_ref(),
+        now,
+        "process restarted before task completed",
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(reaped = n, "stale running tasks marked errored"),
+        Err(e) => tracing::warn!(%e, "task reap on boot failed; continuing"),
+    }
     crate::workers::spawn(Arc::clone(&worker_tasks), worker_agents, 4);
-    let trigger_user_id = default_user_id.unwrap_or_else(|| coulisse_core::UserId::from_string("cron"));
+    let trigger_user_id =
+        default_user_id.unwrap_or_else(|| coulisse_core::UserId::from_string("cron"));
     triggers::spawn_cron(
         &config.triggers,
         Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
         trigger_user_id,
     );
+    triggers::fire_boot(
+        &config.triggers,
+        Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
+        trigger_user_id,
+    )
+    .await;
     sidecars::spawn_all(&config.sidecars);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port.unwrap_or(8421)));
@@ -155,11 +178,7 @@ pub async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 .decode(raw.trim())
                 .expect("COULISSE_HMAC_KEY must be valid base64")
         };
-        let consumer_secret = config
-            .auth
-            .mcp_consumer_secret
-            .clone()
-            .unwrap_or_default();
+        let consumer_secret = config.auth.mcp_consumer_secret.clone().unwrap_or_default();
         Some(oauth_router(OAuthRouterState {
             configs: config.mcp.clone(),
             consumer_secret,
@@ -370,11 +389,7 @@ async fn build_runtime(
     // the Judge instances is a follow-up.
     let judges = build_judges(&stores.judges_list.load())?;
     let mcp = Arc::new(
-        McpServers::connect_with_vault(
-            config.mcp.clone(),
-            stores.mcp_vault.clone(),
-        )
-        .await?,
+        McpServers::connect_with_vault(config.mcp.clone(), stores.mcp_vault.clone()).await?,
     );
     let experiments = Arc::new(ExperimentRouter::new(
         stores.experiments_list.load().to_vec(),
@@ -390,6 +405,7 @@ async fn build_runtime(
         providers: config.providers.clone(),
         resolver,
         task_queue: Some(Arc::clone(&tasks) as Arc<dyn TaskQueue>),
+        task_status: Some(Arc::clone(&tasks) as Arc<dyn TaskStatus>),
     })?);
     let extractor = memory_config
         .extractor

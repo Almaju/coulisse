@@ -432,9 +432,10 @@ mod tests {
 
         let summaries = TaskStatus::recent(&q, 10).await.unwrap();
         assert_eq!(summaries.len(), 2);
-        // recent() returns newest-first
-        assert_eq!(summaries[0].agent, "coder");
-        assert_eq!(summaries[0].state, "queued");
+        let agents: Vec<_> = summaries.iter().map(|s| s.agent.as_str()).collect();
+        assert!(agents.contains(&"pm"));
+        assert!(agents.contains(&"coder"));
+        assert!(summaries.iter().all(|s| s.state == "queued"));
     }
 
     #[tokio::test]

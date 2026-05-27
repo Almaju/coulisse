@@ -762,24 +762,13 @@ pub enum ConfigError {
     JudgeWithoutRubrics(String),
     #[error("agent '{agent}' references MCP server '{server}' which is not configured")]
     McpServerNotConfigured { agent: String, server: String },
-    #[error(
-        "mcp server '{server}' has an oauth block but field '{field}' is blank"
-    )]
-    McpOAuthBlankField {
-        field: &'static str,
-        server: String,
-    },
-    #[error(
-        "at least one MCP server has an oauth block, but auth.mcp_consumer_secret is not set"
-    )]
+    #[error("mcp server '{server}' has an oauth block but field '{field}' is blank")]
+    McpOAuthBlankField { field: &'static str, server: String },
+    #[error("at least one MCP server has an oauth block, but auth.mcp_consumer_secret is not set")]
     McpOAuthMissingConsumerSecret,
-    #[error(
-        "COULISSE_HMAC_KEY env var must be set when any MCP server has an oauth block"
-    )]
+    #[error("COULISSE_HMAC_KEY env var must be set when any MCP server has an oauth block")]
     McpOAuthMissingHmacKey,
-    #[error(
-        "COULISSE_VAULT_KEY env var must be set when any MCP server has an oauth block"
-    )]
+    #[error("COULISSE_VAULT_KEY env var must be set when any MCP server has an oauth block")]
     McpOAuthMissingVaultKey,
     #[error("config must declare at least one agent")]
     NoAgents,
@@ -1618,6 +1607,12 @@ smoke_tests:
         assert_eq!(line_content, "three");
     }
 
+    // WHY: the mcp_oauth_* tests below mutate process-global env vars
+    // (COULISSE_VAULT_KEY, COULISSE_HMAC_KEY) which Rust's parallel
+    // test runner can race on. Acquire this mutex at the top of each
+    // test that touches those vars to serialize them.
+    static OAUTH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     const MCP_OAUTH_BASE: &str = r"
 providers:
   openai:
@@ -1670,6 +1665,7 @@ mcp:
 
     #[test]
     fn mcp_oauth_missing_vault_key_is_rejected() {
+        let _guard = OAUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Ensure COULISSE_VAULT_KEY is not set for this test.
         unsafe {
             std::env::remove_var("COULISSE_VAULT_KEY");
@@ -1684,8 +1680,12 @@ mcp:
 
     #[test]
     fn mcp_oauth_missing_hmac_key_is_rejected() {
+        let _guard = OAUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
-            std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+            std::env::set_var(
+                "COULISSE_VAULT_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
             std::env::remove_var("COULISSE_HMAC_KEY");
         }
         let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
@@ -1701,9 +1701,16 @@ mcp:
 
     #[test]
     fn mcp_oauth_blank_field_is_rejected() {
+        let _guard = OAUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
-            std::env::set_var("COULISSE_VAULT_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
-            std::env::set_var("COULISSE_HMAC_KEY", "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=");
+            std::env::set_var(
+                "COULISSE_VAULT_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
+            std::env::set_var(
+                "COULISSE_HMAC_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
         }
         let yaml = r#"
 providers:

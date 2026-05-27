@@ -41,7 +41,9 @@ pub fn validate_state(hmac_key: &[u8], token: &str) -> Result<StateToken, McpErr
     if !constant_time_eq(sig.as_bytes(), expected.as_bytes()) {
         return Err(McpError::StateInvalid);
     }
-    let payload_bytes = B64URL.decode(payload_b64).map_err(|_| McpError::StateInvalid)?;
+    let payload_bytes = B64URL
+        .decode(payload_b64)
+        .map_err(|_| McpError::StateInvalid)?;
     let payload: serde_json::Value =
         serde_json::from_slice(&payload_bytes).map_err(|_| McpError::StateInvalid)?;
     let exp = payload["exp"].as_u64().ok_or(McpError::StateInvalid)?;
@@ -104,7 +106,8 @@ mod tests {
     fn tampered_payload_rejected() {
         let token = generate_state(KEY, "github", "user-42");
         let parts: Vec<&str> = token.splitn(2, '.').collect();
-        let fake_payload = B64URL.encode(b"{\"exp\":9999999999,\"server\":\"evil\",\"user_id\":\"hacked\"}");
+        let fake_payload =
+            B64URL.encode(b"{\"exp\":9999999999,\"server\":\"evil\",\"user_id\":\"hacked\"}");
         let tampered = format!("{}.{}", fake_payload, parts[1]);
         assert!(matches!(
             validate_state(KEY, &tampered),

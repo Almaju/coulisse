@@ -9,6 +9,30 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ## [Unreleased]
 
+### Added
+
+- **Boot trigger** (`type: boot` under `triggers:`). Fires exactly once when
+  `coulisse start` runs, then never again. Same submission path as cron and
+  webhook — the prompt enqueues a task; a worker drains it through the
+  normal agent runtime. Use case: a wake-up prompt that asks an
+  orchestrator agent to check the queue's leftovers and decide whether to
+  resume work, post a standup, or stay quiet. Paired with the new
+  boot-time reaper (below), it gives "resume after `coulisse stop`" a
+  clean primitive without forcing a ritual.
+- **`tasks_status` agent tool.** Read-only counterpart to `dispatch_task`.
+  Returns recent tasks across every agent — queued, running, done, or
+  errored — as JSON, with an optional `state` filter. Agents that see it
+  can answer "what's going on right now?" from chat instead of pointing
+  a user at `/admin/live`. Plumbed via a new `TaskStatus` trait in
+  `coulisse-core` so `agents` can read the queue without a hard dep on
+  `tasks`, matching the existing `ScoreLookup` / `TaskQueue` pattern.
+- **Boot-time task reaper.** On `coulisse start`, every task still in
+  `running` is marked `errored` with the reason
+  `process restarted before task completed`. This catches tasks that
+  were mid-flight when the process stopped (worker died before
+  `mark_done`/`mark_errored` could run). The sweep happens before
+  workers spawn so they never claim stale rows.
+
 ### Changed
 
 - **Breaking (recipe).** Matrix flips from a *narration sink* to the *chat

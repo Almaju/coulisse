@@ -2222,7 +2222,6 @@ dependencies = [
  "http-body-util",
  "moka",
  "percent-encoding",
- "rand 0.9.4",
  "reqwest 0.12.28",
  "rig-core",
  "rmcp",
@@ -4286,7 +4285,6 @@ version = "0.1.0"
 dependencies = [
  "coulisse-core",
  "sqlx",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
@@ -4825,6 +4823,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

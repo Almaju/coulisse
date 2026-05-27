@@ -80,6 +80,14 @@
         "$ref": "#/definitions/ProviderConfig"
       }
     },
+    "sidecars": {
+      "description": "Long-lived helper processes Coulisse spawns alongside itself (chat-platform bridges, monitoring agents, anything you'd otherwise launch in a separate terminal). Each entry declares a command, optional args/env/cwd, and a restart policy. Coulisse captures stdout/stderr into its own log; non-zero exits restart per policy.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SidecarConfig"
+      }
+    },
     "smoke_tests": {
       "description": "Synthetic-user evaluation tests. Each entry pairs a persona prompt with a target agent (or experiment); admin UI exposes a \"Run now\" button that drives the conversation, persists every turn, and fans the assistant turns out to the configured judges. Useful for iterating on agent prompts and comparing experiment variants.",
       "default": [],
@@ -95,6 +103,14 @@
           "$ref": "#/definitions/TelemetryConfig"
         }
       ]
+    },
+    "triggers": {
+      "description": "Time-based and event-based triggers that drop tasks on the background queue without anyone making an HTTP request. Cron is supported today; webhooks arrive in a follow-up. Each trigger names a target `agent` and a `prompt`; firing enqueues a task that workers run through the same handler as the sync chat endpoint.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/TriggerConfig"
+      }
     }
   },
   "definitions": {
@@ -112,6 +128,15 @@
           "items": {
             "type": "string"
           }
+        },
+        "max_turns": {
+          "description": "Maximum number of tool-calling rounds per turn. Defaults to 8. Raise this for agents that chain many tool calls (e.g. a coder reading files, editing, then handing off to QA in one go).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
         },
         "mcp_tools": {
           "type": "array",
@@ -190,6 +215,14 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "mcp_consumer_secret": {
+          "description": "Shared secret that guards `POST /mcp/{server}/connect-link`. Required when any MCP server declares an `oauth:` block.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
           ]
         },
         "proxy": {
@@ -449,6 +482,8 @@
       }
     },
     "McpServerConfig": {
+      "description": "The actual transport variant. Kept as a separate enum so the parent struct can carry `oauth` alongside without breaking existing YAML (the `transport` discriminant remains a sibling key).",
+      "type": "object",
       "oneOf": [
         {
           "type": "object",
@@ -498,7 +533,53 @@
             }
           }
         }
-      ]
+      ],
+      "properties": {
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpOAuthConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "McpOAuthConfig": {
+      "type": "object",
+      "required": [
+        "authorization_url",
+        "client_id",
+        "client_secret",
+        "redirect_uri",
+        "token_url"
+      ],
+      "properties": {
+        "authorization_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "type": "string"
+        },
+        "redirect_uri": {
+          "type": "string"
+        },
+        "scopes": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "token_url": {
+          "type": "string"
+        }
+      }
     },
     "MemoryYaml": {
       "description": "User-facing YAML shape for the `memory:` block. Two pillars:\n\n- `storage` — where the `SQLite` database lives (path, or `:memory:` for ephemeral). - `user_state` — long-term, per-user facts and preferences. Off by default; `user_state: true` enables it with auto-derived defaults; an explicit struct lets advanced users override the embedder, the extraction model, and recall/dedup tuning.\n\nResolved into a [`MemoryConfig`] by the orchestrator (cli) before being handed to [`Store::open`]. Resolution looks at the configured `providers:` map to fill in any auto-derived choices.",
@@ -708,6 +789,78 @@
         }
       }
     },
+    "SidecarConfig": {
+      "type": "object",
+      "required": [
+        "command",
+        "name"
+      ],
+      "properties": {
+        "args": {
+          "description": "Command-line arguments. Each is passed as a separate argv entry — no shell expansion. Quote inside the YAML if you need spaces.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "Executable to spawn. Absolute path or anything on `PATH`.",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "Working directory. Defaults to Coulisse's current working directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "description": "Environment variables added on top of Coulisse's own env. `${VAR}` placeholders are expanded the same way the rest of `coulisse.yaml` expands them, so you can pass through secrets without inlining.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Stable identifier for logs.",
+          "type": "string"
+        },
+        "restart": {
+          "default": "on-failure",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RestartPolicy"
+            }
+          ]
+        }
+      }
+    },
+    "RestartPolicy": {
+      "oneOf": [
+        {
+          "description": "Always restart, regardless of exit status. Useful for long-running services that are expected to stay up forever.",
+          "type": "string",
+          "enum": [
+            "always"
+          ]
+        },
+        {
+          "description": "Never restart. The sidecar runs once; if it exits (for any reason), it stays exited.",
+          "type": "string",
+          "enum": [
+            "never"
+          ]
+        },
+        {
+          "description": "Restart only on non-zero exit or signal-kill. Clean shutdowns (exit 0) are respected. This is the default.",
+          "type": "string",
+          "enum": [
+            "on-failure"
+          ]
+        }
+      ]
+    },
     "SmokeTestConfig": {
       "description": "One smoke test: a synthetic-user persona that drives a conversation against an agent (or experiment) for evaluation. Each repetition uses a fresh synthetic `user_id`, so split/bandit experiments sample variants naturally across reps.",
       "type": "object",
@@ -871,6 +1024,84 @@
         }
       },
       "additionalProperties": false
+    },
+    "TriggerConfig": {
+      "description": "Trigger discriminator. `#[serde(tag = \"type\")]` keeps each variant's fields flat at the top level of a YAML entry so users write `type: cron` and `schedule: \"...\"` as siblings, not nested.",
+      "type": "object",
+      "oneOf": [
+        {
+          "description": "Fires once when Coulisse boots, then never again. Useful for \"wake up and decide what to do\" prompts that should run on every `coulisse start` — e.g. asking the orchestrator agent to read the queue's leftovers and decide whether a standup is warranted.",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "boot"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "schedule",
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "cron"
+              ]
+            },
+            "schedule": {
+              "description": "5-field POSIX cron (`min hour day-of-month month day-of-week`) or 6-field with leading seconds (`sec min hour …`). Parsed via the `cron` crate; 5-field expressions are normalised to 6-field with a leading `0` seconds before parsing.",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "webhook"
+              ]
+            },
+            "path": {
+              "description": "HTTP path Coulisse exposes for this trigger. Must start with `/hooks/` to keep webhook routes namespaced away from the proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks (`/mcp/*`). External bridges (Matrix, Slack, GitHub, anything HTTP-capable) POST JSON to this path to fire the trigger.",
+              "type": "string"
+            }
+          }
+        }
+      ],
+      "required": [
+        "agent",
+        "name",
+        "prompt"
+      ],
+      "properties": {
+        "agent": {
+          "description": "Name of the agent to invoke when the trigger fires.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Stable identifier used in logs and admin views.",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "Initial user message passed to the agent on each fire. Static for now; templating from trigger payload arrives with the webhook trigger.",
+          "type": "string"
+        }
+      }
     }
   }
 }

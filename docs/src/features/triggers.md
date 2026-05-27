@@ -1,6 +1,6 @@
 # Triggers
 
-A trigger is a way to start an agent without anyone making an HTTP request. Cron fires on a schedule; webhooks (next slice) fire on an inbound POST. Both convert to the same shape — a task enqueued via the queue — so the agent runtime doesn't know or care how it was summoned.
+A trigger is a way to start an agent without anyone making an HTTP request. Cron fires on a schedule; webhooks fire on an inbound POST; boot triggers fire once when Coulisse starts. All three convert to the same shape — a task enqueued via the queue — so the agent runtime doesn't know or care how it was summoned.
 
 This is the primitive that makes Coulisse feel like an office instead of a request handler: agents wake up because *something happened*, not because someone is waiting.
 
@@ -53,6 +53,28 @@ INFO cron trigger fired   trigger=daily-standup agent=pm task_id=…
 ```
 
 Or open `/admin/live` — tasks created by triggers appear in the Tasks panel the same way `dispatch_task` tasks do, with the trigger's prompt as the initial message and the agent name as written in YAML.
+
+## Boot triggers
+
+A `type: boot` trigger fires exactly once when Coulisse starts. Use it for "wake up and decide what to do" prompts that should run on every `coulisse start` — e.g. asking an orchestrator agent to read the queue's leftovers and decide whether a standup is warranted, without forcing a ritual on every restart.
+
+```yaml
+triggers:
+  - name: wakeup
+    type: boot
+    agent: pm
+    prompt: |
+      You just came back online. Check `tasks_status` for what was running
+      before the stop, look at recent commits, and decide whether to post
+      a standup. Silence is fine when nothing demands attention.
+```
+
+Fields:
+
+- **type: boot** — discriminator.
+- **agent**, **prompt** — same as cron: which agent runs, with what initial message.
+
+The task is enqueued during `coulisse start`, after the worker pool is up. Combined with the boot-time reaper that marks orphaned `running` tasks as `errored`, this gives the wake-up agent everything it needs to assess state and resume work — see [Async tasks](./async-tasks.md) for the queue semantics.
 
 ## Webhook triggers
 

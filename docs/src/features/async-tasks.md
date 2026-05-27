@@ -42,6 +42,31 @@ When to use which:
 - **Subagent dispatch (sync)** — you need the answer before you can continue. *"Ask user-tester for friction analysis, then summarize."*
 - **`dispatch_task` (async)** — the work is genuinely fire-and-forget, or it's too long to make the caller wait. *"Start a research task on X. I'll narrate progress as it runs."*
 
+## Inspecting from an agent
+
+Agents that get the read side of the queue also see a `tasks_status` tool:
+
+```json
+{
+  "name": "tasks_status",
+  "description": "Report recent background tasks across every agent...",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+      "state": { "type": "string", "enum": ["queued", "running", "done", "errored"] }
+    },
+    "required": []
+  }
+}
+```
+
+The tool returns a JSON `{"tasks": [...]}` array, newest first. Each entry carries the agent name, state, a truncated prompt, and the timestamps — enough for an orchestrator to answer "what's going on right now?" from chat, without you having to open `/admin/live`.
+
+## Boot-time reaping
+
+When Coulisse stops mid-task, the worker dies and the row stays at `running` forever — there's no one to mark it `done` or `errored`. On the next `coulisse start`, before any worker spawns, the queue is swept: every task still in `running` becomes `errored` with the reason `process restarted before task completed`. This pairs naturally with a [`boot` trigger](./triggers.md#boot-triggers): the wake-up agent sees the reaped rows via `tasks_status` (filtered by `state=errored`) and can decide whether to re-dispatch them, escalate, or move on.
+
 ## Configuration
 
 There's no `tasks:` YAML section yet — the queue is always on, with four workers by default. A future `tasks:` block will let you tune worker count and disable the queue entirely if you don't want async work running in your deployment.
@@ -49,6 +74,6 @@ There's no `tasks:` YAML section yet — the queue is always on, with four worke
 ## Architecture notes
 
 - Lives in `crates/tasks/`. Owns the `tasks` SQLite table; no other crate touches it.
-- The `TaskQueue` trait lives in `coulisse-core` so `agents` can build the `dispatch_task` tool without depending on `tasks` directly. Mirrors the existing `ScoreLookup` / `OneShotPrompt` / `AgentResolver` pattern.
+- The `TaskQueue` and `TaskStatus` traits live in `coulisse-core` so `agents` can build the `dispatch_task` and `tasks_status` tools without depending on `tasks` directly. Mirrors the existing `ScoreLookup` / `OneShotPrompt` / `AgentResolver` pattern.
 - Workers run in `cli/src/workers.rs`, spawned alongside the HTTP server. They share the same `Agents` runtime — so a background task can call MCP tools, narrate to Matrix, dispatch subagents, exactly like a sync request.
 - No special shutdown handling yet. Workers die with the process. A graceful drain that lets in-flight tasks finish before exit is on the roadmap.

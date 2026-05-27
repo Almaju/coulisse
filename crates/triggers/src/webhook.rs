@@ -67,7 +67,11 @@ async fn handle(
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     let prompt = substitute(&state.prompt_template, &payload);
-    match state.queue.submit(&state.agent, &prompt, state.user_id).await {
+    match state
+        .queue
+        .submit(&state.agent, &prompt, state.user_id)
+        .await
+    {
         Ok(task_id) => {
             info!(
                 trigger = %state.name,

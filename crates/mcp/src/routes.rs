@@ -6,7 +6,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
 use crate::config::McpServerConfig;
@@ -43,14 +43,8 @@ pub struct CallbackQuery {
 /// wrappers at the application root.
 pub fn router(state: OAuthRouterState) -> Router {
     Router::new()
-        .route(
-            "/mcp/:server/connect-link",
-            post(connect_link_handler),
-        )
-        .route(
-            "/mcp/:server/oauth/callback",
-            get(oauth_callback_handler),
-        )
+        .route("/mcp/{server}/connect-link", post(connect_link_handler))
+        .route("/mcp/{server}/oauth/callback", get(oauth_callback_handler))
         .with_state(state)
 }
 
@@ -129,7 +123,9 @@ async fn oauth_callback_handler(
         Err(McpError::StateExpired) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Html(error_page("Authorization link has expired. Please request a new one.")),
+                Html(error_page(
+                    "Authorization link has expired. Please request a new one.",
+                )),
             )
                 .into_response();
         }
@@ -150,11 +146,7 @@ async fn oauth_callback_handler(
     let config = match state.configs.get(&server) {
         Some(c) if c.oauth.is_some() => c,
         _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                Html(error_page("Unknown server")),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Html(error_page("Unknown server"))).into_response();
         }
     };
     let oauth = config.oauth.as_ref().expect("checked above");
@@ -287,7 +279,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use base64::Engine as _;
@@ -295,9 +286,9 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use tower::ServiceExt;
 
+    use super::{OAuthRouterState, router};
     use crate::config::{McpOAuthConfig, McpServerConfig, McpTransport};
     use crate::vault::TokenVault;
-    use super::{OAuthRouterState, router};
 
     const HMAC_KEY: &[u8] = b"test-hmac-key-32bytes-padding!!!";
     const SECRET: &str = "supersecret";
@@ -433,12 +424,18 @@ mod tests {
         let url = v["url"].as_str().unwrap();
         assert!(url.contains("provider.example.com"), "url={url}");
         assert!(url.contains("client_id"), "url={url}");
-        assert!(url.contains("scope="), "url should contain scope, url={url}");
+        assert!(
+            url.contains("scope="),
+            "url should contain scope, url={url}"
+        );
         assert!(url.contains("state="), "url={url}");
         // scope must appear before state per spec
         let scope_pos = url.find("scope=").unwrap();
         let state_pos = url.find("state=").unwrap();
-        assert!(scope_pos < state_pos, "scope should precede state in url={url}");
+        assert!(
+            scope_pos < state_pos,
+            "scope should precede state in url={url}"
+        );
     }
 
     #[tokio::test]

@@ -20,6 +20,11 @@ pub struct TriggerConfig {
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "lowercase", tag = "type")]
 pub enum TriggerKind {
+    /// Fires once when Coulisse boots, then never again. Useful for
+    /// "wake up and decide what to do" prompts that should run on every
+    /// `coulisse start` — e.g. asking the orchestrator agent to read the
+    /// queue's leftovers and decide whether a standup is warranted.
+    Boot {},
     Cron {
         /// 5-field POSIX cron (`min hour day-of-month month day-of-week`)
         /// or 6-field with leading seconds (`sec min hour …`). Parsed via

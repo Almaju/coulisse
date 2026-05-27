@@ -77,12 +77,13 @@ impl McpServers {
     ) -> Result<Vec<Box<dyn ToolDyn>>, McpError> {
         let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
         for access in accesses {
-            let config = self.configs.get(&access.server).ok_or_else(|| {
-                McpError::ServerNotConfigured {
-                    agent: agent.to_string(),
-                    server: access.server.clone(),
-                }
-            })?;
+            let config =
+                self.configs
+                    .get(&access.server)
+                    .ok_or_else(|| McpError::ServerNotConfigured {
+                        agent: agent.to_string(),
+                        server: access.server.clone(),
+                    })?;
             if config.oauth.is_some() {
                 // OAuth servers are not accessible without a user_id.
                 return Err(McpError::ServerNotConfigured {
@@ -90,16 +91,19 @@ impl McpServers {
                     server: access.server.clone(),
                 });
             }
-            let server = self
-                .servers
-                .get(&access.server)
-                .ok_or_else(|| McpError::ServerNotConfigured {
-                    agent: agent.to_string(),
-                    server: access.server.clone(),
-                })?;
+            let server =
+                self.servers
+                    .get(&access.server)
+                    .ok_or_else(|| McpError::ServerNotConfigured {
+                        agent: agent.to_string(),
+                        server: access.server.clone(),
+                    })?;
             let picked = pick_tools(agent, &access.server, &access.only, &server.tools)?;
             for tool in picked {
-                tools.push(Box::new(McpTool::from_mcp_server(tool, server.sink.clone())));
+                tools.push(Box::new(McpTool::from_mcp_server(
+                    tool,
+                    server.sink.clone(),
+                )));
             }
         }
         Ok(sanitize::apply(tools))
@@ -120,20 +124,22 @@ impl McpServers {
     ) -> Result<Vec<Box<dyn ToolDyn>>, McpError> {
         let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
         for access in accesses {
-            let config = self.configs.get(&access.server).ok_or_else(|| {
-                McpError::ServerNotConfigured {
-                    agent: agent.to_string(),
-                    server: access.server.clone(),
-                }
-            })?;
-
-            if config.oauth.is_some() {
-                let pool = self.user_pool.as_ref().ok_or_else(|| {
-                    McpError::ServerNotConfigured {
+            let config =
+                self.configs
+                    .get(&access.server)
+                    .ok_or_else(|| McpError::ServerNotConfigured {
                         agent: agent.to_string(),
                         server: access.server.clone(),
-                    }
-                })?;
+                    })?;
+
+            if config.oauth.is_some() {
+                let pool =
+                    self.user_pool
+                        .as_ref()
+                        .ok_or_else(|| McpError::ServerNotConfigured {
+                            agent: agent.to_string(),
+                            server: access.server.clone(),
+                        })?;
 
                 match pool.get_or_spawn(&access.server, user_id).await {
                     Ok(session) => {
@@ -146,7 +152,10 @@ impl McpServers {
                             )));
                         }
                     }
-                    Err(McpError::NotConnected { server, user_id: uid }) => {
+                    Err(McpError::NotConnected {
+                        server,
+                        user_id: uid,
+                    }) => {
                         // Surface as not-connected placeholder tools.
                         let server_tools: Vec<rmcp::model::Tool> = match &access.only {
                             None => vec![],
@@ -168,16 +177,18 @@ impl McpServers {
                     Err(e) => return Err(e),
                 }
             } else {
-                let server = self
-                    .servers
-                    .get(&access.server)
-                    .ok_or_else(|| McpError::ServerNotConfigured {
+                let server = self.servers.get(&access.server).ok_or_else(|| {
+                    McpError::ServerNotConfigured {
                         agent: agent.to_string(),
                         server: access.server.clone(),
-                    })?;
+                    }
+                })?;
                 let picked = pick_tools(agent, &access.server, &access.only, &server.tools)?;
                 for tool in picked {
-                    tools.push(Box::new(McpTool::from_mcp_server(tool, server.sink.clone())));
+                    tools.push(Box::new(McpTool::from_mcp_server(
+                        tool,
+                        server.sink.clone(),
+                    )));
                 }
             }
         }
@@ -227,11 +238,10 @@ impl McpServer {
                 if !env.is_empty() {
                     cmd.envs(env);
                 }
-                let transport =
-                    TokioChildProcess::new(cmd).map_err(|source| McpError::Spawn {
-                        server: name.to_string(),
-                        source,
-                    })?;
+                let transport = TokioChildProcess::new(cmd).map_err(|source| McpError::Spawn {
+                    server: name.to_string(),
+                    source,
+                })?;
                 ().serve(transport)
                     .await
                     .map_err(|source| McpError::Connect {

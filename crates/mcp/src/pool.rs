@@ -5,13 +5,11 @@ use coulisse_core::UserId;
 use moka::future::Cache;
 use rig::completion::ToolDefinition;
 use rig::tool::{ToolDyn, ToolError};
-use rig::tool::rmcp::McpTool;
 use rig::wasm_compat::WasmBoxedFuture;
 use rmcp::ServiceExt;
 use rmcp::service::{RoleClient, RunningService, ServerSink};
-use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use serde_json::json;
+use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use tokio::process::Command;
 use tracing::instrument;
 
@@ -22,10 +20,18 @@ use crate::vault::TokenVault;
 const DEFAULT_SESSION_CACHE_SIZE: u64 = 256;
 
 /// A single connected MCP session for a specific user and server.
-pub(crate) struct UserMcpSession {
+pub struct UserMcpSession {
     pub(crate) sink: ServerSink,
     pub(crate) tools: HashMap<String, rmcp::model::Tool>,
     _service: RunningService<RoleClient, ()>,
+}
+
+impl std::fmt::Debug for UserMcpSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserMcpSession")
+            .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
 /// LRU cache of per-user MCP sessions keyed by `(UserId, server_name)`.
@@ -70,13 +76,13 @@ impl UserMcpPool {
         if let Some(session) = self.cache.get(&key).await {
             return Ok(session);
         }
-        let config = self
-            .configs
-            .get(server_name)
-            .ok_or_else(|| McpError::ServerNotConfigured {
-                agent: "<pool>".to_string(),
-                server: server_name.to_string(),
-            })?;
+        let config =
+            self.configs
+                .get(server_name)
+                .ok_or_else(|| McpError::ServerNotConfigured {
+                    agent: "<pool>".to_string(),
+                    server: server_name.to_string(),
+                })?;
 
         let user_id_str = user_id.0.to_string();
         let stored = self
@@ -133,11 +139,10 @@ async fn connect_user_session(
             }
             // Inject the OAuth token so the stdio MCP server can authenticate.
             cmd.env("MCP_OAUTH_TOKEN", access_token);
-            let transport =
-                TokioChildProcess::new(cmd).map_err(|source| McpError::Spawn {
-                    server: name.to_string(),
-                    source,
-                })?;
+            let transport = TokioChildProcess::new(cmd).map_err(|source| McpError::Spawn {
+                server: name.to_string(),
+                source,
+            })?;
             ().serve(transport)
                 .await
                 .map_err(|source| McpError::Connect {
@@ -211,6 +216,7 @@ impl ToolDyn for NotConnectedTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn make_vault_with_token(
@@ -275,7 +281,18 @@ mod tests {
         let user_id_str = user_id.0.to_string();
         // Expiry set to Unix epoch — definitely in the past.
         let vault = make_vault_with_token("github", &user_id_str, Some(1)).await;
-        let configs = HashMap::new();
+        // Server must be configured for the expiry check to be reached;
+        // otherwise we'd short-circuit on `ServerNotConfigured`.
+        let mut configs = HashMap::new();
+        configs.insert(
+            "github".to_string(),
+            McpServerConfig {
+                oauth: None,
+                transport: McpTransport::Http {
+                    url: "http://localhost".to_string(),
+                },
+            },
+        );
         let pool = UserMcpPool::new(configs, vault, None);
 
         let err = pool.get_or_spawn("github", user_id).await.unwrap_err();

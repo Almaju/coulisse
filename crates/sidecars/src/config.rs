@@ -24,7 +24,9 @@ pub struct SidecarConfig {
     pub restart: RestartPolicy,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, schemars::JsonSchema, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, schemars::JsonSchema, Serialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum RestartPolicy {
     /// Always restart, regardless of exit status. Useful for long-running

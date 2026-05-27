@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use coulisse::commands::{check, init, restart, schema, serve, start, status, stop, studio, update};
+use coulisse::commands::{
+    check, init, restart, schema, serve, start, status, stop, studio, update,
+};
 
 const DEFAULT_CONFIG: &str = "coulisse.yaml";
 
