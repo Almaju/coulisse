@@ -36,20 +36,24 @@ Coulisse collapses this plumbing into one configurable server. You describe the 
 
 ## What's in the box
 
-| Feature                 | Status |
-|-------------------------|--------|
-| Multi-agent routing     | ✅ Working |
-| Per-user memory         | ✅ Persistent (SQLite) with semantic recall |
-| Real embedders          | ✅ OpenAI + Voyage (hash fallback for offline dev) |
-| Auto-extraction         | ✅ Optional — pulls durable facts from each exchange |
-| MCP tool integration    | ✅ Working (stdio + HTTP) |
-| Multi-backend support   | ✅ Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq |
-| OpenAI-compatible API   | ✅ `/v1/chat/completions`, `/v1/models` |
-| Streaming responses     | ✅ Server-Sent Events |
-| Rate limiting           | ✅ Per-user token quotas (hour / day / month, in-memory) |
-| Studio UI               | ✅ Read-only at `/admin/` |
-| Workflow orchestration  | ⏳ Planned |
-| Durable rate-limit state| ⏳ Planned |
+| Feature                          | Status |
+|----------------------------------|--------|
+| Multi-agent routing              | ✅ Working |
+| Per-user memory                  | ✅ Persistent (SQLite) with semantic recall |
+| Real embedders                   | ✅ OpenAI + Voyage (hash fallback for offline dev) |
+| Auto-extraction                  | ✅ Optional — pulls durable facts from each exchange |
+| MCP tool integration             | ✅ Working (stdio + HTTP) |
+| Multi-backend support            | ✅ Anthropic, OpenAI, Gemini, Cohere, Deepseek, Groq |
+| OpenAI-compatible API            | ✅ `/v1/chat/completions`, `/v1/models` |
+| Streaming responses              | ✅ Server-Sent Events |
+| Rate limiting                    | ✅ Per-user token quotas (hour / day / month, in-memory) |
+| Studio UI                        | ✅ `/admin/` — conversations, memories, judges, live task board, admin edits |
+| Triggers (cron / webhook / boot) | ✅ Start agents on a schedule or via HTTP POST |
+| Async task queue                 | ✅ Fire-and-forget background work with `dispatch_task` |
+| Sidecars                         | ✅ Long-lived helper processes managed by Coulisse |
+| Config variables (`vars:`)       | ✅ Named snippets shared across agent preambles |
+| IDE schema (`coulisse schema`)   | ✅ JSON Schema for autocompletion in VS Code, Helix, Zed… |
+| Durable rate-limit state         | ⏳ Planned |
 
 Continue to [Installation](./getting-started/installation.md) to get started.
 

@@ -95,6 +95,10 @@ Request a specific agent by setting `model` to its name. Conversation history is
 | OpenAI-compatible | `/v1/chat/completions` and `/v1/models` — drop-in for any OpenAI SDK. |
 | MCP tools | Attach Model Context Protocol servers over stdio or HTTP. Per-agent filtering. |
 | Rate limiting | Per-user token quotas on hour / day / month windows. |
+| Triggers | Start agents on a schedule (`cron`), via HTTP POST (`webhook`), or at boot. |
+| Async tasks | `dispatch_task` enqueues background work; `tasks_status` reads the queue from chat. |
+| Sidecars | Long-lived helper processes (bridges, exporters) managed by Coulisse. |
+| Studio UI | `/admin/` — browse history, edit agents live, watch the real-time task board. |
 | YAML-driven | Every setting lives in `coulisse.yaml` with startup validation. |
 
 Status: pre-1.0 — usable for prototypes and personal projects. Minor version
