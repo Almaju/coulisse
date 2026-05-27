@@ -51,11 +51,16 @@ This keeps tool names compatible with every client that calls your agents, inclu
 
 ### Tool signature
 
+> ⚠️ **En cours d'implémentation — interface à confirmer.**
+> La signature ci-dessous est l'intention de design, pas encore un contrat stable.
+
+The planned signature:
+
 ```
-search_<name>(query: string, limit?: int) → [{ text, source, score }]
+search_<name>(query: string, limit?: int)
 ```
 
-`limit` defaults to 5. `score` is a cosine similarity in `[0.0, 1.0]`.
+`limit` is expected to default to 5. The return shape and score semantics will be documented once the implementation lands.
 
 ## Full example
 
@@ -92,14 +97,11 @@ The two blocks are independent: `knowledge:` says *what to index*, `embeddings:`
 The index is persisted next to your memory database. Model metadata is stored with the index, so Coulisse detects mismatches.
 
 - **First run:** the local model is downloaded (~130 MB) with a log message. Subsequent starts use the cached file.
-- **Model mismatch:** if you change `embeddings.model` after indexing, Coulisse refuses to start and tells you:
+- **Model mismatch:** if you change `embeddings.model` after indexing, Coulisse refuses to start with an error message indicating the mismatch.
 
-  ```
-  error: index was built with 'bge-small-en-v1.5', config requests 'text-embedding-3-small'
-  → re-run with --reindex to rebuild
-  ```
+  **Workaround (current):** delete the index directory manually (typically `.coulisse/index`) and restart. Coulisse will rebuild from scratch.
 
-  Pass `--reindex` to drop and rebuild the index. No silent corruption.
+  A `--reindex` flag is planned to automate this step, but is not yet available.
 
 ## Exposing the tool to an agent
 
@@ -136,7 +138,7 @@ embeddings:
 
 ## What's out of scope (v1)
 
-- Re-indexation without `--reindex` (no filesystem watch).
+- Re-indexation via `--reindex` flag (not yet implemented; delete the index directory manually for now).
 - Remote sources (`s3://`, `https://`) — waiting on `storage:` support (#56).
 - Incremental indexing.
 - Re-ranking (cross-encoder).
