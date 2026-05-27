@@ -1136,7 +1136,7 @@ enum ExpandError {
     ConfigVarNotSet { offset: usize, var: String },
     #[error("environment variable '{var}' is not set")]
     EnvVarNotSet { offset: usize, var: String },
-    #[error("unclosed '${{' in config")]
+    #[error("unclosed '${{'  in config")]
     UnclosedEnvVar { offset: usize },
 }
 
@@ -1979,7 +1979,7 @@ smoke_tests:
         }
     }
 
-    // ── to_slug ─────────────────────────────────────────────────────────────
+    // ── to_slug ──────────────────────────────────────────────────────────────────────
 
     #[test]
     fn to_slug_hyphens_become_underscores() {
@@ -2021,7 +2021,7 @@ smoke_tests:
         assert_eq!(to_slug("already_fine").unwrap(), "already_fine");
     }
 
-    // ── validate_knowledge ──────────────────────────────────────────────────
+    // ── validate_knowledge ─────────────────────────────────────────────────────────
 
     const KNOWLEDGE_BASE: &str = r"
 providers:
@@ -2121,7 +2121,11 @@ agents:
 "
         );
         match parse(&yaml) {
-            Err(ConfigError::KnowledgeSlugCollision { name_a, name_b, slug }) => {
+            Err(ConfigError::KnowledgeSlugCollision {
+                name_a,
+                name_b,
+                slug,
+            }) => {
                 assert_eq!(name_a, "rust-book");
                 assert_eq!(name_b, "rust_book");
                 assert_eq!(slug, "rust_book");
@@ -2142,7 +2146,11 @@ agents:
 "
         );
         match parse(&yaml) {
-            Err(ConfigError::KnowledgeSlugCollision { name_a, name_b, slug }) => {
+            Err(ConfigError::KnowledgeSlugCollision {
+                name_a,
+                name_b,
+                slug,
+            }) => {
                 assert_eq!(name_a, "rust_book");
                 assert_eq!(name_b, "rust-book");
                 assert_eq!(slug, "rust_book");
