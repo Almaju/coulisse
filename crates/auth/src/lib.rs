@@ -15,4 +15,4 @@ mod auth;
 mod config;
 
 pub use auth::{Auth, BuildError};
-pub use config::{BasicConfig, Config, ConfigError, OidcConfig, ScopeConfig};
+pub use config::{BasicConfig, Config, ConfigError, McpAdminConfig, OidcConfig, ScopeConfig};

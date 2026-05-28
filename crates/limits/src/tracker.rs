@@ -24,6 +24,7 @@ impl SchemaMigrator for Schema {
 /// counter for each user in `SQLite` so limits survive restarts. Shares a pool
 /// with [`memory::Store`] — there is one database per Coulisse process, with
 /// one table per crate that owns state.
+#[derive(Clone)]
 pub struct Tracker {
     pool: SqlitePool,
 }
@@ -108,6 +109,26 @@ impl Tracker {
         Ok(())
     }
 
+    /// Delete all rate-limit windows for `user_id`, effectively resetting
+    /// their counters to zero. Intended for the MCP admin `reset_rate_limit`
+    /// tool only — production traffic should never call this.
+    ///
+    /// The caller is responsible for validating that `user_id` is a known,
+    /// well-formed identifier before calling this method, to prevent
+    /// accidental bulk resets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database write fails.
+    pub async fn reset_scope(&self, user_id: &str) -> Result<bool, LimitError> {
+        let rows = sqlx::query("DELETE FROM rate_limit_windows WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(rows > 0)
+    }
+
     async fn count(&self, user: &str, kind: WindowKind, start: u64) -> Result<u64, LimitError> {
         let row: Option<(i64,)> = sqlx::query_as(
             "SELECT count FROM rate_limit_windows \
@@ -132,6 +153,41 @@ mod tests {
         let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
         let pool = SqlitePool::connect_with(options).await.unwrap();
         Tracker::open(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn reset_scope_clears_counters() {
+        let tracker = tracker().await;
+        let limits = RequestLimits {
+            tokens_per_hour: Some(10),
+            ..Default::default()
+        };
+        tracker.record("alice", 10).await.unwrap();
+        tracker.check("alice", limits).await.unwrap_err();
+
+        let cleared = tracker.reset_scope("alice").await.unwrap();
+        assert!(cleared);
+        tracker.check("alice", limits).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reset_scope_unknown_user_returns_false() {
+        let tracker = tracker().await;
+        assert!(!tracker.reset_scope("nobody").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reset_scope_leaves_other_users_intact() {
+        let tracker = tracker().await;
+        let limits = RequestLimits {
+            tokens_per_hour: Some(10),
+            ..Default::default()
+        };
+        tracker.record("alice", 10).await.unwrap();
+        tracker.record("bob", 10).await.unwrap();
+        tracker.reset_scope("alice").await.unwrap();
+        tracker.check("alice", limits).await.unwrap();
+        tracker.check("bob", limits).await.unwrap_err();
     }
 
     #[tokio::test]
