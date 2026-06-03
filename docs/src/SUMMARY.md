@@ -33,6 +33,7 @@
 - [Rate limiting](./features/rate-limiting.md)
 - [Token cost tracking](./features/pricing.md)
 - [Response language](./features/language.md)
+- [Structured outputs](./features/structured-output.md)
 - [LLM-as-judge evaluation](./features/evaluation.md)
 - [Experiments (A/B testing)](./features/experiments.md)
 - [Smoke tests](./features/smoke-tests.md)

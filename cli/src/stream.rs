@@ -12,7 +12,10 @@ use judges::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
-use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
+use proxy::{
+    ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, ResponseFormat, Role, Usage,
+    response_id,
+};
 
 use crate::server::{AppState, judges_for_agent, record_llm_call};
 
@@ -39,6 +42,10 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     pub include_usage: bool,
     pub inner: CompletionStream,
     pub model: String,
+    /// When set to a JSON variant, the accumulated reply is validated once
+    /// the stream completes. Already-streamed tokens can't be retro-repaired,
+    /// so an invalid reply surfaces as an SSE error event rather than a retry.
+    pub response_format: Option<ResponseFormat>,
     pub state: Arc<AppState<P>>,
     pub tracker_key: String,
     /// Root `turn` span the SSE body runs inside. Drives `Span::current()`
@@ -61,6 +68,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         include_usage,
         inner,
         model,
+        response_format,
         state,
         tracker_key,
         turn_span,
@@ -154,13 +162,21 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
             }
         }
 
+        // Structured output can't be repaired mid-stream — a reply that fails
+        // validation becomes an error event instead of a retry.
+        let final_text = accumulated.lock().unwrap().clone();
+        if !errored
+            && let Some(event) = meta.structured_output_error(response_format.as_ref(), &final_text)
+        {
+            yield Ok(event);
+            errored = true;
+        }
+
         if !errored {
-            let usage = if include_usage {
+            let usage = include_usage.then(|| {
                 let u = *final_usage.lock().unwrap();
-                Some(Usage::new(u.input_tokens, u.output_tokens, u.total_tokens))
-            } else {
-                None
-            };
+                Usage::new(u.input_tokens, u.output_tokens, u.total_tokens)
+            });
             yield Ok(meta.stop_event(usage));
         }
         yield Ok(Event::default().data("[DONE]"));
@@ -331,6 +347,22 @@ impl StreamMeta {
                 "object": "chat.completion.chunk",
             }))
             .expect("error chunk serializes")
+    }
+
+    /// An error event when `text` doesn't satisfy a JSON `response_format`,
+    /// or `None` when it's valid (or no JSON format was requested). The
+    /// injected instruction already steered the model toward valid JSON;
+    /// this is the safety net for the cases where it didn't.
+    fn structured_output_error(
+        &self,
+        format: Option<&ResponseFormat>,
+        text: &str,
+    ) -> Option<Event> {
+        let format = format.filter(|f| f.requires_json())?;
+        format
+            .validate(text)
+            .err()
+            .map(|err| self.error_event(&err.to_string()))
     }
 
     fn role_event(&self) -> Event {

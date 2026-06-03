@@ -11,6 +11,7 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- **Structured outputs (`response_format`).** The chat endpoint now accepts OpenAI's `response_format` field — `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {...}}`. Coulisse enforces it uniformly for every provider by injecting a shape instruction into the system preamble and validating the reply server-side, so structured output works even on models with no native structured-output mode. Non-streaming requests re-prompt the model with the exact validation error up to twice before failing; a malformed schema is rejected with `400` up front, and a reply that never validates returns `502`. Streaming validates the accumulated reply at the end and surfaces an SSE error event on failure. See [Structured outputs](docs/src/features/structured-output.md).
 - Auto-generated infrastructure secrets — `COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY` are persisted to `.coulisse/secrets.env` on first boot when unset.
 - `npx mcp-remote <URL>` shims are auto-rewritten to native HTTP + `oauth: { mode: discover }`.
 - MCP OAuth `mode: discover` — spec-compliant servers (Todoist, Atlassian, Linear…) wire up with no credentials via RFC 8414 + RFC 7591.

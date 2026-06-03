@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use limits::LimitError;
 use memory::MemoryError;
 use providers::CallError;
-use proxy::LanguageTagError;
+use proxy::{LanguageTagError, ResponseFormatError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -28,6 +28,8 @@ pub enum ApiError {
     Limit(#[from] LimitError),
     #[error("memory backend error: {0}")]
     Memory(#[from] MemoryError),
+    #[error("{0}")]
+    ResponseFormat(#[from] ResponseFormatError),
 }
 
 impl IntoResponse for ApiError {
@@ -41,9 +43,12 @@ impl IntoResponse for ApiError {
                 AgentsError::UnknownAgent(_) => (StatusCode::NOT_FOUND, "not_found"),
                 _ => (StatusCode::BAD_GATEWAY, "upstream_error"),
             },
+            // A bad schema is the client's mistake (400); a reply that never
+            // validates after repair retries is the upstream model's (502).
             Self::BadRequest(_)
             | Self::Language(_)
-            | Self::Limit(LimitError::InvalidMetadata { .. }) => {
+            | Self::Limit(LimitError::InvalidMetadata { .. })
+            | Self::ResponseFormat(ResponseFormatError::InvalidSchema(_)) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
             Self::Limit(LimitError::Database(_) | LimitError::Migrate(_)) => {
@@ -54,6 +59,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
             }
             Self::Memory(_) => (StatusCode::INTERNAL_SERVER_ERROR, "memory_error"),
+            Self::ResponseFormat(
+                ResponseFormatError::NotJson(_) | ResponseFormatError::SchemaViolation(_),
+            ) => (StatusCode::BAD_GATEWAY, "upstream_error"),
         };
         let body = Json(serde_json::json!({
             "error": {

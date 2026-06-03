@@ -45,6 +45,7 @@ futures-util = "0.3"
 hmac = "0.12"
 hex = "0.4"
 infer = "0.19"
+jsonschema = "0.46"
 judges = { path = "crates/judges" }
 limits = { path = "crates/limits" }
 mcp = { path = "crates/mcp" }

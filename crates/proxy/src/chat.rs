@@ -4,6 +4,7 @@ use coulisse_core::UserId;
 use serde::{Deserialize, Serialize};
 
 use crate::language::{LanguageTag, LanguageTagError};
+use crate::response_format::ResponseFormat;
 use crate::{Tool, ToolCall, ToolChoice};
 
 pub(crate) const METADATA_LANGUAGE: &str = "language";
@@ -16,6 +17,8 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safety_identifier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,6 +263,7 @@ mod tests {
             messages: vec![],
             metadata,
             model: "test".into(),
+            response_format: None,
             safety_identifier: None,
             stream: None,
             stream_options: None,

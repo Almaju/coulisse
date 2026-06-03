@@ -15,8 +15,8 @@ use memory::{Extractor, Memory, MemoryKind, MessageId, Role as MemRole, Store, U
 use telemetry::TurnId;
 use tracing::{Instrument, Span, info_span};
 
-use proxy::ChatCompletionRequest;
 use proxy::Message as ChatMessage;
+use proxy::{ChatCompletionRequest, ResponseFormat};
 
 use crate::error::ApiError;
 use crate::shadow::spawn_shadow_runs;
@@ -117,11 +117,14 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
     }
 
     let messages = std::mem::take(&mut prepared.messages);
-    let completion = state
-        .agents
-        .complete(&routing.agent_name, messages, prepared.user_id)
-        .instrument(routing.turn_span.clone())
-        .await?;
+    let completion = complete_validated(
+        &state,
+        &routing,
+        messages,
+        prepared.user_id,
+        request.response_format.as_ref(),
+    )
+    .await?;
     finalize_non_streaming(&state, &prepared, &routing, &completion).await?;
 
     let usage = proxy::Usage::new(
@@ -130,6 +133,67 @@ async fn chat_completions<P: Agents + OneShotPrompt + 'static>(
         completion.usage.total_tokens,
     );
     Ok(Json(request.response_with(completion.text, usage)).into_response())
+}
+
+/// How many times a structured-output reply may be re-prompted before the
+/// request fails. Each retry feeds the model its own invalid reply plus the
+/// exact validation error, so two attempts clears all but pathological cases
+/// without burning unbounded tokens on a model that simply can't comply.
+const MAX_FORMAT_REPAIRS: usize = 2;
+
+/// Run the agent and, when a JSON `response_format` was requested, enforce it:
+/// validate the reply, and on failure re-prompt with the validation error up
+/// to `MAX_FORMAT_REPAIRS` times. Returns the cleaned JSON as the reply text
+/// (fences and stray prose stripped) and the cumulative usage across every
+/// attempt. A reply that never validates surfaces as a `ResponseFormat` error.
+async fn complete_validated<P: Agents + OneShotPrompt + 'static>(
+    state: &Arc<AppState<P>>,
+    routing: &Routing,
+    mut messages: Vec<agents::Message>,
+    user_id: UserId,
+    format: Option<&ResponseFormat>,
+) -> Result<agents::Completion, ApiError> {
+    let mut completion = state
+        .agents
+        .complete(&routing.agent_name, messages.clone(), user_id)
+        .instrument(routing.turn_span.clone())
+        .await?;
+
+    let Some(format) = format.filter(|f| f.requires_json()) else {
+        return Ok(completion);
+    };
+
+    let mut usage = completion.usage;
+    let mut attempts = 0;
+    loop {
+        match format.validate(&completion.text) {
+            Ok(json) => {
+                completion.text = json;
+                completion.usage = usage;
+                return Ok(completion);
+            }
+            Err(err) if attempts >= MAX_FORMAT_REPAIRS => {
+                return Err(ApiError::ResponseFormat(err));
+            }
+            Err(err) => {
+                attempts += 1;
+                messages.push(agents::Message {
+                    content: std::mem::take(&mut completion.text),
+                    role: agents::Role::Assistant,
+                });
+                messages.push(agents::Message {
+                    content: format.repair_instruction(&err),
+                    role: agents::Role::User,
+                });
+                completion = state
+                    .agents
+                    .complete(&routing.agent_name, messages.clone(), user_id)
+                    .instrument(routing.turn_span.clone())
+                    .await?;
+                usage = usage.merged(completion.usage);
+            }
+        }
+    }
 }
 
 /// Per-request derived state from experiment routing: which agent to call,
@@ -244,6 +308,7 @@ async fn stream_response<P: Agents + OneShotPrompt + 'static>(
         include_usage: request.include_usage(),
         inner,
         model: request.model.clone(),
+        response_format: request.response_format.clone(),
         state: Arc::clone(&state),
         tracker_key: prepared.tracker_key,
         turn_span: routing.turn_span,
@@ -384,6 +449,20 @@ async fn prepare_request<P: Agents + OneShotPrompt>(
             content: sys.content_or_empty().to_string(),
             role: agents::Role::System,
         });
+    }
+    // Structured output is enforced uniformly for every provider: reject a
+    // malformed schema up front, then inject the shape instruction so even
+    // models with no native structured-output mode emit conforming JSON.
+    // The reply is validated (and repaired) after the call — see
+    // `complete_validated` and the streaming branch.
+    if let Some(format) = request.response_format.as_ref() {
+        format.check_schema()?;
+        if let Some(instruction) = format.instruction() {
+            messages.push(agents::Message {
+                content: instruction,
+                role: agents::Role::System,
+            });
+        }
     }
     if !assembled.memories.is_empty() {
         messages.push(agents::Message {
