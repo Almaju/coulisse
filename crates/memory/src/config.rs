@@ -243,9 +243,14 @@ pub fn default_recall_k() -> usize {
     5
 }
 
+/// Bare filename of the default `SQLite` database. The orchestrator (cli)
+/// places it under the project's `.coulisse/` state dir; standalone use of
+/// the crate falls back to the current directory via [`default_sqlite_path`].
+pub const DEFAULT_SQLITE_FILENAME: &str = "coulisse-memory.db";
+
 #[must_use]
 pub fn default_sqlite_path() -> PathBuf {
-    PathBuf::from("./coulisse-memory.db")
+    PathBuf::from(format!("./{DEFAULT_SQLITE_FILENAME}"))
 }
 
 #[must_use]

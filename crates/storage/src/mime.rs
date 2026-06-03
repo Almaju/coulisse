@@ -22,9 +22,7 @@ pub fn is_allowed(mime_type: &str) -> bool {
 /// `application/octet-stream` if inference fails (always in the allow-list).
 #[must_use]
 pub fn infer_mime(data: &[u8]) -> &'static str {
-    infer::get(data)
-        .map(|t| t.mime_type())
-        .unwrap_or("application/octet-stream")
+    infer::get(data).map_or("application/octet-stream", |t| t.mime_type())
 }
 
 #[cfg(test)]

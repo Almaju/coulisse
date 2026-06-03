@@ -123,5 +123,5 @@ fn run_foreground(config: &std::path::Path) -> Result<(), Box<dyn std::error::Er
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(serve::run(config))
+    runtime.block_on(serve::run(config, || {}))
 }

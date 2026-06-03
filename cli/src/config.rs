@@ -67,6 +67,15 @@ pub struct Config {
     #[serde(default)]
     pub port: Option<u16>,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
+    /// Externally reachable base URL of this Coulisse instance, with no
+    /// trailing slash (e.g. `https://coulisse.example.com`). Used to build
+    /// MCP OAuth redirect URIs and the per-user connect links surfaced to
+    /// LLMs via `NotConnectedTool`. Defaults to `http://localhost:{port}`,
+    /// which is what you want for a personal/local setup; set it explicitly
+    /// when Coulisse is reachable on a different hostname (deployed,
+    /// behind a tunnel, behind a reverse proxy).
+    #[serde(default)]
+    pub public_base_url: Option<String>,
     /// Long-lived helper processes Coulisse spawns alongside itself
     /// (chat-platform bridges, monitoring agents, anything you'd otherwise
     /// launch in a separate terminal). Each entry declares a command,
@@ -238,6 +247,17 @@ fn locate(source: &str, offset: usize) -> (usize, String) {
 }
 
 impl Config {
+    /// Effective public base URL with no trailing slash. Either the
+    /// explicit `public_base_url` field, or a sensible
+    /// `http://localhost:{port}` fallback for local/personal use.
+    #[must_use]
+    pub fn effective_public_base_url(&self) -> String {
+        if let Some(url) = &self.public_base_url {
+            return url.trim_end_matches('/').to_string();
+        }
+        format!("http://localhost:{}", self.port.unwrap_or(8421))
+    }
+
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -302,9 +322,23 @@ impl Config {
                 }
             }
         })?;
-        let config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
+        let mut config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
+        config.normalize_mcp_shims();
         config.validate()?;
         Ok(config)
+    }
+
+    /// Rewrite recognised stdio shims (currently just `npx mcp-remote
+    /// <URL>`) into their equivalent native form. Emits a warning per
+    /// rewritten entry to stderr so the operator can see what changed —
+    /// stderr is redirected into `.coulisse/coulisse.log` by `coulisse
+    /// start`, and goes to the terminal in foreground mode.
+    fn normalize_mcp_shims(&mut self) {
+        for (name, cfg) in &mut self.mcp {
+            if let Some(warning) = cfg.normalize_mcp_remote_shim() {
+                eprintln!("warning: mcp.{name}: {warning}");
+            }
+        }
     }
 
     /// Whole-graph schema validation. Run once on YAML load and again on
@@ -398,48 +432,69 @@ impl Config {
         if !has_oauth {
             return Ok(());
         }
-        if self.auth.mcp_consumer_secret.is_none() {
-            return Err(ConfigError::McpOAuthMissingConsumerSecret);
-        }
-        if std::env::var("COULISSE_VAULT_KEY").is_err() {
-            return Err(ConfigError::McpOAuthMissingVaultKey);
-        }
-        if std::env::var("COULISSE_HMAC_KEY").is_err() {
-            return Err(ConfigError::McpOAuthMissingHmacKey);
-        }
+        // `auth.mcp_consumer_secret` is optional: the per-user
+        // `GET /mcp/{server}/connect` flow uses HMAC-signed tokens, not
+        // the consumer secret. The secret only gates the admin
+        // `POST /connect-link` endpoint, which 503s when unset.
+        //
+        // `COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY` env vars are also
+        // optional — `crate::secrets::Secrets::load_or_generate` resolves
+        // them from env, the on-disk `.coulisse/secrets.env` file, or
+        // generates fresh material on first boot. Nothing to check here
+        // beyond the YAML shape.
         for (name, cfg) in &self.mcp {
             let Some(oauth) = &cfg.oauth else {
                 continue;
             };
-            if oauth.authorization_url.is_empty() {
-                return Err(ConfigError::McpOAuthBlankField {
-                    field: "authorization_url",
-                    server: name.clone(),
-                });
-            }
-            if oauth.client_id.is_empty() {
-                return Err(ConfigError::McpOAuthBlankField {
-                    field: "client_id",
-                    server: name.clone(),
-                });
-            }
-            if oauth.client_secret.is_empty() {
-                return Err(ConfigError::McpOAuthBlankField {
-                    field: "client_secret",
-                    server: name.clone(),
-                });
-            }
-            if oauth.redirect_uri.is_empty() {
-                return Err(ConfigError::McpOAuthBlankField {
-                    field: "redirect_uri",
-                    server: name.clone(),
-                });
-            }
-            if oauth.token_url.is_empty() {
-                return Err(ConfigError::McpOAuthBlankField {
-                    field: "token_url",
-                    server: name.clone(),
-                });
+            match oauth {
+                mcp::McpOAuthConfig::Discover { .. } => {
+                    // Discover requires the MCP server itself to expose
+                    // OAuth metadata; nothing to validate at YAML load.
+                    // For the HTTP transport (the only sensible one for
+                    // discover, since stdio doesn't expose a URL), we
+                    // could check `transport: http`, but a stdio server
+                    // that proxies an HTTP MCP and forwards Bearer auth
+                    // is conceivable — leave it.
+                }
+                mcp::McpOAuthConfig::Static {
+                    authorization_url,
+                    client_id,
+                    client_secret,
+                    redirect_uri,
+                    token_url,
+                    ..
+                } => {
+                    if authorization_url.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "authorization_url",
+                            server: name.clone(),
+                        });
+                    }
+                    if client_id.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "client_id",
+                            server: name.clone(),
+                        });
+                    }
+                    if client_secret.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "client_secret",
+                            server: name.clone(),
+                        });
+                    }
+                    if redirect_uri.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "redirect_uri",
+                            server: name.clone(),
+                        });
+                    }
+                    if token_url.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "token_url",
+                            server: name.clone(),
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -907,12 +962,6 @@ pub enum ConfigError {
     McpServerNotConfigured { agent: String, server: String },
     #[error("mcp server '{server}' has an oauth block but field '{field}' is blank")]
     McpOAuthBlankField { field: &'static str, server: String },
-    #[error("at least one MCP server has an oauth block, but auth.mcp_consumer_secret is not set")]
-    McpOAuthMissingConsumerSecret,
-    #[error("COULISSE_HMAC_KEY env var must be set when any MCP server has an oauth block")]
-    McpOAuthMissingHmacKey,
-    #[error("COULISSE_VAULT_KEY env var must be set when any MCP server has an oauth block")]
-    McpOAuthMissingVaultKey,
     #[error("config must declare at least one agent")]
     NoAgents,
     #[error("failed to parse config: {0}")]
@@ -1903,6 +1952,7 @@ mcp:
     transport: http
     url: https://mcp.example.com
     oauth:
+      mode: static
       authorization_url: https://auth.example.com/authorize
       client_id: client-id
       client_secret: client-secret
@@ -1911,7 +1961,24 @@ mcp:
 ";
 
     #[test]
-    fn mcp_oauth_missing_consumer_secret_is_rejected() {
+    fn mcp_oauth_consumer_secret_is_optional() {
+        // The consumer secret only gates the admin `/connect-link`
+        // endpoint; the per-user `/connect` flow uses HMAC tokens. A
+        // config without `auth.mcp_consumer_secret` must validate
+        // successfully (env-var-only setup).
+        let _guard = OAUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe {
+            std::env::set_var(
+                "COULISSE_VAULT_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
+            std::env::set_var(
+                "COULISSE_HMAC_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
+        }
         let yaml = r"
 providers:
   openai:
@@ -1921,61 +1988,39 @@ agents:
     provider: openai
     model: gpt-4
 mcp:
-  jira:
+  todoist:
     transport: http
-    url: https://mcp.example.com
+    url: https://ai.todoist.net/mcp
     oauth:
-      authorization_url: https://auth.example.com/authorize
-      client_id: client-id
-      client_secret: client-secret
-      redirect_uri: https://coulisse.example.com/mcp/jira/oauth/callback
-      token_url: https://auth.example.com/oauth/token
+      mode: discover
 ";
         let config: Config = serde_yaml::from_str(yaml).expect("parses");
-        match config.validate() {
-            Err(ConfigError::McpOAuthMissingConsumerSecret) => {}
-            other => panic!("expected McpOAuthMissingConsumerSecret, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn mcp_oauth_missing_vault_key_is_rejected() {
-        let _guard = OAUTH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Ensure COULISSE_VAULT_KEY is not set for this test.
-        unsafe {
-            std::env::remove_var("COULISSE_VAULT_KEY");
-            std::env::remove_var("COULISSE_HMAC_KEY");
-        }
-        let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
-        match config.validate() {
-            Err(ConfigError::McpOAuthMissingVaultKey) => {}
-            other => panic!("expected McpOAuthMissingVaultKey, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn mcp_oauth_missing_hmac_key_is_rejected() {
-        let _guard = OAUTH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        unsafe {
-            std::env::set_var(
-                "COULISSE_VAULT_KEY",
-                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
-            );
-            std::env::remove_var("COULISSE_HMAC_KEY");
-        }
-        let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
         let result = config.validate();
         unsafe {
             std::env::remove_var("COULISSE_VAULT_KEY");
+            std::env::remove_var("COULISSE_HMAC_KEY");
         }
-        match result {
-            Err(ConfigError::McpOAuthMissingHmacKey) => {}
-            other => panic!("expected McpOAuthMissingHmacKey, got {other:?}"),
+        result.expect("oauth without consumer secret should validate");
+    }
+
+    #[test]
+    fn mcp_oauth_validates_without_env_vars() {
+        // Boot used to require COULISSE_VAULT_KEY / COULISSE_HMAC_KEY in
+        // the environment when any MCP server had an oauth block. They're
+        // now resolved by `secrets::Secrets::load_or_generate` (env >
+        // on-disk file > generate), so the YAML validator no longer
+        // touches the environment.
+        let _guard = OAUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe {
+            std::env::remove_var("COULISSE_VAULT_KEY");
+            std::env::remove_var("COULISSE_HMAC_KEY");
         }
+        let config: Config = serde_yaml::from_str(MCP_OAUTH_BASE).expect("parses");
+        config
+            .validate()
+            .expect("validation must not depend on env vars anymore");
     }
 
     #[test]
@@ -2008,6 +2053,7 @@ mcp:
     transport: http
     url: https://mcp.example.com
     oauth:
+      mode: static
       authorization_url: ""
       client_id: client-id
       client_secret: client-secret
@@ -2027,5 +2073,81 @@ mcp:
             }
             other => panic!("expected McpOAuthBlankField, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn mcp_oauth_discover_parses_without_credentials() {
+        let _guard = OAUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe {
+            std::env::set_var(
+                "COULISSE_VAULT_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
+            std::env::set_var(
+                "COULISSE_HMAC_KEY",
+                "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3Q=",
+            );
+        }
+        let yaml = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+auth:
+  mcp_consumer_secret: s3cr3t
+mcp:
+  todoist:
+    transport: http
+    url: https://ai.todoist.net/mcp
+    oauth:
+      mode: discover
+";
+        let config: Config = serde_yaml::from_str(yaml).expect("parses");
+        let result = config.validate();
+        unsafe {
+            std::env::remove_var("COULISSE_VAULT_KEY");
+            std::env::remove_var("COULISSE_HMAC_KEY");
+        }
+        result.expect("discover mode requires nothing in YAML beyond `mode: discover`");
+    }
+
+    #[test]
+    fn effective_public_base_url_defaults_to_localhost_with_port() {
+        let yaml = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+port: 8423
+";
+        let config: Config = serde_yaml::from_str(yaml).expect("parses");
+        assert_eq!(config.effective_public_base_url(), "http://localhost:8423");
+    }
+
+    #[test]
+    fn effective_public_base_url_trims_trailing_slash() {
+        let yaml = r"
+providers:
+  openai:
+    api_key: test
+agents:
+  - name: assistant
+    provider: openai
+    model: gpt-4
+public_base_url: https://coulisse.example.com/
+";
+        let config: Config = serde_yaml::from_str(yaml).expect("parses");
+        assert_eq!(
+            config.effective_public_base_url(),
+            "https://coulisse.example.com"
+        );
     }
 }

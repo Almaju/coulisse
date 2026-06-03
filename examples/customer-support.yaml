@@ -1,0 +1,187 @@
+# yaml-language-server: $schema=../coulisse.schema.json
+#
+# Customer-support assistant for a SaaS product.
+#
+# Inbound chats come from the in-app help widget. Each customer is a real
+# end-user with their own ticket history, so `safety_identifier` on every
+# request is the customer's account id and per-user memory keeps the
+# conversation coherent across sessions.
+#
+# Architecture: a cheap triage agent classifies intent and either answers
+# from the docs or hands off to a specialist subagent that can read/write
+# Linear tickets. A second specialist handles billing questions against
+# the Stripe MCP. Every assistant reply is scored by a judge so regressions
+# surface in the studio. The "support" name is an experiment that A/Bs
+# Claude vs GPT-4o for the front-line role.
+
+public_base_url: https://help.acme.example.com
+
+memory:
+  storage: /var/lib/coulisse/support.db
+  user_state: true
+
+providers:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+  openai:
+    api_key: ${OPENAI_API_KEY}
+
+# Both MCPs use per-user OAuth — every customer-success agent who talks
+# through Coulisse authorizes their own Linear + Stripe accounts once,
+# tokens land in Coulisse's vault, and tool calls run as them.
+mcp:
+  linear:
+    transport: http
+    url: https://mcp.linear.app/sse
+    oauth:
+      mode: discover
+
+  stripe:
+    transport: http
+    url: https://mcp.stripe.com
+    oauth:
+      mode: discover
+      scopes: [customers.read, invoices.read, subscriptions.read]
+
+  # In-house docs MCP. Vector-searches the public help center + internal
+  # runbooks. No OAuth — it runs in the same VPC and trusts the caller.
+  docs:
+    transport: http
+    url: http://docs-mcp.internal:7000
+
+auth:
+  proxy:
+    basic:
+      username: app
+      password: ${COULISSE_PROXY_PASSWORD}
+  admin:
+    oidc:
+      issuer_url: https://auth.acme.example.com/application/o/coulisse/
+      client_id: ${OIDC_CLIENT_ID}
+      client_secret: ${OIDC_CLIENT_SECRET}
+      redirect_url: https://help.acme.example.com/admin/oidc/callback
+  mcp_consumer_secret: ${COULISSE_MCP_SECRET}
+
+judges:
+  - name: support_quality
+    provider: openai
+    model: gpt-4o-mini
+    sampling_rate: 1.0
+    rubrics:
+      accuracy:    Factual accuracy against the docs. Flag hallucinations about pricing, limits, or features.
+      empathy:     Acknowledged the user's frustration before solving.
+      resolution:  Did the answer actually resolve the question or just restate it?
+
+  # Deeper audit on 5% of turns with a stronger model — used to spot-check
+  # the cheap judge above.
+  - name: deep_audit
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    sampling_rate: 0.05
+    rubrics:
+      escalation_call: Was the decision to escalate (or not) appropriate?
+      tool_usage:      Did the agent use the right tools, or paper over a gap with a guess?
+
+agents:
+  # Front-line agent — Claude variant. Sees docs + Linear (read-only).
+  - name: support-claude
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    judges: [support_quality, deep_audit]
+    subagents: [billing-specialist, escalation]
+    mcp_tools:
+      - server: docs
+      - server: linear
+        only: [list_issues, get_issue, search_issues]
+    preamble: |
+      You are a customer support agent for Acme. Be warm, concise, and
+      concrete. Always check the docs MCP before answering — never guess
+      pricing, limits, or feature behaviour.
+
+      If the user is asking about billing, invoices, or their subscription,
+      delegate to `billing-specialist`. If the issue clearly needs a human
+      (data loss, security, outage), call `escalation` to file a Linear
+      ticket and tell the user a human will follow up.
+
+  # Front-line agent — GPT variant. Same toolset, different model.
+  - name: support-gpt
+    provider: openai
+    model: gpt-4o
+    judges: [support_quality, deep_audit]
+    subagents: [billing-specialist, escalation]
+    mcp_tools:
+      - server: docs
+      - server: linear
+        only: [list_issues, get_issue, search_issues]
+    preamble: |
+      You are a customer support agent for Acme. Be warm, concise, and
+      concrete. Always check the docs MCP before answering — never guess
+      pricing, limits, or feature behaviour.
+
+      Delegate billing questions to `billing-specialist`. Escalate to a
+      human via `escalation` when the issue involves data loss, security,
+      or an outage.
+
+  - name: billing-specialist
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Look up a customer's subscription, invoices, and payment history; explain charges; never make refunds.
+    judges: [support_quality]
+    mcp_tools:
+      - server: stripe
+    preamble: |
+      You answer billing questions. Read the customer's Stripe record
+      before replying. You may explain any charge but you cannot issue
+      refunds or change plans — surface those as escalations.
+
+  - name: escalation
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    purpose: File a Linear ticket on behalf of the user when human follow-up is needed; return the ticket URL.
+    mcp_tools:
+      - server: linear
+        only: [create_issue]
+    preamble: |
+      Create one Linear issue in team SUPPORT with the user's description,
+      a short title, and priority based on severity. Return the issue URL
+      and nothing else.
+
+# A/B test the two front-line agents. Clients send `model: support`;
+# half the customers land on Claude, half on GPT. Sticky-by-user keeps
+# the same customer on the same variant across sessions so memory and
+# style stay consistent.
+experiments:
+  - name: support
+    strategy: split
+    purpose: First-line customer support for Acme.
+    variants:
+      - agent: support-claude
+        weight: 0.5
+      - agent: support-gpt
+        weight: 0.5
+
+# Nightly regression run: replay a synthetic angry-customer persona
+# against each variant; the judges score the transcripts.
+smoke_tests:
+  - name: angry_billing
+    target: support
+    repetitions: 4
+    persona:
+      provider: openai
+      model: gpt-4o-mini
+      preamble: |
+        You are role-playing an angry Acme customer who was charged twice
+        for the same invoice last month. Reply like a real frustrated user.
+        Stop with [FIN] when the assistant has either explained the charge
+        or escalated.
+    initial_message: "I was double-charged on my last invoice. What are you going to do about it?"
+    stop_marker: "[FIN]"
+    max_turns: 8
+
+telemetry:
+  otlp:
+    endpoint: https://otel.acme.example.com:4317
+    protocol: grpc
+    service_name: coulisse-support
+    headers:
+      authorization: "Bearer ${OTEL_API_KEY}"

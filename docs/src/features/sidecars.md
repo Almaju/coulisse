@@ -1,20 +1,20 @@
 # Sidecars
 
-A sidecar is a long-lived external process Coulisse spawns alongside itself: a Matrix bridge, a Slack listener, a custom metrics exporter — anything you'd otherwise launch in a separate terminal.
+A sidecar is a long-lived external process Coulisse spawns alongside itself: a Slack listener, a custom metrics exporter, a bridge to whatever chat platform you use — anything you'd otherwise launch in a separate terminal.
 
 The point is *not* to add new agent capabilities — agents already get the world via MCP. The point is to keep "one YAML, one start command" honest. If running Coulisse needs you to remember to also run a bridge script, that property has quietly broken.
 
-Coulisse stays platform-agnostic. The sidecars mechanism only knows how to spawn a command, capture its output, and restart it on crash. It doesn't know what Matrix is.
+Coulisse stays platform-agnostic. The sidecars mechanism only knows how to spawn a command, capture its output, and restart it on crash.
 
 ## Declaring sidecars
 
 ```yaml
 sidecars:
-  - name: matrix-bridge
-    command: matrix-bridge/.venv/bin/python
-    args: [matrix-bridge/bridge.py]
+  - name: chat-bridge
+    command: chat-bridge/.venv/bin/python
+    args: [chat-bridge/bridge.py]
     env:
-      MATRIX_BOT_PASSWORD: coulisse-dev
+      BOT_PASSWORD: coulisse-dev
     restart: on-failure
 
   - name: heartbeat
@@ -44,18 +44,6 @@ Fields:
 - If the work is part of the agent flow, expose it as an MCP server instead — that's the abstraction agents actually use.
 - If the work is short-lived (a one-shot script), schedule it as a cron trigger that runs a small agent prompt instead.
 - If the work needs to outlive Coulisse (database, message broker, homeserver), don't manage it as a sidecar — run it under your real init system (systemd, docker, supervisord). Sidecars die with Coulisse.
-
-## Worked example: Matrix bridge
-
-The reference bridge at `local/matrix-bridge/bridge.py` (in your gitignored personal workspace) is the canonical sidecar. Once Python deps are installed:
-
-```bash
-pip install matrix-nio requests
-```
-
-uncomment the `matrix-bridge` entry in `coulisse.yaml` and restart. Coulisse spawns the bridge, the bridge logs into Matrix as `@coulisse:localhost`, listens for mentions, POSTs to the `matrix-mention` webhook trigger. You see both the bridge's output ("Forwarded mention from …") and the resulting agent run in the same `coulisse.log`.
-
-Same recipe applies to Slack, Discord, GitHub — replace the bridge with whatever speaks the source platform and POSTs JSON to a Coulisse webhook path.
 
 ## Known limitations
 

@@ -23,7 +23,11 @@ use crate::commands::status::pid_alive;
 use crate::paths::StatePaths;
 
 const DETACH_FLAG: &str = "--detached-child";
-const READY_TIMEOUT: Duration = Duration::from_secs(5);
+const READY_FILENAME: &str = "ready";
+// Boot can include sqlite migrations, MCP handshakes, and store rebuilds
+// before the listener binds; pick a deadline that comfortably covers a
+// cold start so we don't false-timeout a legitimate boot.
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
@@ -84,27 +88,34 @@ fn run_foreground(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
     }
     fs::create_dir_all(&paths.dir)?;
     write_pid(&paths.pid, current_pid())?;
-    let result = serve_blocking(config_path);
+    let result = serve_blocking(config_path, || {});
     let _ = fs::remove_file(&paths.pid);
     result
 }
 
 /// Variant of foreground that runs after self-respawn: the parent has
 /// already redirected stdio and we just need to write the pid and serve.
+/// The `on_ready` callback (a touch on the `ready` marker file) is how
+/// the launching parent knows the server has actually bound its port.
 fn run_as_detached_child(config_path: &Path, paths: &StatePaths) -> Result<(), StartError> {
     write_pid(&paths.pid, current_pid())?;
-    let result = serve_blocking(config_path);
+    let ready = paths.dir.join(READY_FILENAME);
+    let ready_signal = ready.clone();
+    let result = serve_blocking(config_path, move || {
+        let _ = File::create(&ready_signal);
+    });
     let _ = fs::remove_file(&paths.pid);
+    let _ = fs::remove_file(&ready);
     result
 }
 
-fn serve_blocking(config_path: &Path) -> Result<(), StartError> {
+fn serve_blocking(config_path: &Path, on_ready: impl FnOnce() + Send) -> Result<(), StartError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(StartError::Io)?;
     runtime
-        .block_on(serve::run(config_path))
+        .block_on(serve::run(config_path, on_ready))
         .map_err(StartError::Serve)
 }
 
@@ -114,8 +125,11 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
     {
         return Err(StartError::AlreadyRunning(pid));
     }
-    // NOTE: stale PID file from a previous crash — replace it.
+    // NOTE: stale state from a previous crash — replace both files so
+    // we never observe a pre-existing ready marker and false-positive.
     let _ = fs::remove_file(&paths.pid);
+    let ready = paths.dir.join(READY_FILENAME);
+    let _ = fs::remove_file(&ready);
 
     fs::create_dir_all(&paths.dir)?;
     let log = OpenOptions::new()
@@ -124,7 +138,7 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         .open(&paths.log)?;
     // WHY: record the log size before spawn so on failure we can surface
     // only this run's output, not noise from previous runs.
-    let log_offset = log.metadata().map(|m| m.len()).unwrap_or(0);
+    let log_offset = log.metadata().map_or(0, |m| m.len());
     let log_err = log.try_clone()?;
 
     let exe = env::current_exe()?;
@@ -145,17 +159,17 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
         });
     }
     let mut child = cmd.spawn()?;
+    let child_pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
 
     let deadline = Instant::now() + READY_TIMEOUT;
-    let pid = loop {
-        if let Some(pid) = read_pid(&paths.pid)
-            && pid_alive(pid)
-        {
-            break pid;
+    // Wait for the child to touch the ready marker, which it only does
+    // after `TcpListener::bind` returns inside `serve::run`. Anything
+    // that fails before bind — config parse, sqlite open, port-in-use —
+    // exits the child with no marker, and `try_wait` surfaces the log.
+    loop {
+        if ready.exists() {
+            break;
         }
-        // WHY: a fast-failing child (e.g. config error) exits before the
-        // 5s deadline. Detect that and surface its output immediately
-        // instead of making the user wait for the timeout.
         if let Ok(Some(status)) = child.try_wait() {
             return Err(StartError::ChildExited {
                 log_path: paths.log.display().to_string(),
@@ -171,11 +185,11 @@ fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartErr
             });
         }
         std::thread::sleep(Duration::from_millis(100));
-    };
+    }
     // WHY: leak the child handle so we don't try to wait/kill on drop.
     drop(child);
 
-    println!("coulisse started (pid {pid})");
+    println!("coulisse started (pid {child_pid})");
     println!("  config: {}", config_path.display());
     println!("  log:    {}", paths.log.display());
     println!("  stop with: coulisse stop");

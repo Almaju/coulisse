@@ -215,7 +215,7 @@ mcp:
 ## `memory`
 
 - **Type:** object
-- **Optional.** Omit for defaults: SQLite at `./coulisse-memory.db`, history-only (no long-term user state).
+- **Optional.** Omit for defaults: SQLite at `.coulisse/coulisse-memory.db`, history-only (no long-term user state).
 
 See [Memory configuration](../configuration/memory.md) for the full walkthrough and examples.
 
@@ -223,7 +223,7 @@ See [Memory configuration](../configuration/memory.md) for the full walkthrough 
 
 | Field                                 | Type           | Required | Default                                |
 |---------------------------------------|----------------|----------|----------------------------------------|
-| `storage`                             | string         | no       | `./coulisse-memory.db` (or `:memory:`) |
+| `storage`                             | string         | no       | `.coulisse/coulisse-memory.db` (or `:memory:`) |
 | `user_state`                          | bool or object | no       | `false`                                |
 | `user_state.embed_with`               | object         | no       | auto-picked from `providers:`          |
 | `user_state.learn_from`               | object         | no       | auto-picked from `providers:`          |

@@ -9,9 +9,9 @@
 //! `/admin/live` board — sees the resulting task as identical to one
 //! produced by cron or by `dispatch_task`.
 //!
-//! Coulisse stays platform-agnostic: it knows nothing about Matrix or
-//! Slack or GitHub. Bridges live outside the binary as separate
-//! processes that POST JSON to the configured path.
+//! Coulisse stays platform-agnostic: it knows nothing about Slack,
+//! GitHub, or any other source. Bridges live outside the binary as
+//! separate processes that POST JSON to the configured path.
 
 use std::sync::Arc;
 
@@ -239,13 +239,13 @@ mod tests {
         webhook_router(triggers, queue as Arc<dyn TaskQueue>, UserId::new())
     }
 
-    fn matrix_trigger(agent_template: &str) -> TriggerConfig {
+    fn chat_trigger(agent_template: &str) -> TriggerConfig {
         TriggerConfig {
             agent: agent_template.to_string(),
             kind: TriggerKind::Webhook {
-                path: "/hooks/matrix".to_string(),
+                path: "/hooks/chat".to_string(),
             },
-            name: "matrix-mention".to_string(),
+            name: "chat-mention".to_string(),
             prompt: "@{{sender}}: {{body}}".to_string(),
         }
     }
@@ -253,7 +253,7 @@ mod tests {
     async fn post_json(app: Router, body: serde_json::Value) -> Response {
         let req = Request::builder()
             .method("POST")
-            .uri("/hooks/matrix")
+            .uri("/hooks/chat")
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap();
@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn templated_agent_resolves_from_payload() {
         let queue = Arc::new(CapturingQueue::default());
-        let app = router_with(&[matrix_trigger("{{agent}}")], Arc::clone(&queue));
+        let app = router_with(&[chat_trigger("{{agent}}")], Arc::clone(&queue));
         let resp = post_json(
             app,
             serde_json::json!({"agent": "pm", "sender": "almaju", "body": "hi"}),
@@ -280,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn static_agent_still_works() {
         let queue = Arc::new(CapturingQueue::default());
-        let app = router_with(&[matrix_trigger("coder")], Arc::clone(&queue));
+        let app = router_with(&[chat_trigger("coder")], Arc::clone(&queue));
         let resp = post_json(app, serde_json::json!({"sender": "almaju", "body": "x"})).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn unresolved_agent_template_returns_400() {
         let queue = Arc::new(CapturingQueue::default());
-        let app = router_with(&[matrix_trigger("{{agent}}")], Arc::clone(&queue));
+        let app = router_with(&[chat_trigger("{{agent}}")], Arc::clone(&queue));
         // Payload is missing the `agent` field — the placeholder survives
         // substitution and the handler should reject before enqueueing.
         let resp = post_json(app, serde_json::json!({"sender": "almaju", "body": "x"})).await;

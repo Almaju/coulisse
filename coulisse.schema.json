@@ -80,6 +80,14 @@
         "$ref": "#/definitions/ProviderConfig"
       }
     },
+    "public_base_url": {
+      "description": "Externally reachable base URL of this Coulisse instance, with no trailing slash (e.g. `https://coulisse.example.com`). Used to build MCP OAuth redirect URIs and the per-user connect links surfaced to LLMs via `NotConnectedTool`. Defaults to `http://localhost:{port}`, which is what you want for a personal/local setup; set it explicitly when Coulisse is reachable on a different hostname (deployed, behind a tunnel, behind a reverse proxy).",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "sidecars": {
       "description": "Long-lived helper processes Coulisse spawns alongside itself (chat-platform bridges, monitoring agents, anything you'd otherwise launch in a separate terminal). Each entry declares a command, optional args/env/cwd, and a restart policy. Coulisse captures stdout/stderr into its own log; non-zero exits restart per policy.",
       "default": [],
@@ -96,6 +104,14 @@
         "$ref": "#/definitions/SmokeTestConfig"
       }
     },
+    "storage": {
+      "description": "OpenAI-compatible file storage (`/v1/files/*`). Defaults to filesystem backend under `./coulisse-files` with no quota. Set `max_total_bytes` / `max_file_bytes` to enable FIFO eviction and per-file size limits.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/StorageConfig"
+        }
+      ]
+    },
     "telemetry": {
       "description": "Observability wiring: stderr fmt logs (always on by default), `SQLite` mirror that drives the studio UI (on by default), and an optional OpenTelemetry OTLP exporter for shipping traces to Grafana / `SigNoz` / Jaeger / etc.",
       "allOf": [
@@ -110,6 +126,14 @@
       "type": "array",
       "items": {
         "$ref": "#/definitions/TriggerConfig"
+      }
+    },
+    "vars": {
+      "description": "Named text snippets you can splice into any string field using `${vars.<name>}`. Resolved after env-var expansion, single-pass (a var's value is not itself re-expanded). Useful for sharing preamble footers across agents, common paths, repeated strings.",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
       }
     }
   },
@@ -217,6 +241,17 @@
             }
           ]
         },
+        "mcp_admin": {
+          "description": "Bearer token that guards the `/mcp-admin` MCP server endpoint. Distinct from `auth.admin` (HTTP Basic / OIDC studio) — this is a shared secret for IDE clients (Claude Code, Cursor) that use the Model Context Protocol to inspect and manage a deployed Coulisse instance.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpAdminConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "mcp_consumer_secret": {
           "description": "Shared secret that guards `POST /mcp/{server}/connect-link`. Required when any MCP server declares an `oauth:` block.",
           "default": null,
@@ -317,6 +352,18 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "McpAdminConfig": {
+      "description": "Bearer-token auth for the MCP admin endpoint.",
+      "type": "object",
+      "required": [
+        "token"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
         }
       }
     },
@@ -504,6 +551,25 @@
           }
         },
         {
+          "description": "MCP-over-SSE (older protocol revision). The server hosts a long-lived `GET <url>` event-stream; its first event announces the POST endpoint for outgoing JSON-RPC messages. Used by servers that haven't moved to streamable-HTTP yet — most notably Atlassian's `https://mcp.atlassian.com/v1/sse`.",
+          "type": "object",
+          "required": [
+            "transport",
+            "url"
+          ],
+          "properties": {
+            "transport": {
+              "type": "string",
+              "enum": [
+                "sse"
+              ]
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        },
+        {
           "type": "object",
           "required": [
             "command",
@@ -535,6 +601,10 @@
         }
       ],
       "properties": {
+        "no_rewrite": {
+          "description": "When `true`, skip Coulisse's `npx mcp-remote <URL>` → native HTTP/SSE rewrite for this server. Use when the upstream MCP server only accepts tokens from `mcp-remote`'s well-known (grandfathered) client_id — Todoist's MCP at the moment — so `mcp-remote` must continue to run as a stdio child rather than be replaced by Coulisse's native transport + DCR.",
+          "type": "boolean"
+        },
         "oauth": {
           "anyOf": [
             {
@@ -548,38 +618,69 @@
       }
     },
     "McpOAuthConfig": {
-      "type": "object",
-      "required": [
-        "authorization_url",
-        "client_id",
-        "client_secret",
-        "redirect_uri",
-        "token_url"
-      ],
-      "properties": {
-        "authorization_url": {
-          "type": "string"
-        },
-        "client_id": {
-          "type": "string"
-        },
-        "client_secret": {
-          "type": "string"
-        },
-        "redirect_uri": {
-          "type": "string"
-        },
-        "scopes": {
-          "default": [],
-          "type": "array",
-          "items": {
-            "type": "string"
+      "description": "OAuth configuration for an MCP server. Two flavours, picked by the `mode` discriminator in YAML:\n\n- `static` — classic OAuth 2.0 with pre-registered app credentials. You register Coulisse as a client at the provider's developer console and paste the resulting `client_id` / `client_secret` here. Required for providers that don't support Dynamic Client Registration. - `discover` — MCP-spec OAuth 2.1 with discovery + Dynamic Client Registration (DCR). Coulisse fetches the provider's authorization server metadata from `<mcp_origin>/.well-known/oauth-authorization-server` and registers itself as a client on first user authorization. No credentials in YAML. This is what modern MCP servers (Todoist, Atlassian, Linear, …) want.\n\nBoth variants drive the same per-user token flow: tokens are stored in the vault keyed by `(server_name, user_id)`, and the `NotConnectedTool` placeholder surfaces a per-user connect link to the LLM when a user hasn't authorized yet.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "discover"
+              ]
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
-        "token_url": {
-          "type": "string"
+        {
+          "type": "object",
+          "required": [
+            "authorization_url",
+            "client_id",
+            "client_secret",
+            "mode",
+            "redirect_uri",
+            "token_url"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "static"
+              ]
+            },
+            "authorization_url": {
+              "type": "string"
+            },
+            "client_id": {
+              "type": "string"
+            },
+            "client_secret": {
+              "type": "string"
+            },
+            "redirect_uri": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "token_url": {
+              "type": "string"
+            }
+          }
         }
-      }
+      ]
     },
     "MemoryYaml": {
       "description": "User-facing YAML shape for the `memory:` block. Two pillars:\n\n- `storage` — where the `SQLite` database lives (path, or `:memory:` for ephemeral). - `user_state` — long-term, per-user facts and preferences. Off by default; `user_state: true` enables it with auto-derived defaults; an explicit struct lets advanced users override the embedder, the extraction model, and recall/dedup tuning.\n\nResolved into a [`MemoryConfig`] by the orchestrator (cli) before being handed to [`Store::open`]. Resolution looks at the configured `providers:` map to fill in any auto-derived choices.",
@@ -929,6 +1030,102 @@
         }
       }
     },
+    "StorageConfig": {
+      "description": "Top-level `storage:` block in `coulisse.yaml`.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "Storage backend. Defaults to `fs` if unset.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/BackendKind"
+            }
+          ]
+        },
+        "fs": {
+          "description": "File-system backend options. Ignored when `backend: s3`.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/FsConfig"
+            }
+          ]
+        },
+        "max_file_bytes": {
+          "description": "Maximum bytes that may be stored per individual file. Defaults to no limit.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_total_bytes": {
+          "description": "Maximum bytes that may be stored across all files (global quota). FIFO eviction removes the oldest file when the limit would be exceeded. Defaults to no limit.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "s3": {
+          "description": "S3-compatible backend options. Required when `backend: s3`.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/S3Config"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "BackendKind": {
+      "type": "string",
+      "enum": [
+        "fs",
+        "s3"
+      ]
+    },
+    "FsConfig": {
+      "description": "File-system backend configuration.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Directory where blobs are stored. Defaults to `./coulisse-files`.",
+          "default": "./coulisse-files",
+          "type": "string"
+        }
+      }
+    },
+    "S3Config": {
+      "description": "S3-compatible backend configuration.",
+      "type": "object",
+      "required": [
+        "bucket"
+      ],
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint_url": {
+          "description": "Custom endpoint URL for `MinIO`, R2, or other S3-compatible services.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "AWS region. Defaults to `us-east-1`.",
+          "default": "us-east-1",
+          "type": "string"
+        }
+      }
+    },
     "TelemetryConfig": {
       "description": "Top-level config. Every field is optional — a missing `telemetry:` block falls back to the documented defaults (fmt to stderr at info, sqlite enabled, no OTLP).",
       "type": "object",
@@ -1077,7 +1274,7 @@
               ]
             },
             "path": {
-              "description": "HTTP path Coulisse exposes for this trigger. Must start with `/hooks/` to keep webhook routes namespaced away from the proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks (`/mcp/*`). External bridges (Matrix, Slack, GitHub, anything HTTP-capable) POST JSON to this path to fire the trigger.",
+              "description": "HTTP path Coulisse exposes for this trigger. Must start with `/hooks/` to keep webhook routes namespaced away from the proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks (`/mcp/*`). External bridges (Slack, GitHub, anything HTTP-capable) POST JSON to this path to fire the trigger.",
               "type": "string"
             }
           }

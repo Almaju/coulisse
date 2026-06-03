@@ -51,7 +51,7 @@ Known about the user:
 
 The `storage:` field accepts:
 
-- `./path/to.db` (or any other filesystem path) — persistent SQLite. Created if missing. The default if `storage:` is omitted is `./coulisse-memory.db`.
+- `./path/to.db` (or any other filesystem path) — persistent SQLite. Created if missing. When `storage:` is omitted, the database lives at `.coulisse/coulisse-memory.db` (the project state directory next to your `coulisse.yaml`), alongside the log, PID, and MCP secrets. An explicit path is used verbatim, relative to the current working directory.
 - `:memory:` — ephemeral; everything is lost on restart. Useful for tests and one-shot demos.
 
 For Docker, point `storage:` at a volume-mounted location (e.g. `/var/lib/coulisse/memory.db`).

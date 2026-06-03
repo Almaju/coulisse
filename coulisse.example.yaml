@@ -10,7 +10,7 @@
 # default_user_id: main
 
 # Memory subsystem. The whole block is optional — omit it for the default:
-# conversation history in ./coulisse-memory.db, no long-term memory. Add
+# conversation history in .coulisse/coulisse-memory.db, no long-term memory. Add
 # `user_state: true` to also remember durable facts about each user across
 # conversations. See docs/src/configuration/memory.md for the full schema.
 memory:
@@ -25,22 +25,30 @@ providers:
   gemini:
     api_key: your-gemini-key
 
-# Optional: MCP (Model Context Protocol) servers the agents can borrow tools from.
-# Two transports are supported:
-#   - stdio: coulisse spawns the command and talks over the child's stdin/stdout.
-#   - http:  coulisse connects to a running Streamable-HTTP MCP endpoint.
+# Optional: MCP (Model Context Protocol) servers the agents can borrow
+# tools from. Coulisse infers everything from the shape of the entry:
+#   - `url:`     → remote HTTP/SSE (sse picked when the path has /sse).
+#   - `command:` → local stdio child process.
+# URL-based servers default to `oauth: discover` automatically — same
+# zero-config UX as ChatGPT. Opt out of OAuth with `oauth: false` for the
+# rare non-auth HTTP MCP.
 mcp:
+  # Local stdio MCP — Coulisse spawns the command, talks over stdin/stdout.
   hello:
-    transport: stdio
     command: uvx
     args:
       - --from
       - "git+ssh://git@github.com/macsymwang/hello-mcp-server.git"
       - hello-mcp-server
-  # NOTE: HTTP-based servers use `transport: http` and a `url` field.
+
+  # Remote MCP with per-user OAuth. Paste the URL, done.
+  # todoist:
+  #   url: https://ai.todoist.net/mcp
+
+  # Plain HTTP MCP without auth — explicit opt-out.
   # calculator:
-  #   transport: http
-  #   url: localhost:8080
+  #   url: http://localhost:8080
+  #   oauth: false
 
 # LLM-as-judge evaluators. Optional — omit the block for no evaluation.
 # Each judge runs in a background task after an assistant turn. Agents opt

@@ -1,0 +1,165 @@
+# yaml-language-server: $schema=../coulisse.schema.json
+#
+# Personal productivity assistant — one user, many tools.
+#
+# Single-operator setup: `default_user_id: main` so every chat lands in
+# the same memory bucket regardless of which client (web, terminal, chat
+# bridge) is talking. Long-term memory is on so the assistant learns
+# preferences over time ("I prefer morning meetings", "my partner's name
+# is X", "I'm based in Paris").
+#
+# Tools come from real third-party MCP servers via per-user OAuth:
+# Todoist for tasks, Atlassian for Jira/Confluence, GitHub for code.
+#
+# Cron triggers turn it from a chat-bot into a proactive agent: a 09:00
+# standup digest, a 17:30 wind-down summary, and a Sunday-evening review
+# that plans the coming week.
+
+default_user_id: main
+public_base_url: http://localhost:8421
+
+memory:
+  storage: ./coulisse-memory.db
+  user_state: true
+
+providers:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+  openai:
+    api_key: ${OPENAI_API_KEY}
+
+mcp:
+  todoist:
+    transport: http
+    url: https://ai.todoist.net/mcp
+    oauth:
+      mode: discover
+
+  atlassian:
+    transport: http
+    url: https://mcp.atlassian.com/v1/sse
+    oauth:
+      mode: discover
+
+  # Modern GitHub MCP server. `discover` mode handles DCR automatically.
+  github:
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    oauth:
+      mode: discover
+
+  # Local filesystem MCP — gives the assistant access to a scratch
+  # directory for drafting documents, reading notes, etc.
+  notes:
+    transport: stdio
+    command: uvx
+    args:
+      - mcp-server-filesystem
+      - --root
+      - /Users/me/Notes
+
+auth:
+  mcp_consumer_secret: ${COULISSE_MCP_SECRET}
+
+agents:
+  # The orchestrator — what you actually chat with. Delegates to the
+  # specialists below; never reaches into MCPs directly so the top-level
+  # context stays clean.
+  - name: assistant
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    subagents: [planner, coder, scribe, researcher]
+    preamble: |
+      You are my personal assistant. Be direct, no filler. Use subagents
+      for anything that needs real work:
+        - `planner` for anything involving Todoist or Jira.
+        - `coder` for code questions or GitHub work.
+        - `scribe` to draft, summarize, or rewrite text against my notes.
+        - `researcher` for open-ended investigation.
+      Reply yourself only for short conversational turns.
+
+  - name: planner
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Manage my Todoist tasks and Jira tickets — list, create, update, close. Plans my day or week against deadlines.
+    mcp_tools:
+      - server: todoist
+      - server: atlassian
+    preamble: |
+      You manage my task list. Pull live state from Todoist and Jira
+      before making any plan. When proposing a schedule, account for
+      deadlines and priority labels. Only create tasks I've explicitly
+      asked for — never invent work.
+
+  - name: coder
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Read and write code on GitHub — review PRs, open issues, search across my repos.
+    mcp_tools:
+      - server: github
+    preamble: |
+      You help with code. When reviewing, focus on correctness and
+      clarity over style. Cite line numbers when commenting on a PR.
+      Never push to main; open a draft PR instead.
+
+  - name: scribe
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Draft, summarize, and rewrite documents — reads from and writes to my local notes directory.
+    mcp_tools:
+      - server: notes
+    preamble: |
+      You handle writing tasks against my notes directory. Read existing
+      files for context before drafting. Save outputs as Markdown.
+
+  - name: researcher
+    provider: openai
+    model: gpt-4o
+    purpose: Open-ended investigation when the answer isn't in any of my tools — synthesize, compare, recommend.
+    preamble: |
+      You investigate questions that don't have a clean answer in my
+      tools. Cite reasoning, not just conclusions. Flag uncertainty.
+
+# Proactive runs. The assistant wakes up on schedule.
+triggers:
+  # Catch-up after a restart: the assistant looks around and decides
+  # whether anything needs my attention.
+  - name: wakeup
+    type: boot
+    agent: assistant
+    prompt: |
+      You just came back online. Check Todoist for overdue tasks and
+      GitHub for new PR review requests. If anything is urgent, post a
+      short summary; otherwise stay silent.
+
+  - name: morning-standup
+    type: cron
+    schedule: "0 9 * * 1-5"
+    agent: assistant
+    prompt: |
+      It's 09:00. Give me my standup: today's calendar (from Todoist
+      due-today), Jira tickets assigned to me with status "In Progress",
+      and any GitHub review requests. Three sections, bullets, no fluff.
+
+  - name: evening-wrap
+    type: cron
+    schedule: "30 17 * * 1-5"
+    agent: assistant
+    prompt: |
+      End of day. What did I close today (Todoist + Jira)? What's still
+      open and overdue? Anything I should defer to tomorrow?
+
+  - name: weekly-review
+    type: cron
+    schedule: "0 18 * * SUN"
+    agent: assistant
+    prompt: |
+      Weekly review. Summarize what I shipped, what slipped, and propose
+      the top 3 priorities for the coming week against my open Jira
+      tickets. Be honest if I'm overloaded.
+
+telemetry:
+  fmt:
+    enabled: true
+  sqlite:
+    enabled: true

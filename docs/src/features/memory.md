@@ -64,7 +64,7 @@ Each memory row carries the id of the embedder that produced it. If you swap the
 
 ## Storage location
 
-Defaults to `./coulisse-memory.db`. Override with:
+Defaults to `.coulisse/coulisse-memory.db` — the project state directory next to your `coulisse.yaml`, shared with the log, PID, and MCP secrets. Override with:
 
 ```yaml
 memory:

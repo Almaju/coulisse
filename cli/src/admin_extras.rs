@@ -420,6 +420,7 @@ async fn persist_mcp(
 fn mcp_summary(server: &McpServerConfig) -> String {
     match &server.transport {
         McpTransport::Http { url } => format!("http · {url}"),
+        McpTransport::Sse { url } => format!("sse · {url}"),
         McpTransport::Stdio { command, args, .. } => {
             if args.is_empty() {
                 format!("stdio · {command}")

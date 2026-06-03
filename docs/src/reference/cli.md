@@ -126,11 +126,12 @@ under `/usr/local/bin` you may need `sudo`.
 your-project/
 ├── coulisse.yaml
 └── .coulisse/
-    ├── coulisse.pid     # written by `start`, removed on clean exit
-    ├── coulisse.log     # detached stdout/stderr
-    └── memory.db        # if you point memory.storage here
+    ├── coulisse.pid          # written by `start`, removed on clean exit
+    ├── coulisse.log          # detached stdout/stderr
+    ├── secrets.env           # MCP OAuth encryption keys (when configured)
+    └── coulisse-memory.db    # default SQLite database (unless memory.storage overrides it)
 ```
 
-`.coulisse/` is the recommended target for `memory.storage` so
-the whole runtime footprint of one project sits under a single
-directory.
+`.coulisse/` holds the whole runtime footprint of one project under a
+single directory. The SQLite database lands here by default; set
+`memory.storage` to an explicit path to put it elsewhere.

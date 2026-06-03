@@ -10,13 +10,16 @@ version.workspace = true
 name = "coulisse"
 path = "src/main.rs"
 
+[features]
+s3 = ["storage/s3"]
+
 [dependencies]
 agents.workspace = true
 arc-swap.workspace = true
 askama.workspace = true
 async-stream.workspace = true
 auth.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 base64.workspace = true
 clap.workspace = true
 coulisse-core.workspace = true
@@ -30,6 +33,7 @@ nix.workspace = true
 notify.workspace = true
 providers.workspace = true
 proxy.workspace = true
+rand.workspace = true
 schemars.workspace = true
 self_update.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -48,6 +52,7 @@ tracing.workspace = true
 [dev-dependencies]
 coulisse-core.workspace = true
 http-body-util = "0.1"
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber.workspace = true

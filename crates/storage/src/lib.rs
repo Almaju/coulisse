@@ -2,7 +2,7 @@
 //!
 //! Provides `POST /v1/files`, `GET /v1/files`, `GET /v1/files/:id`,
 //! `GET /v1/files/:id/content`, and `DELETE /v1/files/:id` — all matching
-//! the OpenAI Files API shape so any OpenAI-compatible client works
+//! the `OpenAI` Files API shape so any OpenAI-compatible client works
 //! without modification.
 
 pub mod backend;

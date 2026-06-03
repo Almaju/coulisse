@@ -56,7 +56,7 @@ fn default_fs_path() -> std::path::PathBuf {
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct S3Config {
     pub bucket: String,
-    /// Custom endpoint URL for MinIO, R2, or other S3-compatible services.
+    /// Custom endpoint URL for `MinIO`, R2, or other S3-compatible services.
     #[serde(default)]
     pub endpoint_url: Option<String>,
     /// AWS region. Defaults to `us-east-1`.

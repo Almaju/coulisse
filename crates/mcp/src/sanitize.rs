@@ -2,9 +2,9 @@
 //!
 //! MCP servers are free to expose any UTF-8 tool name they like. LLM
 //! providers are not: Anthropic enforces `^[a-zA-Z0-9_-]{1,128}$` and `OpenAI`
-//! is similar. The `ricelines/matrix-mcp` server, for instance, names every
-//! tool with dots (`matrix.v1.messages.send_text`), which fails outright at
-//! the provider boundary.
+//! is similar. Some MCP servers in the wild name tools with dots as namespace
+//! separators (e.g. `service.v1.do_thing`), which fails outright at the
+//! provider boundary.
 //!
 //! This module solves it once for every MCP server. After tools are picked
 //! from a server, names get rewritten to match the provider pattern; the
@@ -118,8 +118,8 @@ mod tests {
     #[test]
     fn dots_become_underscores() {
         assert_eq!(
-            sanitize_name("matrix.v1.messages.send_text"),
-            "matrix_v1_messages_send_text"
+            sanitize_name("service.v1.messages.send_text"),
+            "service_v1_messages_send_text"
         );
     }
 
@@ -173,15 +173,15 @@ mod tests {
     async fn wrapper_renames_but_forwards_call() {
         let probe = Arc::new(Mutex::new(None));
         let tool = Box::new(FakeTool {
-            name: "matrix.v1.messages.send_text".to_string(),
+            name: "service.v1.messages.send_text".to_string(),
             last_called_with: probe.clone(),
         });
         let sanitized = apply(vec![tool]);
         assert_eq!(sanitized.len(), 1);
-        assert_eq!(sanitized[0].name(), "matrix_v1_messages_send_text");
+        assert_eq!(sanitized[0].name(), "service_v1_messages_send_text");
 
         let def = sanitized[0].definition(String::new()).await;
-        assert_eq!(def.name, "matrix_v1_messages_send_text");
+        assert_eq!(def.name, "service_v1_messages_send_text");
 
         sanitized[0]
             .call(r#"{"text":"hi"}"#.to_string())
@@ -194,19 +194,22 @@ mod tests {
     async fn collision_resolves_with_numeric_suffix() {
         let probe = Arc::new(Mutex::new(None));
         let a = Box::new(FakeTool {
-            name: "matrix.send".to_string(),
+            name: "service.send".to_string(),
             last_called_with: probe.clone(),
         });
         let b = Box::new(FakeTool {
-            name: "matrix_send".to_string(),
+            name: "service_send".to_string(),
             last_called_with: probe.clone(),
         });
         let c = Box::new(FakeTool {
-            name: "matrix-send".to_string(),
+            name: "service-send".to_string(),
             last_called_with: probe,
         });
         let out = apply(vec![a, b, c]);
         let names: Vec<String> = out.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["matrix_send", "matrix_send_2", "matrix-send"]);
+        assert_eq!(
+            names,
+            vec!["service_send", "service_send_2", "service-send"]
+        );
     }
 }
