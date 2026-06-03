@@ -35,9 +35,9 @@ use thiserror::Error;
 /// Resolve the user-facing YAML shape into the explicit runtime config.
 ///
 /// `state_dir` is the project's `.coulisse/` directory (next to the config
-/// file). When `storage:` is omitted, the database lands there rather than
-/// cluttering the directory beside the YAML. An explicit `storage:` path is
-/// honoured verbatim (resolved against the current directory, as before).
+/// file). The database always lands there — there is no path knob — so state
+/// stays co-located with the project and `.coulisse/` is the one thing to
+/// back up or volume-mount.
 ///
 /// # Errors
 ///
@@ -49,11 +49,8 @@ pub fn resolve_memory<S: BuildHasher>(
     providers: &HashMap<ProviderKind, ProviderConfig, S>,
     state_dir: &Path,
 ) -> Result<MemoryConfig, MemoryResolveError> {
-    let backend = match yaml.storage.as_deref() {
-        Some(s) if !s.trim().is_empty() => BackendConfig::from_storage(s),
-        _ => BackendConfig::Sqlite {
-            path: state_dir.join(DEFAULT_SQLITE_FILENAME),
-        },
+    let backend = BackendConfig::Sqlite {
+        path: state_dir.join(DEFAULT_SQLITE_FILENAME),
     };
 
     let (enabled, overrides) = yaml.user_state.parts();
@@ -241,7 +238,6 @@ mod tests {
     #[test]
     fn user_state_true_with_anthropic_picks_haiku_and_hash_embedder() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
         let resolved = resolve(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap();
@@ -255,7 +251,6 @@ mod tests {
     #[test]
     fn user_state_true_with_openai_picks_openai_embedder() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
         let resolved = resolve(&yaml, &providers_with(&[ProviderKind::Openai])).unwrap();
@@ -267,7 +262,6 @@ mod tests {
     #[test]
     fn user_state_true_without_providers_fails_loudly() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
         let err = resolve(&yaml, &providers_with(&[])).unwrap_err();
@@ -277,7 +271,6 @@ mod tests {
     #[test]
     fn anthropic_priority_beats_openai() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
         let resolved = resolve(
@@ -292,7 +285,6 @@ mod tests {
     fn explicit_learn_from_referencing_unconfigured_provider_fails() {
         let yaml: MemoryYaml = serde_yaml::from_str(
             r"
-storage: ./test.db
 user_state:
   learn_from:
     provider: gemini
@@ -307,27 +299,12 @@ user_state:
         ));
     }
 
+    /// `storage:` is gone — the DB always lives in the state dir. A config
+    /// that still tries to set it is rejected by `deny_unknown_fields`.
     #[test]
-    fn storage_memory_marker_maps_to_in_memory_backend() {
-        let yaml = MemoryYaml {
-            storage: Some(":memory:".into()),
-            user_state: UserStateYaml::default(),
-        };
-        let resolved = resolve(&yaml, &providers_with(&[])).unwrap();
-        assert!(matches!(resolved.backend, BackendConfig::InMemory));
-    }
-
-    #[test]
-    fn storage_path_maps_to_sqlite_backend() {
-        let yaml = MemoryYaml {
-            storage: Some("./alt.db".into()),
-            user_state: UserStateYaml::default(),
-        };
-        let resolved = resolve(&yaml, &providers_with(&[])).unwrap();
-        match resolved.backend {
-            BackendConfig::Sqlite { path } => assert_eq!(path.to_str(), Some("./alt.db")),
-            BackendConfig::InMemory => panic!("expected sqlite backend, got in_memory"),
-        }
+    fn storage_field_is_rejected() {
+        let yaml = "storage: ./alt.db\n";
+        assert!(serde_yaml::from_str::<MemoryYaml>(yaml).is_err());
     }
 
     #[test]

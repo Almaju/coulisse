@@ -1,7 +1,6 @@
-# yaml-language-server: $schema=./coulisse.schema.json
-# Copy to coulisse.yaml and fill in the values.
 # Supported providers: anthropic, cohere, deepseek, gemini, groq, openai
-# Regenerate the schema with `coulisse schema > coulisse.schema.json`.
+# Add IDE validation: coulisse schema > coulisse.schema.json
+# yaml-language-server: $schema=./coulisse.schema.json
 
 # Fallback user identifier for requests that don't supply `safety_identifier`
 # (or the deprecated `user` field). Leave unset for multi-tenant deployments
@@ -34,11 +33,11 @@
 #       password: ${ADMIN_PASSWORD}
 
 # Memory subsystem. The whole block is optional — omit it for the default:
-# conversation history in .coulisse/coulisse-memory.db, no long-term memory. Add
-# `user_state: true` to also remember durable facts about each user across
-# conversations. See docs/src/configuration/memory.md for the full schema.
+# conversation history only, no long-term memory. Add `user_state: true` to
+# also remember durable facts about each user across conversations. The
+# database always lives at .coulisse/coulisse-memory.db next to this file —
+# there is no path knob. See docs/src/configuration/memory.md.
 memory:
-  storage: ./coulisse-memory.db
   user_state: true
 
 providers:

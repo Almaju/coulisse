@@ -59,15 +59,13 @@ background tasks, and API tokens. Your `coulisse.yaml` is never touched.
 
 Destructive and irreversible, so it refuses to run while a server holds the
 database open (stop it first), and prompts for confirmation unless `-y` is
-passed. Removes the database file plus its `-wal`/`-shm` sidecars.
+passed. Removes the database file (`.coulisse/coulisse-memory.db`) plus its
+`-wal`/`-shm` sidecars.
 
 ```bash
 coulisse reset       # warns, lists the files, asks to confirm
 coulisse reset -y    # skip the prompt (for scripts / fresh starts)
 ```
-
-With an in-memory backend (`memory.storage: ":memory:"`) there's nothing on
-disk and the command is a no-op.
 
 ## `coulisse status`
 
@@ -165,9 +163,11 @@ your-project/
     ├── coulisse.pid          # written by `start`, removed on clean exit
     ├── coulisse.log          # detached stdout/stderr
     ├── secrets.env           # MCP OAuth encryption keys (when configured)
-    └── coulisse-memory.db    # default SQLite database (unless memory.storage overrides it)
+    ├── files/                # uploaded file blobs (fs storage backend)
+    └── coulisse-memory.db    # SQLite database
 ```
 
 `.coulisse/` holds the whole runtime footprint of one project under a
-single directory. The SQLite database lands here by default; set
-`memory.storage` to an explicit path to put it elsewhere.
+single directory: the SQLite database, uploaded files, logs, PID, and
+secrets all land here, and the paths are not configurable. Mount this one
+directory to persist Coulisse's state in Docker.

@@ -460,7 +460,6 @@ mod tests {
         configs.insert(
             "todoist".to_string(),
             McpServerConfig {
-                no_rewrite: false,
                 oauth: Some(McpOAuthConfig::Discover { scopes: vec![] }),
                 transport: McpTransport::Http {
                     url: "https://ai.todoist.net/mcp".to_string(),
@@ -530,7 +529,6 @@ mod tests {
         configs.insert(
             "present".to_string(),
             McpServerConfig {
-                no_rewrite: false,
                 oauth: Some(McpOAuthConfig::Discover { scopes: vec![] }),
                 transport: McpTransport::Http {
                     url: "https://example.com/mcp".to_string(),

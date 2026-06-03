@@ -195,6 +195,7 @@ mod tests {
             preamble: String::new(),
             provider: ProviderKind::Openai,
             purpose: None,
+            skills: vec![],
             subagents: vec![],
         }
     }

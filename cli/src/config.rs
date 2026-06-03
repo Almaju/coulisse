@@ -19,6 +19,7 @@ use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
 use server::ServerConfig;
 use sidecars::SidecarConfig;
+use skills::SkillsConfig;
 use smoke::SmokeTestConfig;
 use storage::StorageYaml;
 use telemetry::Config as TelemetryConfig;
@@ -84,6 +85,12 @@ pub struct Config {
     /// stdout/stderr into its own log; non-zero exits restart per policy.
     #[serde(default)]
     pub sidecars: Vec<SidecarConfig>,
+    /// Reusable skill bundles loaded from a directory (default `./skills`).
+    /// Each subdirectory with a `SKILL.md` becomes a skill; agents opt in by
+    /// listing skill names under their own `skills:` array. Omit the block
+    /// to use the default directory.
+    #[serde(default)]
+    pub skills: SkillsConfig,
     /// Synthetic-user evaluation tests. Each entry pairs a persona prompt
     /// with a target agent (or experiment); admin UI exposes a "Run now"
     /// button that drives the conversation, persists every turn, and
@@ -323,23 +330,9 @@ impl Config {
                 }
             }
         })?;
-        let mut config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
-        config.normalize_mcp_shims();
+        let config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
         config.validate()?;
         Ok(config)
-    }
-
-    /// Rewrite recognised stdio shims (currently just `npx mcp-remote
-    /// <URL>`) into their equivalent native form. Emits a warning per
-    /// rewritten entry to stderr so the operator can see what changed —
-    /// stderr is redirected into `.coulisse/coulisse.log` by `coulisse
-    /// start`, and goes to the terminal in foreground mode.
-    fn normalize_mcp_shims(&mut self) {
-        for (name, cfg) in &mut self.mcp {
-            if let Some(warning) = cfg.normalize_mcp_remote_shim() {
-                eprintln!("warning: mcp.{name}: {warning}");
-            }
-        }
     }
 
     /// Whole-graph schema validation. Run once on YAML load and again on

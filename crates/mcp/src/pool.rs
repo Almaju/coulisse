@@ -669,7 +669,6 @@ mod tests {
         configs.insert(
             "github".to_string(),
             McpServerConfig {
-                no_rewrite: false,
                 oauth: None,
                 transport: McpTransport::Http {
                     url: "http://localhost".to_string(),

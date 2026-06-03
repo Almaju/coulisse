@@ -19,7 +19,6 @@ default_user_id: main
 public_base_url: http://localhost:8421
 
 memory:
-  storage: ./coulisse-memory.db
   user_state: true
 
 providers:
@@ -28,30 +27,21 @@ providers:
   openai:
     api_key: ${OPENAI_API_KEY}
 
+# Remote MCP servers: paste the URL. Per-user OAuth (discover + DCR) is
+# automatic for URL-based servers — no transport or oauth block to write.
+# The transport (http vs the older SSE) is inferred from the URL path.
 mcp:
   todoist:
-    transport: http
     url: https://ai.todoist.net/mcp
-    oauth:
-      mode: discover
 
   atlassian:
-    transport: http
     url: https://mcp.atlassian.com/v1/sse
-    oauth:
-      mode: discover
 
-  # Modern GitHub MCP server. `discover` mode handles DCR automatically.
   github:
-    transport: http
     url: https://api.githubcopilot.com/mcp/
-    oauth:
-      mode: discover
 
-  # Local filesystem MCP — gives the assistant access to a scratch
-  # directory for drafting documents, reading notes, etc.
+  # Local filesystem MCP — a stdio child process. `command:` means stdio.
   notes:
-    transport: stdio
     command: uvx
     args:
       - mcp-server-filesystem

@@ -16,8 +16,9 @@
 
 public_base_url: https://help.acme.example.com
 
+# State (the SQLite database, vault, uploads) always lives in `.coulisse/`
+# next to this file — mount that directory on a volume to persist it.
 memory:
-  storage: /var/lib/coulisse/support.db
   user_state: true
 
 providers:
@@ -26,28 +27,26 @@ providers:
   openai:
     api_key: ${OPENAI_API_KEY}
 
-# Both MCPs use per-user OAuth — every customer-success agent who talks
-# through Coulisse authorizes their own Linear + Stripe accounts once,
-# tokens land in Coulisse's vault, and tool calls run as them.
+# Remote MCP servers — paste the URL. Per-user OAuth (discover + DCR) is
+# automatic for URL-based servers, so the common case needs nothing else:
+# each agent authorizes their own Linear + Stripe accounts once, tokens
+# land in Coulisse's vault, and tool calls run as them.
 mcp:
   linear:
-    transport: http
     url: https://mcp.linear.app/sse
-    oauth:
-      mode: discover
 
+  # Pin the scopes you want consent for (otherwise the server's published
+  # defaults are used).
   stripe:
-    transport: http
     url: https://mcp.stripe.com
     oauth:
-      mode: discover
       scopes: [customers.read, invoices.read, subscriptions.read]
 
-  # In-house docs MCP. Vector-searches the public help center + internal
-  # runbooks. No OAuth — it runs in the same VPC and trusts the caller.
+  # In-house docs MCP — runs in the same VPC and trusts the caller, so opt
+  # out of the automatic OAuth with `oauth: false`.
   docs:
-    transport: http
     url: http://docs-mcp.internal:7000
+    oauth: false
 
 auth:
   proxy:

@@ -26,7 +26,7 @@ mcp:
 
 The Todoist entry above is **zero config**: the same UX as ChatGPT. Paste the URL, and Coulisse runs RFC 8414 discovery + RFC 7591 Dynamic Client Registration on first use, mints a per-user connect link, stores the token in the vault.
 
-`oauth: discover` is the string shorthand for `{ mode: discover }`. You only switch to the map form when you need to override scopes or use static credentials:
+You never write `oauth:` for the common case — a `url:` server gets discover-mode OAuth on its own. Reach for the `oauth:` map only to override scopes or use static credentials:
 
 ```yaml
 mcp:
@@ -49,7 +49,7 @@ mcp:
       redirect_uri: http://localhost:8423/mcp/legacy/oauth/callback
 ```
 
-That's it. No `transport:` field, no shim wrappers, no `npx mcp-remote ...` boilerplate. Coulisse figures out:
+That's it. No `transport:` field, no `oauth:` block for the common case, no shim wrappers. Coulisse figures out:
 
 - `url:` present → HTTP/SSE transport (SSE if the URL path contains `/sse`, otherwise streamable HTTP).
 - `command:` present → stdio transport, with optional `args:` / `env:` for the child process.
@@ -102,16 +102,28 @@ Two modes:
 Spec-compliant MCP servers (Todoist, Atlassian, Linear, …) advertise their OAuth
 endpoints via `/.well-known/oauth-authorization-server` and accept Dynamic Client
 Registration. Coulisse discovers + registers itself lazily, on the first user to
-authorise. **No credentials in YAML.**
+authorise. **No credentials in YAML — and no `oauth:` block at all**, since a
+URL-based server defaults to discover:
 
 ```yaml
 mcp:
   todoist:
-    transport: http
     url: https://ai.todoist.net/mcp
-    oauth:
-      mode: discover
-      # scopes: [data:read_write]   # optional override
+    # discover OAuth is automatic; add an oauth: map only to pin scopes:
+    # oauth:
+    #   scopes: [data:read_write]
+```
+
+A handful of servers only honour tokens issued to `mcp-remote`'s grandfathered
+client id and reject fresh DCR registrations (Todoist's hosted MCP is the
+current example). For those, run `mcp-remote` yourself as a stdio child — there
+is no special flag:
+
+```yaml
+mcp:
+  todoist:
+    command: npx
+    args: [-y, mcp-remote, https://ai.todoist.net/mcp]
 ```
 
 ### `mode: static` (for non-DCR providers)

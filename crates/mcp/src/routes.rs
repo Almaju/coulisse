@@ -677,14 +677,12 @@ mod tests {
             token_url: "https://provider.example.com/token".into(),
         };
         let no_oauth_cfg = McpServerConfig {
-            no_rewrite: false,
             oauth: None,
             transport: McpTransport::Http {
                 url: "http://localhost:9999".into(),
             },
         };
         let oauth_cfg = McpServerConfig {
-            no_rewrite: false,
             oauth: Some(oauth),
             transport: McpTransport::Http {
                 url: "http://localhost:9999".into(),

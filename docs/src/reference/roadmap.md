@@ -6,6 +6,7 @@ What's in Coulisse today, and what's coming.
 
 - Multi-agent routing via the `model` field.
 - Agents as tools — expose one agent to another under `subagents:` with a `purpose:` description. Nested invocations are bounded by a depth cap.
+- Skills — reusable instruction bundles (Claude Code / Codex style). Drop a `SKILL.md` folder under `./skills`; agents opt in by name and get one progressive-disclosure tool per skill, plus a `skill_file` reader for bundled resources.
 - Per-user conversation history with isolation.
 - Long-term memory with semantic recall — **persistent via SQLite** and backed by a real embedder (OpenAI or Voyage AI; `hash` fallback for offline dev).
 - Long-term user state — opt-in `user_state: true` enables a background extractor that pulls durable facts from each exchange and deduplicates them before storing. Embedder and extraction model are auto-derived from your configured providers.

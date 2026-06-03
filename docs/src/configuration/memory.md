@@ -7,23 +7,16 @@ Coulisse remembers two things automatically:
 
 ## Quick start
 
-The simplest possible memory config:
+The simplest possible memory config is **no config at all** — omit the `memory:`
+block and you get:
+
+- Conversation history kept in SQLite at `.coulisse/coulisse-memory.db`.
+- Long-term user state **off**.
+
+To turn on long-term user state, that's the only line you write:
 
 ```yaml
 memory:
-  storage: ./coulisse-memory.db
-```
-
-That's it. With this:
-
-- Conversation history is kept in the SQLite file at that path.
-- Long-term user state is **off**.
-
-To turn on long-term user state, add one more line:
-
-```yaml
-memory:
-  storage: ./coulisse-memory.db
   user_state: true
 ```
 
@@ -47,14 +40,14 @@ Known about the user:
 
 …inserted *after* your agent's preamble and *before* the conversation history.
 
-## Storage options
+## Where data lives
 
-The `storage:` field accepts:
+There is nothing to configure. The database is always `.coulisse/coulisse-memory.db`
+— the project state directory next to your `coulisse.yaml`, alongside the log,
+PID, MCP secrets, and uploaded files. Created on first boot if missing.
 
-- `./path/to.db` (or any other filesystem path) — persistent SQLite. Created if missing. When `storage:` is omitted, the database lives at `.coulisse/coulisse-memory.db` (the project state directory next to your `coulisse.yaml`), alongside the log, PID, and MCP secrets. An explicit path is used verbatim, relative to the current working directory.
-- `:memory:` — ephemeral; everything is lost on restart. Useful for tests and one-shot demos.
-
-For Docker, point `storage:` at a volume-mounted location (e.g. `/var/lib/coulisse/memory.db`).
+For Docker, mount the `.coulisse/` directory on a volume so it survives container
+restarts.
 
 ---
 
@@ -68,7 +61,6 @@ By default Coulisse picks the cheapest available model from your `providers:`. T
 
 ```yaml
 memory:
-  storage: ./coulisse-memory.db
   user_state:
     learn_from:
       provider: anthropic
@@ -121,7 +113,6 @@ Either omit the `user_state:` field entirely or set it to `false`:
 
 ```yaml
 memory:
-  storage: ./coulisse-memory.db
   user_state: false
 ```
 
@@ -137,7 +128,6 @@ providers:
     api_key: sk-ant-...
 
 memory:
-  storage: ./coulisse-memory.db
   user_state: true
 ```
 
@@ -151,7 +141,6 @@ providers:
     api_key: sk-...
 
 memory:
-  storage: ./coulisse-memory.db
   user_state: true
 ```
 
@@ -165,7 +154,6 @@ providers:
     api_key: sk-ant-...
 
 memory:
-  storage: ./coulisse-memory.db
   user_state:
     embed_with:
       provider: voyage
@@ -175,8 +163,6 @@ memory:
 
 ### Offline dev — no external calls
 
-```yaml
-memory:
-  storage: ":memory:"          # ephemeral
-  # user_state omitted → history only, no embedding API calls
-```
+Omit the `memory:` block entirely (or set `user_state: false`): conversation
+history is kept on disk under `.coulisse/`, with no extraction or embedding API
+calls. Delete the database any time with `coulisse reset`.

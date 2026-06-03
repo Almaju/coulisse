@@ -13,7 +13,7 @@ pub mod s3;
 pub mod store;
 
 pub use backend::{BlobBackend, FsBackend};
-pub use config::{BackendKind, FsConfig, QuotaConfig, S3Config, StorageYaml};
+pub use config::{BackendKind, QuotaConfig, S3Config, StorageYaml};
 pub use error::StorageError;
 pub use store::{FileObject, Store};
 

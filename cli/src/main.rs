@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use coulisse::commands::{
-    check, init, reset, restart, schema, serve, start, status, stop, studio, token, update,
+    check, init, reset, restart, schema, serve, skill, start, status, stop, studio, token, update,
 };
 
 const DEFAULT_CONFIG: &str = "coulisse.yaml";
@@ -52,6 +52,18 @@ enum Command {
     /// `# yaml-language-server: $schema=./coulisse.schema.json` for IDE
     /// autocomplete and validation.
     Schema,
+    /// Install the Coulisse configuration skill for an AI coding assistant.
+    /// Prompts for the tool interactively when `--tool` is not given.
+    Skill {
+        /// Install into the tool's global config dir instead of the current
+        /// project (e.g. `~/.claude/commands/` for Claude Code).
+        #[arg(long, short)]
+        global: bool,
+        /// AI coding tool to install the skill for.
+        /// Supported: `claude-code` (alias `claude`), `codex`.
+        #[arg(long, value_enum)]
+        tool: Option<skill::Tool>,
+    },
     /// Start the server, detached. Use --foreground to run attached.
     Start {
         /// Internal: marker that we are the re-spawned detached child.
@@ -104,6 +116,9 @@ fn main() -> ExitCode {
         Some(Command::Reset { yes }) => reset::run(&config, &reset::Options { yes }),
         Some(Command::Restart) => restart::run(&config),
         Some(Command::Schema) => schema::run(),
+        Some(Command::Skill { global, tool }) => {
+            skill::run(&skill::Options { global, tool }).map_err(std::convert::Into::into)
+        }
         Some(Command::Start {
             detached_child,
             foreground,

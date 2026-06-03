@@ -38,6 +38,7 @@ fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
         preamble: String::new(),
         provider: ProviderKind::Openai,
         purpose: None,
+        skills: vec![],
         subagents: vec![],
     }
 }
@@ -235,6 +236,7 @@ fn variant_agent(name: &str) -> AgentConfig {
         preamble: String::new(),
         provider: ProviderKind::Openai,
         purpose: None,
+        skills: vec![],
         subagents: vec![],
     }
 }

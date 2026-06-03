@@ -64,27 +64,18 @@ Each memory row carries the id of the embedder that produced it. If you swap the
 
 ## Storage location
 
-Defaults to `.coulisse/coulisse-memory.db` — the project state directory next to your `coulisse.yaml`, shared with the log, PID, and MCP secrets. Override with:
-
-```yaml
-memory:
-  storage: /var/lib/coulisse/memory.db
-```
-
-For tests or one-shot demos, use `storage: ":memory:"` — everything evaporates on shutdown.
+The database lives at `.coulisse/coulisse-memory.db` — the project state directory next to your `coulisse.yaml`, shared with the log, PID, MCP secrets, and uploaded files. The path is not configurable; everything Coulisse persists stays under `.coulisse/`.
 
 ### Docker
 
-The bundled Dockerfile declares a `VOLUME /var/lib/coulisse` so data survives container restarts. Mount a named volume or a host directory there:
+Mount the `.coulisse/` directory so the database (and the rest of Coulisse's state) survives container restarts:
 
 ```bash
 docker run \
-  -v coulisse-data:/var/lib/coulisse \
-  -v $(pwd)/coulisse.yaml:/etc/coulisse/coulisse.yaml:ro \
+  -v $(pwd)/.coulisse:/app/.coulisse \
+  -v $(pwd)/coulisse.yaml:/app/coulisse.yaml:ro \
   -p 8421:8421 \
   coulisse
 ```
-
-The container runs as a non-root `coulisse` user and expects the database path inside the volume, e.g. `/var/lib/coulisse/memory.db`.
 
 See [memory configuration](../configuration/memory.md) for the full YAML schema.

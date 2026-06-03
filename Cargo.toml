@@ -14,6 +14,7 @@ members = [
     "crates/proxy",
     "crates/server",
     "crates/sidecars",
+    "crates/skills",
     "crates/smoke",
     "crates/storage",
     "crates/tasks",
@@ -26,7 +27,7 @@ description = "OpenAI-compatible server with memory, tools, and multi-backend ro
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Almaju/coulisse"
-version = "0.1.0"
+version = "0.3.0"
 
 [workspace.dependencies]
 agents = { path = "crates/agents" }
@@ -78,6 +79,7 @@ serde_yaml = "0.9"
 server = { path = "crates/server" }
 sha2 = "0.10"
 sidecars = { path = "crates/sidecars" }
+skills = { path = "crates/skills" }
 smoke = { path = "crates/smoke" }
 storage = { path = "crates/storage" }
 sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }

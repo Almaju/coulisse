@@ -4,12 +4,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[schemars(rename = "StorageConfig")]
 pub struct StorageYaml {
-    /// Storage backend. Defaults to `fs` if unset.
+    /// Storage backend. Defaults to `fs` if unset. The filesystem backend
+    /// keeps blobs under `.coulisse/files` next to the config — there is no
+    /// path knob; switch to `s3` for anything else.
     #[serde(default)]
     pub backend: BackendKind,
-    /// File-system backend options. Ignored when `backend: s3`.
-    #[serde(default)]
-    pub fs: FsConfig,
     /// Maximum bytes that may be stored per individual file.
     /// Defaults to no limit.
     #[serde(default)]
@@ -30,26 +29,6 @@ pub enum BackendKind {
     #[default]
     Fs,
     S3,
-}
-
-/// File-system backend configuration.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
-pub struct FsConfig {
-    /// Directory where blobs are stored. Defaults to `./coulisse-files`.
-    #[serde(default = "default_fs_path")]
-    pub path: std::path::PathBuf,
-}
-
-impl Default for FsConfig {
-    fn default() -> Self {
-        Self {
-            path: default_fs_path(),
-        }
-    }
-}
-
-fn default_fs_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("./coulisse-files")
 }
 
 /// S3-compatible backend configuration.

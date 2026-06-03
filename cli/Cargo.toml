@@ -41,6 +41,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 server.workspace = true
 sidecars.workspace = true
+skills.workspace = true
 smoke.workspace = true
 storage.workspace = true
 tasks.workspace = true

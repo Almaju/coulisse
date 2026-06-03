@@ -14,7 +14,7 @@ use axum::Router;
 use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
-use coulisse_core::{AgentResolver, ScoreLookup, TaskQueue, TaskStatus};
+use coulisse_core::{AgentResolver, ScoreLookup, SkillCatalog, TaskQueue, TaskStatus};
 use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
@@ -23,6 +23,7 @@ use mcp::{
 };
 use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
 use providers::ProviderKind;
+use skills::Skills;
 use smoke::{RunDispatcher, SmokeStore};
 use storage::{BlobBackend, FsBackend, QuotaConfig, StorageYaml, Store as FileStore};
 use tasks::Tasks;
@@ -77,9 +78,9 @@ async fn run(
         None => IdentityMode::default(),
     };
     // State dir (`.coulisse/` next to the YAML) holds everything Coulisse
-    // generates: the SQLite database when `storage:` is omitted, the MCP
-    // secrets file, the detached log/pid. Keeps state out of the directory
-    // beside the config.
+    // generates: the SQLite database, uploaded files, the MCP secrets file,
+    // the detached log/pid. Keeps state out of the directory beside the
+    // config — and there are no path knobs to point these elsewhere.
     let state_dir = crate::secrets::state_dir_for(config_path);
     let memory_config =
         memory_resolve::resolve_memory(&config.memory, &config.providers, &state_dir)?;
@@ -99,7 +100,7 @@ async fn run(
     } else {
         None
     };
-    let stores = boot_stores(&config, &memory_config, mcp_secrets.as_ref()).await?;
+    let stores = boot_stores(&config, &memory_config, &state_dir, mcp_secrets.as_ref()).await?;
     // Auth is built after stores so the token scheme can borrow the token
     // store opened during boot. OIDC discovery (its only network step) still
     // happens here.
@@ -308,6 +309,7 @@ struct Stores {
 async fn boot_stores(
     config: &Config,
     memory_config: &MemoryConfig,
+    state_dir: &Path,
     mcp_secrets: Option<&Secrets>,
 ) -> Result<Stores, Box<dyn std::error::Error>> {
     // NOTE: the merged effective list (`agents_list`) is what the runtime
@@ -353,7 +355,8 @@ async fn boot_stores(
         .await?,
     );
 
-    let file_store = Arc::new(open_file_store(pool.clone(), &config.storage).await?);
+    let file_store =
+        Arc::new(open_file_store(pool.clone(), &config.storage, &state_dir.join("files")).await?);
 
     let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
     let judge_store = Arc::new(Judges::open(pool.clone()).await?);
@@ -403,14 +406,17 @@ async fn boot_stores(
     })
 }
 
-/// Construct the blob backend and open the file store from YAML config.
+/// Construct the blob backend and open the file store. The filesystem
+/// backend always lives under `.coulisse/files` (`files_dir`); only the
+/// backend choice and quotas come from YAML.
 async fn open_file_store(
     pool: memory::SqlitePool,
     yaml: &StorageYaml,
+    files_dir: &Path,
 ) -> Result<FileStore, storage::StorageError> {
     let backend = match yaml.backend {
         storage::BackendKind::Fs => {
-            let fs = FsBackend::new(&yaml.fs.path).await?;
+            let fs = FsBackend::new(files_dir).await?;
             BlobBackend::Fs(fs)
         }
         #[cfg(feature = "s3")]
@@ -501,11 +507,18 @@ async fn build_runtime(
         Some(Arc::clone(&stores.judge_store) as Arc<dyn ScoreLookup>),
     ));
     let tasks = Arc::new(Tasks::open(stores.pool.clone()).await?);
+    let skills = Skills::load(&config.skills)?;
+    let skill_catalog: Option<Arc<dyn SkillCatalog>> = if skills.is_empty() {
+        None
+    } else {
+        Some(Arc::new(skills) as Arc<dyn SkillCatalog>)
+    };
     let prompter = Arc::new(RigAgents::new(BootConfig {
         agents: Arc::clone(&stores.agents_list),
         mcp,
         providers: config.providers.clone(),
         resolver,
+        skills: skill_catalog,
         task_queue: Some(Arc::clone(&tasks) as Arc<dyn TaskQueue>),
         task_status: Some(Arc::clone(&tasks) as Arc<dyn TaskStatus>),
     })?);

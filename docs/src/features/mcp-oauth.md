@@ -14,44 +14,60 @@ credentials that the requesting user has authorized.
 > `auth.proxy` OIDC scope) between Coulisse and untrusted callers before deploying
 > with OAuth-enabled MCP servers.
 
-## `mcp-remote` shims are auto-rewritten
+## Just point at the URL
 
-The official MCP docs introduce per-user OAuth servers by telling you to put a
-`npx mcp-remote@latest <URL>` stdio shim in your config. **Coulisse detects
-that shape and rewrites it on the fly** to native HTTP transport + `mode:
-discover` — same behavior, but tokens land in Coulisse's per-user vault
-instead of `mcp-remote`'s shared on-disk cache, and no Node process or
-browser-callback port is involved. You'll see a warning at boot showing the
-equivalent explicit YAML.
-
-So you can paste a docs-style snippet like this and it works as-is:
+For a spec-compliant MCP server, you write nothing about OAuth at all. A
+remote MCP is just a `url:`:
 
 ```yaml
 mcp:
   todoist:
-    transport: stdio
-    command: npx
-    args: ["-y", "mcp-remote@latest", "https://ai.todoist.net/mcp"]
+    url: https://ai.todoist.net/mcp
 ```
 
-Coulisse internally treats it identically to the explicit form in the
-"Discover mode" section below. Writing it explicitly is the long-term path —
-it documents the intent and silences the boot warning — but you don't have
-to know about `mode: discover` to get started.
+URL-based servers get per-user OAuth discovery + Dynamic Client Registration
+automatically. Tokens land in Coulisse's per-user vault, keyed by
+`(server, user_id)` — no Node process, no shared on-disk cache, no
+browser-callback port. The transport is inferred from the path (`/sse` in the
+path → SSE, otherwise streamable HTTP); force it with an explicit
+`transport: http|sse` when the path doesn't make it obvious.
 
-The rewrite only fires for the canonical shape (`npx`/`pnpm`/`bunx`/`yarn`
-runner, args contain `mcp-remote`, args contain a URL, no custom env vars).
-Anything more elaborate is left untouched.
+If you need to tune the flow, the `oauth:` block has three uses:
+
+- **Disable auth** on a public, no-auth HTTP MCP: `oauth: false`.
+- **Set scopes** while keeping automatic discovery: `oauth: { scopes: [a, b] }`
+  (mode defaults to `discover`).
+- **Static credentials** for a provider without Dynamic Client Registration:
+  `oauth: { mode: static, ... }` (see below).
+
+### Servers that only honour mcp-remote's client id
+
+A few providers (Todoist today) haven't opened registration and only accept
+the grandfathered client id baked into the `mcp-remote` CLI. For those, declare
+the stdio command form yourself and let `mcp-remote` carry the token:
+
+```yaml
+mcp:
+  todoist:
+    command: npx
+    args: [-y, mcp-remote, https://ai.todoist.net/mcp]
+```
+
+This runs `mcp-remote` as a stdio child the normal way; Coulisse doesn't
+rewrite or inspect it. Use the plain `url:` form for any server that supports
+Dynamic Client Registration.
 
 ## Two flavours
 
-`oauth:` blocks come in two modes, picked with the `mode:` discriminator:
+`oauth:` blocks come in two modes, picked with the `mode:` discriminator
+(which defaults to `discover`, so you only write `mode:` to select `static`):
 
-- **`mode: discover`** — MCP-spec OAuth 2.1 with discovery + Dynamic Client
-  Registration. Coulisse reads the provider's authorization-server metadata from
-  `<mcp_origin>/.well-known/oauth-authorization-server` and registers itself as a
-  client on first use. **No credentials in YAML.** This is the right choice for
-  modern MCP servers — Todoist, Atlassian (`mcp.atlassian.com`), Linear, and so on.
+- **`mode: discover`** (default) — MCP-spec OAuth 2.1 with discovery + Dynamic
+  Client Registration. Coulisse reads the provider's authorization-server metadata
+  from `<mcp_origin>/.well-known/oauth-authorization-server` and registers itself
+  as a client on first use. **No credentials in YAML.** This is the right choice
+  for modern MCP servers — Todoist, Atlassian (`mcp.atlassian.com`), Linear, and
+  so on, and is what a bare `url:` uses.
 - **`mode: static`** — classic OAuth 2.0 with pre-registered app credentials. You
   register Coulisse as a client at the provider's developer console and paste the
   resulting `client_id` / `client_secret` here. Use this for providers that don't
@@ -103,25 +119,22 @@ public_base_url: http://localhost:8421   # see "Public base URL" below
 
 mcp:
   todoist:
-    transport: http
     url: https://ai.todoist.net/mcp
-    oauth:
-      mode: discover
-      # optional override; defaults to the provider's `scopes_supported`
-      # scopes: [data:read_write]
+    # oauth is implied; add a block only to override scopes:
+    # oauth: { scopes: [data:read_write] }
 
 auth:
   mcp_consumer_secret: "${COULISSE_MCP_SECRET}"
 ```
 
-Nothing else to fill in. Coulisse handles discovery and DCR on first use.
+Nothing else to fill in — a bare `url:` already implies discover-mode OAuth.
+Coulisse handles discovery and DCR on first use.
 
 ### Static mode (for non-DCR providers)
 
 ```yaml
 mcp:
   jira:
-    transport: http
     url: https://mcp.atlassian.example.com
     oauth:
       mode: static
@@ -278,7 +291,8 @@ crate's schema migrator:
 on first use, held in an LRU cache (cap: 256 by default, idle timeout: 30
 minutes). The access token is passed as the `MCP_OAUTH_TOKEN` environment
 variable. (Most spec-compliant MCP servers use HTTP transport — the stdio path
-is preserved mostly for shims like `mcp-remote`.)
+is for servers you launch via an explicit `command:`, such as a self-declared
+`npx mcp-remote <url>` shim.)
 
 **HTTP transport**: A per-user connection is established with
 `Authorization: Bearer <token>` as a default header. Same LRU cache applies.
