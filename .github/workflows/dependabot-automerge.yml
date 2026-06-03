@@ -12,7 +12,7 @@ jobs:
     if: github.actor == 'dependabot[bot]'
     steps:
       - id: metadata
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
 
       # Only patch updates auto-merge. Cargo treats `0.x.y → 0.x.z` as a patch
       # but `0.x → 0.y` (which dependabot calls "minor") as breaking, so a
