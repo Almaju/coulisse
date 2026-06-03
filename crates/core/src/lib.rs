@@ -382,6 +382,52 @@ impl TaskStatusError {
     }
 }
 
+/// Metadata for one skill — its name and one-line description. The
+/// description is what the calling LLM sees in the tool list to decide
+/// whether to load the skill: cheap to advertise, while the full body is
+/// fetched only when the skill tool is actually called (progressive
+/// disclosure). Produced by the `skills` crate; consumed by `agents` to
+/// build one tool per skill an agent opts into.
+#[derive(Clone, Debug)]
+pub struct SkillInfo {
+    pub description: String,
+    pub name: String,
+}
+
+/// Read-only view onto the on-disk skill catalog. Implemented by the
+/// `skills` crate; consumed by `agents` so the runtime can expose skills
+/// as tools without taking a hard dep on `skills`. `body` returns the
+/// `SKILL.md` instructions (disclosure level 2); `read_file` returns a
+/// bundled resource by path relative to the skill's own directory
+/// (level 3). All three are synchronous: the catalog is loaded into memory
+/// at boot, so reads never touch disk on the request path.
+pub trait SkillCatalog: Send + Sync {
+    /// Full instruction body of `name`, or `None` if no such skill exists.
+    fn body(&self, name: &str) -> Option<String>;
+
+    /// Metadata for every loaded skill, for advertising them as tools.
+    fn list(&self) -> Vec<SkillInfo>;
+
+    /// Read a bundled file `path` (relative to `skill`'s own directory).
+    /// Only files discovered under the skill directory at load time are
+    /// reachable, so traversal outside it is impossible by construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `skill` is unknown or has no such file.
+    fn read_file(&self, skill: &str, path: &str) -> Result<String, SkillReadError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct SkillReadError(pub String);
+
+impl SkillReadError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
 /// Map an addressable name (agent or experiment) to a concrete agent name
 /// for a given user. Implemented by the `experiments` crate;
 /// consumed by `agents` so the runtime can dispatch subagent calls

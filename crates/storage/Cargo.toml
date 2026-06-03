@@ -11,7 +11,6 @@ s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
 aws-config = { version = "1", optional = true }
 aws-sdk-s3 = { version = "1", optional = true }
 coulisse-core.workspace = true
-hex = "0.4"
 infer = "0.19"
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }

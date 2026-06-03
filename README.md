@@ -25,9 +25,12 @@ cargo build --release
 **Configure:**
 
 ```bash
-cp coulisse.example.yaml coulisse.yaml
+coulisse init            # writes a minimal coulisse.yaml (one agent, one provider)
+coulisse init --from-example  # full annotated example with every section
 # edit coulisse.yaml and drop in an API key
 ```
+
+See [`examples/`](examples/) for realistic multi-agent configs with MCP tools, judges, and triggers.
 
 **Run:**
 

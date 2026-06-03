@@ -26,7 +26,7 @@ pub trait Backend: Send + Sync {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>;
 
     /// List all blob keys present in physical storage. Used at boot to
-    /// reconcile the SQLite index against the filesystem. Implementations
+    /// reconcile the `SQLite` index against the filesystem. Implementations
     /// that can't enumerate (S3) return `Ok(vec![])`.
     fn list_keys<'a>(
         &'a self,
@@ -42,6 +42,9 @@ pub enum BlobBackend {
 }
 
 impl BlobBackend {
+    /// # Errors
+    ///
+    /// Returns an error if the backend write fails.
     pub async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         match self {
             Self::Fs(b) => b.put(key, bytes).await,
@@ -50,6 +53,9 @@ impl BlobBackend {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the key is missing or the backend read fails.
     pub async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
         match self {
             Self::Fs(b) => b.get(key).await,
@@ -58,6 +64,10 @@ impl BlobBackend {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the backend delete fails (missing keys are not
+    /// an error).
     pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
         match self {
             Self::Fs(b) => b.delete(key).await,
@@ -67,7 +77,11 @@ impl BlobBackend {
     }
 
     /// Returns physical keys for fs backends (used at boot to reconcile the
-    /// SQLite index). Returns an empty vec for S3 (lazy reconciliation).
+    /// `SQLite` index). Returns an empty vec for S3 (lazy reconciliation).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend cannot enumerate its contents.
     pub async fn list_keys(&self) -> Result<Vec<String>, StorageError> {
         match self {
             Self::Fs(b) => b.list_keys().await,
