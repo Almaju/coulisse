@@ -23,6 +23,7 @@ The main chat endpoint. Accepts the standard OpenAI chat completion request shap
 | `messages`          | yes      | The usual OpenAI message array. At least one `user` message is required. |
 | `metadata`          | no       | Optional map of strings. Used for per-request rate limits — see below. |
 | `model`             | yes      | Name of an agent from your config. |
+| `response_format`   | no       | Pin the reply shape: `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {…}}`. Validated and enforced for every provider — see [Structured outputs](../features/structured-output.md). |
 | `safety_identifier` | yes¹     | Identifies the user. Can be any stable string. |
 | `stream`            | no       | When `true`, the response is an SSE stream of `chat.completion.chunk` frames. See [Streaming responses](../features/streaming.md). |
 | `stream_options`    | no       | Object. `include_usage: true` adds the `usage` field to the terminal stream chunk. |
@@ -83,9 +84,9 @@ Errors come back in OpenAI's error shape:
 
 Common cases:
 
-- **400** — missing `safety_identifier` (when required), no user message, unknown agent name, unparseable `metadata` values.
+- **400** — missing `safety_identifier` (when required), no user message, unknown agent name, unparseable `metadata` values, a malformed `response_format` JSON Schema.
 - **429** — per-user token limit exceeded. Includes a `Retry-After` header with seconds until the window resets. See [Rate limiting](../features/rate-limiting.md).
-- **5xx** — upstream provider error, MCP server failure.
+- **5xx** — upstream provider error, MCP server failure, a `response_format` reply that never validated after repair retries. See [Structured outputs](../features/structured-output.md).
 
 ## `GET /v1/models`
 

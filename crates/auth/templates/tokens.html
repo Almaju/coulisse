@@ -1,0 +1,95 @@
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">API tokens</h1>
+    <p class="mt-1 text-sm text-slate-400">Self-issued <code class="font-mono text-xs">sk-coulisse-…</code> keys that authenticate the <code class="font-mono text-xs">/v1/*</code> proxy. Each binds to a principal (the user identity that partitions memory and rate limits) and carries a spend budget. Active only when <code class="font-mono text-xs">auth.proxy.tokens</code> is set.</p>
+  </div>
+
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">New token</h2>
+    </div>
+    <form
+      class="grid grid-cols-1 gap-3 px-4 py-4 md:grid-cols-5"
+      hx-post="/admin/tokens"
+      hx-target="#token-result"
+      hx-swap="innerHTML"
+    >
+      <label class="flex flex-col gap-1 text-xs text-slate-400">Label
+        <input name="label" required placeholder="laptop" class="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100" />
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-slate-400">Principal (user id)
+        <input name="principal" required placeholder="alice" class="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100" />
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-slate-400">Budget
+        <select name="budget_kind" class="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100">
+          <option value="unlimited">Unlimited</option>
+          <option value="monthly">Per month</option>
+          <option value="total">Total (lifetime)</option>
+        </select>
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-slate-400">Limit (USD)
+        <input name="budget_usd" type="number" step="0.01" min="0" placeholder="20.00" class="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100" />
+      </label>
+      <div class="flex items-end">
+        <button type="submit" class="w-full rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500">Create</button>
+      </div>
+    </form>
+    <div id="token-result" class="px-4 pb-4 empty:hidden"></div>
+  </div>
+
+  <div class="rounded-lg border border-slate-800 bg-slate-900">
+    <div class="border-b border-slate-800 px-4 py-3">
+      <h2 class="text-sm font-semibold text-slate-100">{{ tokens.len() }} token{% if tokens.len() != 1 %}s{% endif %}</h2>
+    </div>
+    <div class="px-4 py-3">
+      {% if tokens.is_empty() %}
+        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
+          No tokens yet. Mint one above or run <code class="font-mono text-xs">coulisse token create</code>.
+        </div>
+      {% else %}
+      <div class="overflow-hidden rounded-md border border-slate-800">
+        <table class="w-full text-left">
+          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th class="px-4 py-2 font-medium">Label</th>
+              <th class="px-4 py-2 font-medium">Principal</th>
+              <th class="px-4 py-2 font-medium">Budget</th>
+              <th class="px-4 py-2 text-right font-medium">Spend (period)</th>
+              <th class="px-4 py-2 text-right font-medium">Spend (total)</th>
+              <th class="px-4 py-2 font-medium">Status</th>
+              <th class="px-4 py-2 text-right font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for t in tokens %}
+            <tr class="border-t border-slate-800">
+              <td class="px-4 py-3 text-sm {% if t.revoked %}text-slate-500 line-through{% else %}text-slate-200{% endif %}">{{ t.label }}</td>
+              <td class="px-4 py-3 font-mono text-xs text-slate-300">{{ t.principal }}</td>
+              <td class="px-4 py-3 text-sm text-slate-300">{{ t.budget }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ t.period_spend }}</td>
+              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ t.spend }}</td>
+              <td class="px-4 py-3 text-sm">
+                {% if t.revoked %}
+                  <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">revoked</span>
+                {% else %}
+                  <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">active</span>
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-right">
+                {% if !t.revoked %}
+                <button
+                  class="rounded-md border border-rose-900/60 bg-rose-950/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-900/40"
+                  hx-delete="/admin/tokens/{{ t.id }}"
+                  hx-confirm="Revoke this token? Clients using it will immediately get 401."
+                >Revoke</button>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>

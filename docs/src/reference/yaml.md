@@ -73,9 +73,13 @@ experiments: [ ... ]          # optional; A/B test groups over agents
 judges: [ ... ]               # optional; empty/omitted = no evaluation
 mcp: { ... }                  # optional
 memory: { ... }               # optional; defaults to sqlite history, no long-term memory
-port: <int>                   # optional; defaults to 8421
 providers: { ... }            # required
+public_base_url: <string>     # optional; used for MCP OAuth redirect URIs (default: http://localhost:{port})
+server: { ... }               # optional; bind/port/threads/body-limit (defaults to 0.0.0.0:8421)
+sidecars: [ ... ]             # optional; long-lived helper processes Coulisse spawns alongside itself
+skills: { ... }               # optional; skill directory (defaults to ./skills)
 smoke_tests: [ ... ]          # optional; synthetic-user evaluation runs
+storage: { ... }              # optional; file upload backend (default: fs, no quota)
 telemetry: { ... }            # optional; fmt + sqlite on by default, OTLP opt-in
 triggers: [ ... ]             # optional; cron / webhook / boot
 vars: { name: value, ... }    # optional; named snippets referenced via ${vars.<name>}
@@ -91,7 +95,7 @@ Two independent scopes:
 - `auth.proxy` guards the OpenAI-compatible `/v1/*` surface that SDK clients call.
 - `auth.admin` guards the `/admin/*` surface (the studio UI).
 
-Each scope is itself optional and accepts the same shape: exactly one of `basic` or `oidc` when present. They are mutually exclusive within a scope — the server rejects a scope block that has both or neither. The two scopes are independent, so you can enable Basic on one and OIDC on the other.
+Each scope is itself optional and accepts the same shape: exactly one of `basic`, `oidc`, or `tokens` when present (`tokens` on the `proxy` scope only). They are mutually exclusive within a scope — the server rejects a scope block that has more than one or none. The two scopes are independent, so you can enable Basic on one and OIDC on the other.
 
 ### `auth.<scope>.basic`
 
@@ -132,6 +136,42 @@ auth:
       redirect_url:  http://localhost:8421/admin/
 ```
 
+### `auth.proxy.identity`
+
+How the per-user identity that partitions memory, recall, MCP sessions, and rate limits is derived. Only valid on the `proxy` scope — the `admin` surface has no per-user partitioning, so `from_credential` there is rejected at startup.
+
+| Value             | Behavior |
+|-------------------|----------|
+| `from_request`    | **Default.** Trust the `safety_identifier` (or deprecated `user`) field in the request body. Correct for single-user setups and trusted first-party backends that set the identifier on behalf of their own authenticated users. |
+| `from_credential` | Derive the identity from the authenticated principal — the Basic `username` or the OIDC `sub` claim. A request body claiming a *different* `safety_identifier` is rejected with `403`. Use this for adversarial multi-tenant serving, where clients cannot be trusted to declare their own identity. |
+
+`from_credential` requires `auth.proxy` to declare `basic` or `oidc` (you can't bind to a credential that isn't checked), and is mutually exclusive with [`default_user_id`](#default_user_id) — a shared default bucket would bypass the binding. With Basic, every distinct user needs distinct credentials, since the username *is* the identity; OIDC gives each user a distinct `sub` automatically.
+
+```yaml
+auth:
+  proxy:
+    oidc:
+      issuer_url:    https://authentik.example.com/application/o/coulisse/
+      client_id:     coulisse-proxy
+      client_secret: <secret>
+      redirect_url:  http://localhost:8421/v1/
+    identity: from_credential   # user = the OIDC subject, not the request body
+```
+
+### `auth.proxy.tokens`
+
+Self-issued API tokens — Coulisse mints `sk-coulisse-…` bearer keys, stores only their hash, and gates `/v1/*` on them. Set the (currently empty) block to turn the scheme on; tokens are then created at runtime, never in YAML:
+
+```yaml
+auth:
+  proxy:
+    tokens: {}   # enable bearer-token auth on /v1/*
+```
+
+Clients authenticate exactly like the OpenAI API: `Authorization: Bearer sk-coulisse-…`. Each token binds to a **principal** (the user id that partitions memory, recall, and rate limits), so token auth always implies credential-bound identity — a request body claiming a different `safety_identifier` is rejected with `403`, and `default_user_id` does not apply.
+
+Mint, monitor spend on, and revoke tokens from the studio's **Tokens** page or the `coulisse token` CLI. Each token carries a budget — unlimited, a lifetime cap, or a per-calendar-month cap; a request that would exceed it is rejected with `429 insufficient_quota` before any provider call. See [API tokens](../features/api-tokens.md).
+
 ## `default_user_id`
 
 - **Type:** string
@@ -139,14 +179,6 @@ auth:
 - **Purpose:** fallback identifier for requests that don't supply `safety_identifier` (or the deprecated `user`).
 
 Leave it unset for multi-tenant deployments — unidentified requests will be rejected. Set it to something like `"main"` for local or single-user setups so memory still works whether or not the client bothers to send an id. See [User identification](../configuration/user-id.md).
-
-## `port`
-
-- **Type:** integer (u16)
-- **Default:** `8421`
-- **Purpose:** HTTP port the proxy/admin server binds to.
-
-Useful when running multiple Coulisse instances against different `coulisse.yaml` files on the same machine — give each yaml its own port. The server always binds `0.0.0.0`.
 
 ## `providers`
 
@@ -178,52 +210,62 @@ providers:
 
 Server names are arbitrary — they're what agents refer to under `mcp_tools`.
 
+A server is either **remote** (declare a `url:`) or **local** (declare a
+`command:`). The transport is inferred — a `url:` is HTTP, or SSE if the path
+contains `/sse`; a `command:` is stdio — but you can pin it with an explicit
+`transport:`.
+
 ### Common fields
 
 | Field       | Type   | Required | Notes |
 |-------------|--------|----------|-------|
-| `transport` | enum   | yes      | `stdio` or `http`. |
+| `transport` | enum   | no       | `http`, `sse`, or `stdio`. Inferred from `url`/`command` when omitted; set it to force a transport (e.g. `sse` on a URL without `/sse`). |
 
-### `transport: stdio`
+### Remote (`url`)
+
+| Field   | Type   | Required | Notes |
+|---------|--------|----------|-------|
+| `url`   | string | yes      | MCP endpoint. HTTP, or SSE when the path contains `/sse`. |
+| `oauth` | varies | no       | Per-user OAuth is **on by default** for URL-based servers (discover mode). Set `false` to disable on a no-auth server, `{ scopes: [...] }` to override scopes, or a full `{ mode: static, ... }` block for providers without Dynamic Client Registration. See [Per-user OAuth for MCP servers](../features/mcp-oauth.md). |
+
+### Local (`command`)
 
 | Field     | Type       | Required | Notes |
 |-----------|------------|----------|-------|
-| `command` | string     | yes      | Executable to run. |
+| `command` | string     | yes      | Executable to run (stdio transport). |
 | `args`    | `list<str>` | no      | Command-line arguments. |
 | `env`     | `map<str,str>` | no   | Environment variables for the child. |
-
-### `transport: http`
-
-| Field | Type   | Required | Notes |
-|-------|--------|----------|-------|
-| `url` | string | yes      | Streamable-HTTP MCP endpoint. |
 
 ### Examples
 
 ```yaml
 mcp:
   hello:
-    transport: stdio
     command: uvx
     args: [--from, git+https://..., hello-mcp-server]
 
   calculator:
-    transport: http
     url: http://localhost:8080
+    oauth: false                 # no-auth server, skip the connect flow
+
+  todoist:
+    url: https://ai.todoist.net/mcp   # per-user OAuth implied
 ```
 
 ## `memory`
 
 - **Type:** object
-- **Optional.** Omit for defaults: SQLite at `./coulisse-memory.db`, history-only (no long-term user state).
+- **Optional.** Omit for defaults: SQLite at `.coulisse/coulisse-memory.db`, history-only (no long-term user state).
 
 See [Memory configuration](../configuration/memory.md) for the full walkthrough and examples.
 
 ### Sub-fields
 
+The database always lives at `.coulisse/coulisse-memory.db`; its location is
+not configurable. The only sub-field is `user_state`.
+
 | Field                                 | Type           | Required | Default                                |
 |---------------------------------------|----------------|----------|----------------------------------------|
-| `storage`                             | string         | no       | `./coulisse-memory.db` (or `:memory:`) |
 | `user_state`                          | bool or object | no       | `false`                                |
 | `user_state.embed_with`               | object         | no       | auto-picked from `providers:`          |
 | `user_state.learn_from`               | object         | no       | auto-picked from `providers:`          |
@@ -248,6 +290,7 @@ See [Memory configuration](../configuration/memory.md) for the full walkthrough 
 | `max_turns`  | integer               | no       | Maximum tool-calling rounds per turn. Default: `8`. Raise for agents that chain many tool calls (e.g. a coder that reads files, edits, and dispatches to QA in one go). |
 | `mcp_tools`  | `list<mcp_tool_access>` | no     | Tools this agent may use. |
 | `purpose`    | string                | no       | Tool description when this agent is exposed via another agent's `subagents`. Omit for standalone agents; add a concrete one-line description when this agent is meant to be called as a specialist. |
+| `skills`     | `list<string>`        | no       | Names of skills (from the top-level `skills:` directory) this agent may use. Each becomes a tool advertised by its description; calling it returns the skill's instructions. Unknown names are ignored. See [Skills](../features/skills.md). |
 | `subagents`  | `list<string>`        | no       | Names of other agents exposed as callable tools. Each entry must refer to another entry under `agents`. Self-reference and duplicates are rejected at startup. |
 
 ### `mcp_tools` entry
@@ -380,6 +423,46 @@ judges:
       helpfulness:  Whether the assistant answered the user's question.
       tone:         Politeness and tone.
 ```
+
+## `server`
+
+- **Type:** object
+- **Optional.** Omit the whole block for the defaults below.
+- **Purpose:** how the process binds and listens.
+
+| Field            | Type            | Default     | Purpose                                                                                                  |
+| ---------------- | --------------- | ----------- | -------------------------------------------------------------------------------------------------------- |
+| `bind`           | string (IP)     | `0.0.0.0`   | Interface to bind. Set `127.0.0.1` to accept loopback only (behind a reverse proxy or tunnel).           |
+| `port`           | integer (u16)   | `8421`      | TCP port. Give each `coulisse.yaml` its own port when running multiple instances on one machine.         |
+| `worker_threads` | integer         | CPU count   | tokio worker-thread count. Read once at startup; changing it requires a restart.                         |
+| `max_body_bytes` | integer         | axum 2 MiB  | Largest accepted request body. Raise for big attachment uploads; lower to harden a public endpoint.      |
+
+```yaml
+server:
+  bind: 0.0.0.0
+  port: 8421
+  worker_threads: 4
+  max_body_bytes: 8388608   # 8 MiB
+```
+
+> The `port` field moved here from the top level in this release. A bare top-level `port:` is no longer read — nest it under `server:`.
+
+## `skills`
+
+- **Type:** object
+- **Optional.** Omit the whole block to scan the default `./skills` directory.
+- **Purpose:** where reusable skill bundles are loaded from.
+
+| Field | Type   | Default     | Purpose                                                                                    |
+| ----- | ------ | ----------- | ------------------------------------------------------------------------------------------ |
+| `dir` | string | `./skills`  | Directory holding one subdirectory per skill, each with a `SKILL.md`. A missing directory yields no skills (not an error). |
+
+```yaml
+skills:
+  dir: ./skills
+```
+
+Each subdirectory with a `SKILL.md` becomes a skill; agents opt in by listing skill names under their own `skills:` array. See [Skills](../features/skills.md) for the `SKILL.md` format, bundled resource files, and the `skill_file` tool.
 
 ## `smoke_tests`
 

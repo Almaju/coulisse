@@ -48,6 +48,23 @@ pub struct Usage {
     pub total_tokens: u64,
 }
 
+impl Usage {
+    /// Sum two usages. Used when one logical turn fans out into several
+    /// provider calls — structured-output repair retries, for one — and the
+    /// caller needs a single cumulative total for billing and rate limits.
+    #[must_use]
+    pub fn merged(self, other: Self) -> Self {
+        Self {
+            cache_creation_input_tokens: self.cache_creation_input_tokens
+                + other.cache_creation_input_tokens,
+            cached_input_tokens: self.cached_input_tokens + other.cached_input_tokens,
+            input_tokens: self.input_tokens + other.input_tokens,
+            output_tokens: self.output_tokens + other.output_tokens,
+            total_tokens: self.total_tokens + other.total_tokens,
+        }
+    }
+}
+
 impl From<rig::completion::Usage> for Usage {
     fn from(u: rig::completion::Usage) -> Self {
         Self {

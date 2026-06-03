@@ -38,6 +38,7 @@ fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
         preamble: String::new(),
         provider: ProviderKind::Openai,
         purpose: None,
+        skills: vec![],
         subagents: vec![],
     }
 }
@@ -99,6 +100,7 @@ async fn make_app_with_experiments(
     let (sqlite_layer, telemetry_guard) = telemetry::SqliteLayer::spawn(pool.clone());
     let subscriber_guard =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(sqlite_layer));
+    let tokens = Arc::new(auth::TokenStore::open(pool.clone()).await.unwrap());
     let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
@@ -108,6 +110,8 @@ async fn make_app_with_experiments(
         judges: Arc::new(judges),
         judge_store,
         memory,
+        proxy_identity: auth::IdentityMode::FromRequest,
+        tokens,
         tracker,
     });
     let app = coulisse::server::router(Arc::clone(&state));
@@ -232,6 +236,7 @@ fn variant_agent(name: &str) -> AgentConfig {
         preamble: String::new(),
         provider: ProviderKind::Openai,
         purpose: None,
+        skills: vec![],
         subagents: vec![],
     }
 }
@@ -1102,4 +1107,127 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
             "unexpected assistant text: {assistant:?}"
         );
     }
+}
+
+/// A `person` JSON schema reused across the structured-output tests.
+fn person_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "age": {"type": "integer"},
+            "name": {"type": "string"}
+        },
+        "required": ["age", "name"],
+        "additionalProperties": false
+    })
+}
+
+fn json_schema_format(schema: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "json_schema",
+        "json_schema": {"name": "person", "schema": schema}
+    })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_output_repairs_invalid_reply_then_succeeds() {
+    let TestHarness {
+        app,
+        state,
+        subscriber_guard: _guard,
+        ..
+    } = make_app(vec![
+        ScriptedReply::text("Sure! Here is the person."),
+        ScriptedReply::text("{\"name\": \"Ada\", \"age\": 36}"),
+    ])
+    .await;
+
+    let req = json_request(&serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "describe Ada"}],
+        "response_format": json_schema_format(person_schema()),
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = collect(resp.into_body()).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // The reply text is the cleaned, schema-valid JSON.
+    let content = v["choices"][0]["message"]["content"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(content).unwrap();
+    assert_eq!(parsed["name"], "Ada");
+    assert_eq!(parsed["age"], 36);
+    // Usage accumulates across the repair retry: two scripted calls of 1 each.
+    assert_eq!(v["usage"]["total_tokens"], 2);
+
+    // Two model calls: the first invalid reply triggered one repair round.
+    assert_eq!(state.agents.dispatched_to().len(), 2);
+    // The schema instruction is injected as a system message on every call.
+    let first_call = &state.agents.calls()[0];
+    assert!(
+        first_call
+            .iter()
+            .any(|m| m.content.contains("person") && m.content.contains("JSON Schema")),
+        "schema instruction missing from system messages"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_output_returns_502_when_reply_never_validates() {
+    let TestHarness {
+        app,
+        subscriber_guard: _guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("never valid json")]).await;
+
+    let req = json_request(&serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "describe Ada"}],
+        "response_format": json_schema_format(person_schema()),
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_output_rejects_malformed_schema_with_400() {
+    let TestHarness {
+        app,
+        subscriber_guard: _guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("unused")]).await;
+
+    let req = json_request(&serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": json_schema_format(serde_json::json!({"type": "not-a-type"})),
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn json_object_format_strips_code_fences() {
+    let TestHarness {
+        app,
+        subscriber_guard: _guard,
+        ..
+    } = make_app(vec![ScriptedReply::text("```json\n{\"ok\": true}\n```")]).await;
+
+    let req = json_request(&serde_json::json!({
+        "model": "assistant",
+        "safety_identifier": "alice",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_object"},
+    }));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = collect(resp.into_body()).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let content = v["choices"][0]["message"]["content"].as_str().unwrap();
+    assert_eq!(content, "{\"ok\":true}");
 }

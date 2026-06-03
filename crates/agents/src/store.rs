@@ -225,6 +225,7 @@ mod tests {
             preamble: "be helpful".into(),
             provider: ProviderKind::Openai,
             purpose: None,
+            skills: vec![],
             subagents: vec![],
         }
     }
