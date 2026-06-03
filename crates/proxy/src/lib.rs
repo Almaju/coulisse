@@ -4,6 +4,7 @@
 
 mod chat;
 mod language;
+mod response_format;
 mod tool;
 
 pub use chat::{
@@ -11,6 +12,7 @@ pub use chat::{
     ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage, response_id,
 };
 pub use language::{LanguageTag, LanguageTagError};
+pub use response_format::{JsonSchemaSpec, ResponseFormat, ResponseFormatError};
 pub use tool::{
     Tool, ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolChoiceMode, ToolFunction,
 };

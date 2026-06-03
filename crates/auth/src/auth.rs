@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::Router;
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
@@ -6,7 +8,7 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum_oidc::error::MiddlewareError;
-use axum_oidc::{EmptyAdditionalClaims, OidcAuthLayer, OidcClient, OidcLoginLayer};
+use axum_oidc::{EmptyAdditionalClaims, OidcAuthLayer, OidcClaims, OidcClient, OidcLoginLayer};
 use base64::Engine;
 use http::Uri;
 use thiserror::Error;
@@ -16,6 +18,7 @@ use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
 use crate::config::{Config, OidcConfig, ScopeConfig};
+use crate::token::{TokenId, TokenStore};
 
 /// Runtime auth state, built once from YAML at startup. Each scope (`proxy`
 /// for `/v1/*`, `admin` for `/admin/*`) holds its own optional [`Scheme`].
@@ -25,8 +28,25 @@ pub struct Auth {
     proxy: Option<Scheme>,
 }
 
+/// The identity established by a successful authentication, inserted into
+/// request extensions so the request-flow handler can bind the user
+/// identity to the credential instead of trusting the request body. Carries
+/// the Basic username or the OIDC `sub` claim. Absent when the scope is
+/// unauthenticated.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedPrincipal(pub String);
+
+/// The id of the API token a request authenticated with, inserted into
+/// request extensions alongside [`AuthenticatedPrincipal`] when the proxy
+/// scope uses the `tokens` scheme. The request-flow handler reads it to
+/// enforce the token's budget and attribute spend. Absent for Basic/OIDC
+/// scopes and for unauthenticated requests.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthenticatedToken(pub TokenId);
+
 #[derive(Clone)]
 enum Scheme {
+    ApiKey(Arc<TokenStore>),
     Basic(Credentials),
     Oidc(Box<OidcRuntime>),
 }
@@ -107,14 +127,17 @@ impl Auth {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub async fn from_config(config: Config) -> Result<Self, BuildError> {
+    pub async fn from_config(
+        config: Config,
+        token_store: Option<Arc<TokenStore>>,
+    ) -> Result<Self, BuildError> {
         let admin = match config.admin {
             None => None,
-            Some(scope) => Some(Scheme::from_config(scope).await?),
+            Some(scope) => Some(Scheme::from_config(scope, token_store.clone()).await?),
         };
         let proxy = match config.proxy {
             None => None,
-            Some(scope) => Some(Scheme::from_config(scope).await?),
+            Some(scope) => Some(Scheme::from_config(scope, token_store).await?),
         };
         Ok(Self { admin, proxy })
     }
@@ -122,6 +145,7 @@ impl Auth {
     fn summary(scheme: Option<&Scheme>) -> &'static str {
         match scheme {
             None => "unauthenticated",
+            Some(Scheme::ApiKey(_)) => "API tokens enabled",
             Some(Scheme::Basic(_)) => "basic auth enabled",
             Some(Scheme::Oidc(_)) => "OIDC login enabled",
         }
@@ -161,7 +185,10 @@ impl Auth {
 }
 
 impl Scheme {
-    async fn from_config(scope: ScopeConfig) -> Result<Self, BuildError> {
+    async fn from_config(
+        scope: ScopeConfig,
+        token_store: Option<Arc<TokenStore>>,
+    ) -> Result<Self, BuildError> {
         if let Some(basic) = scope.basic {
             return Ok(Scheme::Basic(Credentials::new(
                 basic.username,
@@ -172,6 +199,13 @@ impl Scheme {
             let runtime = OidcRuntime::discover(&oidc).await?;
             return Ok(Scheme::Oidc(Box::new(runtime)));
         }
+        if scope.tokens.is_some() {
+            // WHY: cli only opens the token store when a scope declares
+            // `tokens`, so a missing store here means the wiring skipped a
+            // step — fail startup rather than serve an unguarded proxy.
+            let store = token_store.ok_or(BuildError::TokenStoreUnavailable)?;
+            return Ok(Scheme::ApiKey(store));
+        }
         // WHY: validation is the caller's contract — reaching here means the
         // caller skipped `Config::validate`.
         Err(BuildError::ScopeWithoutAuth)
@@ -180,6 +214,13 @@ impl Scheme {
 
 fn apply(router: Router, scheme: &Scheme) -> Router {
     match scheme {
+        Scheme::ApiKey(store) => {
+            let store = Arc::clone(store);
+            router.layer(from_fn(move |req: Request, next: Next| {
+                let store = Arc::clone(&store);
+                async move { api_key_check(store, req, next).await }
+            }))
+        }
         Scheme::Basic(creds) => {
             let creds = creds.clone();
             router.layer(from_fn(move |req: Request, next: Next| {
@@ -204,39 +245,107 @@ fn apply(router: Router, scheme: &Scheme) -> Router {
                 .layer(OidcAuthLayer::<EmptyAdditionalClaims>::new(
                     runtime.client.clone(),
                 ));
-            router.layer(oidc_login).layer(oidc_auth).layer(session)
+            // WHY: `oidc_principal` is the innermost layer (first `.layer()`
+            // call), so it runs after `oidc_auth` has populated the claims —
+            // it reads the `sub` and hands the handler a credential-bound
+            // principal.
+            router
+                .layer(from_fn(oidc_principal))
+                .layer(oidc_login)
+                .layer(oidc_auth)
+                .layer(session)
         }
     }
 }
 
-async fn basic_check(creds: Credentials, request: Request, next: Next) -> Response {
+/// Verify the `Authorization: Bearer sk-coulisse-…` header against the token
+/// store. On a hit, lift the bound principal and token id into request
+/// extensions so the handler binds identity to the credential and enforces
+/// the token's budget. A miss is 401; a store error is 500.
+async fn api_key_check(store: Arc<TokenStore>, mut request: Request, next: Next) -> Response {
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(bearer_secret);
+    let Some(secret) = presented else {
+        return unauthorized(r#"Bearer realm="Coulisse""#);
+    };
+    match store.verify(secret).await {
+        Ok(Some(verified)) => {
+            request
+                .extensions_mut()
+                .insert(AuthenticatedPrincipal(verified.principal));
+            request
+                .extensions_mut()
+                .insert(AuthenticatedToken(verified.id));
+            next.run(request).await
+        }
+        Ok(None) => unauthorized(r#"Bearer realm="Coulisse", error="invalid_token""#),
+        Err(_) => {
+            let mut response = Response::new(Body::from("token verification failed"));
+            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            response
+        }
+    }
+}
+
+/// Extract the credential from a `Bearer <secret>` header value,
+/// case-insensitively on the scheme (RFC 7235). `None` for any other scheme.
+fn bearer_secret(header_value: &str) -> Option<&str> {
+    header_value
+        .strip_prefix("Bearer ")
+        .or_else(|| header_value.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+async fn basic_check(creds: Credentials, mut request: Request, next: Next) -> Response {
     let ok = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|h| creds.verify_header(h));
     if ok {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedPrincipal(creds.username.clone()));
         next.run(request).await
     } else {
-        unauthorized()
+        unauthorized(r#"Basic realm="Coulisse", charset="UTF-8""#)
     }
+}
+
+/// Lift the OIDC subject the auth layer cached into request extensions onto
+/// an [`AuthenticatedPrincipal`], so the principal is uniform across auth
+/// schemes by the time the handler runs.
+async fn oidc_principal(mut request: Request, next: Next) -> Response {
+    if let Some(claims) = request
+        .extensions()
+        .get::<OidcClaims<EmptyAdditionalClaims>>()
+    {
+        let subject = claims.subject().to_string();
+        request
+            .extensions_mut()
+            .insert(AuthenticatedPrincipal(subject));
+    }
+    next.run(request).await
 }
 
 async fn handle_oidc_error(err: MiddlewareError) -> Response {
     err.into_response()
 }
 
-/// 401 with the `WWW-Authenticate: Basic` challenge that tells browsers
-/// to pop the login dialog. Realm is fixed so bookmarked pages prompt
-/// once per origin, not per path.
-fn unauthorized() -> Response {
+/// 401 carrying the given `WWW-Authenticate` challenge. For Basic this tells
+/// browsers to pop the login dialog; for Bearer it names the scheme SDK
+/// clients expect. Realm is fixed so bookmarked pages prompt once per
+/// origin, not per path.
+fn unauthorized(challenge: &'static str) -> Response {
     let mut response = Response::new(Body::from("authentication required"));
     *response.status_mut() = StatusCode::UNAUTHORIZED;
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        r#"Basic realm="Coulisse", charset="UTF-8""#
-            .parse()
-            .expect("static header value"),
+        challenge.parse().expect("static header value"),
     );
     response.into_response()
 }
@@ -261,8 +370,10 @@ pub enum BuildError {
     },
     #[error("failed to discover OIDC issuer: {0}")]
     Discovery(axum_oidc::error::Error),
-    #[error("auth scope declared without basic or oidc — call Config::validate first")]
+    #[error("auth scope declared without basic, oidc, or tokens — call Config::validate first")]
     ScopeWithoutAuth,
+    #[error("auth scope declares `tokens` but no token store was provided to Auth::from_config")]
+    TokenStoreUnavailable,
 }
 
 #[cfg(test)]
@@ -318,5 +429,90 @@ mod tests {
         let creds = Credentials::new("admin".into(), "s3cret".into());
         let encoded = base64::engine::general_purpose::STANDARD.encode("admin:s3cret");
         assert!(creds.verify_header(&format!("basic {encoded}")));
+    }
+
+    use crate::config::TokensConfig;
+    use crate::token::{Budget, TokenStore};
+    use axum::Extension;
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    async fn token_app(principal: &str) -> (Router, String, std::sync::Arc<TokenStore>) {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let store = std::sync::Arc::new(TokenStore::open(pool).await.unwrap());
+        let secret = store
+            .mint("test", principal, Budget::Unlimited)
+            .await
+            .unwrap()
+            .secret;
+        let config = Config {
+            admin: None,
+            mcp_admin: None,
+            mcp_consumer_secret: None,
+            proxy: Some(ScopeConfig {
+                basic: None,
+                identity: crate::IdentityMode::default(),
+                oidc: None,
+                tokens: Some(TokensConfig {}),
+            }),
+        };
+        let auth = Auth::from_config(config, Some(std::sync::Arc::clone(&store)))
+            .await
+            .unwrap();
+        // Handler echoes the bound principal so the test sees that the
+        // middleware lifted it into extensions.
+        let router = Router::new().route(
+            "/v1/models",
+            get(
+                |principal: Option<Extension<AuthenticatedPrincipal>>| async move {
+                    principal.map(|Extension(p)| p.0).unwrap_or_default()
+                },
+            ),
+        );
+        (auth.wrap_proxy(router), secret, store)
+    }
+
+    fn get_models(bearer: Option<&str>) -> Request {
+        let mut builder = Request::builder().uri("/v1/models");
+        if let Some(value) = bearer {
+            builder = builder.header(header::AUTHORIZATION, value);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn api_key_rejects_missing_and_unknown_secrets() {
+        let (app, _secret, _store) = token_app("alice").await;
+        let missing = app.clone().oneshot(get_models(None)).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        let unknown = app
+            .oneshot(get_models(Some("Bearer sk-coulisse-nope")))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_key_accepts_valid_and_binds_principal() {
+        let (app, secret, _store) = token_app("alice").await;
+        let resp = app
+            .oneshot(get_models(Some(&format!("Bearer {secret}"))))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"alice");
+    }
+
+    #[tokio::test]
+    async fn api_key_rejects_revoked_token() {
+        let (app, secret, store) = token_app("alice").await;
+        let id = store.list().await.unwrap()[0].id;
+        assert!(store.revoke(id).await.unwrap());
+        let resp = app
+            .oneshot(get_models(Some(&format!("Bearer {secret}"))))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

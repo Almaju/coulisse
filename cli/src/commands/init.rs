@@ -5,7 +5,7 @@ use std::io;
 use std::path::Path;
 
 const MINIMAL_TEMPLATE: &str = include_str!("init_template.yaml");
-const FULL_EXAMPLE: &str = include_str!("../../../coulisse.example.yaml");
+const FULL_EXAMPLE: &str = include_str!("init_example.yaml");
 
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {

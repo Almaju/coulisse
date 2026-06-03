@@ -29,6 +29,13 @@ pub struct AgentConfig {
     /// LLM decide when to invoke this agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// Names of skills (loaded from the top-level `skills:` directory) this
+    /// agent can use. Each listed skill becomes a tool: its description is
+    /// advertised to the model, and calling it returns the skill's full
+    /// instructions. Names not present in the catalog are ignored. Empty =
+    /// no skills.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
     /// Other agents exposed to this agent as tools. Names must match entries
     /// in the top-level `agents:` list. Self-reference is rejected; duplicate
     /// entries are rejected. Calling a subagent runs a fresh conversation

@@ -6,7 +6,7 @@ This is the primitive that makes Coulisse feel like an office instead of a reque
 
 ## Why this is platform-agnostic
 
-There's no Matrix-, Slack-, or Discord-specific code in Coulisse. The `webhook` trigger (coming next) accepts JSON POSTs from anything that can speak HTTP. Connecting Matrix means running a tiny standalone bridge that listens on Matrix and POSTs to Coulisse. Connecting Slack means pointing Slack's built-in outgoing webhooks at Coulisse. Connecting GitHub means setting up a webhook on the repo. Coulisse doesn't know the source — it sees an HTTP request.
+There's no chat-platform-specific code in Coulisse. The `webhook` trigger (coming next) accepts JSON POSTs from anything that can speak HTTP. Connecting Slack means pointing Slack's built-in outgoing webhooks at Coulisse. Connecting GitHub means setting up a webhook on the repo. Anything else that can POST JSON can summon an agent the same way. Coulisse doesn't know the source — it sees an HTTP request.
 
 The cron trigger is purely internal — zero external dependencies.
 
@@ -78,15 +78,15 @@ The task is enqueued during `coulisse start`, after the worker pool is up. Combi
 
 ## Webhook triggers
 
-A `type: webhook` trigger declares an HTTP path; Coulisse exposes `POST <path>` and fires the trigger on each request. This is the universal connector for outside systems — anything that can POST JSON can summon an agent. No Matrix / Slack / Discord code in Coulisse.
+A `type: webhook` trigger declares an HTTP path; Coulisse exposes `POST <path>` and fires the trigger on each request. This is the universal connector for outside systems — anything that can POST JSON can summon an agent. No chat-platform code in Coulisse.
 
 ```yaml
 triggers:
-  - name: matrix-mention
+  - name: chat-mention
     type: webhook
-    path: /hooks/matrix-mention      # must start with /hooks/
+    path: /hooks/chat-mention        # must start with /hooks/
     agent: pm
-    prompt: "Message Matrix de {{sender}} dans {{room_name}} : {{body}}"
+    prompt: "Message de {{sender}} dans {{room_name}} : {{body}}"
 ```
 
 Fields beyond the cron shape:
@@ -99,9 +99,9 @@ Fields beyond the cron shape:
 Fire it with curl:
 
 ```bash
-curl -X POST http://localhost:8421/hooks/matrix-mention \
+curl -X POST http://localhost:8421/hooks/chat-mention \
   -H 'Content-Type: application/json' \
-  -d '{"sender":"@alice:localhost","room_name":"engineering","body":"@coulisse what is the state of the build?"}'
+  -d '{"sender":"alice","room_name":"engineering","body":"@coulisse what is the state of the build?"}'
 ```
 
 Response:
@@ -118,9 +118,9 @@ The `agent` field accepts the same `{{a.b.c}}` templating as `prompt`. This lets
 
 ```yaml
 triggers:
-  - name: matrix-mention
+  - name: chat-mention
     type: webhook
-    path: /hooks/matrix-mention
+    path: /hooks/chat-mention
     agent: "{{agent}}"
     prompt: "@{{sender}} in #{{room}}: {{body}}"
 ```
@@ -128,20 +128,16 @@ triggers:
 The bridge does the iteration on its side and calls the same webhook N times, once per mentioned agent:
 
 ```bash
-curl -X POST http://localhost:8421/hooks/matrix-mention \
+curl -X POST http://localhost:8421/hooks/chat-mention \
   -d '{"agent":"pm","sender":"almaju","room":"standup","body":"any release blockers?"}'
 
-curl -X POST http://localhost:8421/hooks/matrix-mention \
+curl -X POST http://localhost:8421/hooks/chat-mention \
   -d '{"agent":"coder","sender":"almaju","room":"standup","body":"any release blockers?"}'
 ```
 
 Two tasks land on the queue, one per agent.
 
 A templated `agent` field is **not** cross-validated at config load — the value isn't known until a request arrives. If the resolved name doesn't match any agent, the worker errors the task with an "unknown agent" message; you'll see it in `/admin/live`. If the placeholder fails to resolve at all (the path is missing from the payload), the webhook returns `400 Bad Request` and nothing is enqueued.
-
-### Worked example: Matrix mentions
-
-The reference bridge at `local/matrix-bridge/bridge.py` (gitignored personal workspace) talks Matrix and translates `@<agent>` mentions into calls against Coulisse's OpenAI endpoint. Run as a sidecar — see [Matrix as the chat UI](./matrix-chat.md). Note: today's bridge calls `/v1/chat/completions` *directly*, not a webhook trigger; webhook triggers are still the right path for non-chat sources like GitHub, Slack outgoing webhooks, etc.
 
 ## What's not here yet
 

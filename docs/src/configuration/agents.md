@@ -69,6 +69,24 @@ mcp_tools:
       - multiply
 ```
 
+### `skills` (optional)
+
+Names of skills from the top-level `skills:` directory this agent can use. Each listed skill becomes a tool: its description is advertised to the model, and calling it returns the skill's full instructions. Names not present in the catalog are silently ignored.
+
+```yaml
+skills: [resume-review, salary-negotiation]
+```
+
+See [Skills](../features/skills.md) for the full walkthrough.
+
+### `max_turns` (optional)
+
+Maximum number of tool-calling rounds per turn before Coulisse returns the last response. Defaults to `8`. Raise it for agents that chain many tool calls in one go (e.g. a coder reading files, editing, handing off to QA).
+
+```yaml
+max_turns: 16
+```
+
 ### `subagents` (optional)
 
 A list of other agent names exposed to this agent as callable tools. When the agent's model decides to invoke one, Coulisse starts a fresh conversation against that agent and returns its final message as the tool result.

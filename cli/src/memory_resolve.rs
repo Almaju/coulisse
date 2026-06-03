@@ -21,17 +21,23 @@
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
+use std::path::Path;
 
 use memory::{
-    BackendConfig, EmbedderConfig, EmbedderYaml, ExtractorConfig, MemoryConfig, MemoryYaml,
-    ProviderModel, UserStateConfig, default_dedup_threshold, default_extractor_max_facts,
-    default_hash_dims, default_openai_embedding_model, default_recall_k, default_sqlite_path,
-    default_voyage_model,
+    BackendConfig, DEFAULT_SQLITE_FILENAME, EmbedderConfig, EmbedderYaml, ExtractorConfig,
+    MemoryConfig, MemoryYaml, ProviderModel, UserStateConfig, default_dedup_threshold,
+    default_extractor_max_facts, default_hash_dims, default_openai_embedding_model,
+    default_recall_k, default_voyage_model,
 };
 use providers::{ProviderConfig, ProviderKind};
 use thiserror::Error;
 
 /// Resolve the user-facing YAML shape into the explicit runtime config.
+///
+/// `state_dir` is the project's `.coulisse/` directory (next to the config
+/// file). The database always lands there — there is no path knob — so state
+/// stays co-located with the project and `.coulisse/` is the one thing to
+/// back up or volume-mount.
 ///
 /// # Errors
 ///
@@ -41,13 +47,10 @@ use thiserror::Error;
 pub fn resolve_memory<S: BuildHasher>(
     yaml: &MemoryYaml,
     providers: &HashMap<ProviderKind, ProviderConfig, S>,
+    state_dir: &Path,
 ) -> Result<MemoryConfig, MemoryResolveError> {
-    let backend = match yaml.storage.as_deref() {
-        None => BackendConfig::default(),
-        Some(s) if s.trim().is_empty() => BackendConfig::Sqlite {
-            path: default_sqlite_path(),
-        },
-        Some(s) => BackendConfig::from_storage(s),
+    let backend = BackendConfig::Sqlite {
+        path: state_dir.join(DEFAULT_SQLITE_FILENAME),
     };
 
     let (enabled, overrides) = yaml.user_state.parts();
@@ -204,10 +207,30 @@ mod tests {
             .collect()
     }
 
+    /// Resolve against a fixed `.coulisse` state dir so tests don't repeat it.
+    fn resolve(
+        yaml: &MemoryYaml,
+        providers: &HashMap<ProviderKind, ProviderConfig>,
+    ) -> Result<MemoryConfig, MemoryResolveError> {
+        resolve_memory(yaml, providers, Path::new(".coulisse"))
+    }
+
+    #[test]
+    fn omitted_storage_defaults_into_state_dir() {
+        let yaml = MemoryYaml::default();
+        let resolved = resolve(&yaml, &providers_with(&[])).unwrap();
+        match resolved.backend {
+            BackendConfig::Sqlite { path } => {
+                assert_eq!(path, Path::new(".coulisse").join(DEFAULT_SQLITE_FILENAME));
+            }
+            BackendConfig::InMemory => panic!("expected sqlite backend, got in_memory"),
+        }
+    }
+
     #[test]
     fn user_state_off_disables_recall_and_extraction() {
         let yaml = MemoryYaml::default();
-        let resolved = resolve_memory(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap();
+        let resolved = resolve(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap();
         assert!(resolved.extractor.is_none());
         assert_eq!(resolved.recall_k, 0);
     }
@@ -215,10 +238,9 @@ mod tests {
     #[test]
     fn user_state_true_with_anthropic_picks_haiku_and_hash_embedder() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
-        let resolved = resolve_memory(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap();
+        let resolved = resolve(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap();
         let extractor = resolved.extractor.expect("extractor should be set");
         assert_eq!(extractor.provider, "anthropic");
         assert!(extractor.model.contains("haiku"));
@@ -229,10 +251,9 @@ mod tests {
     #[test]
     fn user_state_true_with_openai_picks_openai_embedder() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
-        let resolved = resolve_memory(&yaml, &providers_with(&[ProviderKind::Openai])).unwrap();
+        let resolved = resolve(&yaml, &providers_with(&[ProviderKind::Openai])).unwrap();
         let extractor = resolved.extractor.expect("extractor should be set");
         assert_eq!(extractor.provider, "openai");
         assert!(matches!(resolved.embedder, EmbedderConfig::Openai { .. }));
@@ -241,20 +262,18 @@ mod tests {
     #[test]
     fn user_state_true_without_providers_fails_loudly() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
-        let err = resolve_memory(&yaml, &providers_with(&[])).unwrap_err();
+        let err = resolve(&yaml, &providers_with(&[])).unwrap_err();
         assert!(matches!(err, MemoryResolveError::NoExtractorProvider));
     }
 
     #[test]
     fn anthropic_priority_beats_openai() {
         let yaml = MemoryYaml {
-            storage: None,
             user_state: UserStateYaml::OnOff(true),
         };
-        let resolved = resolve_memory(
+        let resolved = resolve(
             &yaml,
             &providers_with(&[ProviderKind::Openai, ProviderKind::Anthropic]),
         )
@@ -266,7 +285,6 @@ mod tests {
     fn explicit_learn_from_referencing_unconfigured_provider_fails() {
         let yaml: MemoryYaml = serde_yaml::from_str(
             r"
-storage: ./test.db
 user_state:
   learn_from:
     provider: gemini
@@ -274,34 +292,19 @@ user_state:
 ",
         )
         .unwrap();
-        let err = resolve_memory(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap_err();
+        let err = resolve(&yaml, &providers_with(&[ProviderKind::Anthropic])).unwrap_err();
         assert!(matches!(
             err,
             MemoryResolveError::LearnFromProviderNotConfigured { .. }
         ));
     }
 
+    /// `storage:` is gone — the DB always lives in the state dir. A config
+    /// that still tries to set it is rejected by `deny_unknown_fields`.
     #[test]
-    fn storage_memory_marker_maps_to_in_memory_backend() {
-        let yaml = MemoryYaml {
-            storage: Some(":memory:".into()),
-            user_state: UserStateYaml::default(),
-        };
-        let resolved = resolve_memory(&yaml, &providers_with(&[])).unwrap();
-        assert!(matches!(resolved.backend, BackendConfig::InMemory));
-    }
-
-    #[test]
-    fn storage_path_maps_to_sqlite_backend() {
-        let yaml = MemoryYaml {
-            storage: Some("./alt.db".into()),
-            user_state: UserStateYaml::default(),
-        };
-        let resolved = resolve_memory(&yaml, &providers_with(&[])).unwrap();
-        match resolved.backend {
-            BackendConfig::Sqlite { path } => assert_eq!(path.to_str(), Some("./alt.db")),
-            BackendConfig::InMemory => panic!("expected sqlite backend, got in_memory"),
-        }
+    fn storage_field_is_rejected() {
+        let yaml = "storage: ./alt.db\n";
+        assert!(serde_yaml::from_str::<MemoryYaml>(yaml).is_err());
     }
 
     #[test]

@@ -1,15 +1,14 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level `storage:` block in `coulisse.yaml`.
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[schemars(rename = "StorageConfig")]
 pub struct StorageYaml {
-    /// Storage backend. Defaults to `fs` if unset.
+    /// Storage backend. Defaults to `fs` if unset. The filesystem backend
+    /// keeps blobs under `.coulisse/files` next to the config — there is no
+    /// path knob; switch to `s3` for anything else.
     #[serde(default)]
     pub backend: BackendKind,
-    /// File-system backend options. Ignored when `backend: s3`.
-    #[serde(default)]
-    pub fs: FsConfig,
     /// Maximum bytes that may be stored per individual file.
     /// Defaults to no limit.
     #[serde(default)]
@@ -24,7 +23,7 @@ pub struct StorageYaml {
     pub s3: Option<S3Config>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
     #[default]
@@ -32,31 +31,11 @@ pub enum BackendKind {
     S3,
 }
 
-/// File-system backend configuration.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
-pub struct FsConfig {
-    /// Directory where blobs are stored. Defaults to `./coulisse-files`.
-    #[serde(default = "default_fs_path")]
-    pub path: std::path::PathBuf,
-}
-
-impl Default for FsConfig {
-    fn default() -> Self {
-        Self {
-            path: default_fs_path(),
-        }
-    }
-}
-
-fn default_fs_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("./coulisse-files")
-}
-
 /// S3-compatible backend configuration.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct S3Config {
     pub bucket: String,
-    /// Custom endpoint URL for MinIO, R2, or other S3-compatible services.
+    /// Custom endpoint URL for `MinIO`, R2, or other S3-compatible services.
     #[serde(default)]
     pub endpoint_url: Option<String>,
     /// AWS region. Defaults to `us-east-1`.
