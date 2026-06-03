@@ -75,5 +75,5 @@ There's no `tasks:` YAML section yet — the queue is always on, with four worke
 
 - Lives in `crates/tasks/`. Owns the `tasks` SQLite table; no other crate touches it.
 - The `TaskQueue` and `TaskStatus` traits live in `coulisse-core` so `agents` can build the `dispatch_task` and `tasks_status` tools without depending on `tasks` directly. Mirrors the existing `ScoreLookup` / `OneShotPrompt` / `AgentResolver` pattern.
-- Workers run in `cli/src/workers.rs`, spawned alongside the HTTP server. They share the same `Agents` runtime — so a background task can call MCP tools, narrate to Matrix, dispatch subagents, exactly like a sync request.
+- Workers run in `cli/src/workers.rs`, spawned alongside the HTTP server. They share the same `Agents` runtime — so a background task can call MCP tools, dispatch subagents, exactly like a sync request.
 - No special shutdown handling yet. Workers die with the process. A graceful drain that lets in-flight tasks finish before exit is on the roadmap.

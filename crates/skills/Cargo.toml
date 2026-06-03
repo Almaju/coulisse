@@ -1,0 +1,18 @@
+[package]
+name = "skills"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+coulisse-core.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

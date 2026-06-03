@@ -9,9 +9,11 @@ aes-gcm.workspace = true
 axum.workspace = true
 base64.workspace = true
 coulisse-core.workspace = true
-hmac.workspace = true
+eventsource-stream.workspace = true
+futures-util.workspace = true
 moka.workspace = true
 percent-encoding.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 rig-core.workspace = true
 rmcp.workspace = true
@@ -29,4 +31,5 @@ workspace = true
 
 [dev-dependencies]
 http-body-util = "0.1"
+serde_yaml = "0.9"
 tower = { version = "0.5", features = ["util"] }

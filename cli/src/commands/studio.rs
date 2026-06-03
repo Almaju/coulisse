@@ -39,7 +39,7 @@ pub fn run(config_path: &Path) -> Result<(), StudioError> {
     if !running {
         return Err(StudioError::ServerNotRunning);
     }
-    let url = format!("http://localhost:{}/admin/", config.port.unwrap_or(8421));
+    let url = format!("http://localhost:{}/admin/", config.server.port);
     println!("opening {url}");
     open_in_browser(&url)
 }

@@ -12,9 +12,12 @@ use judges::spawn_score;
 use memory::{MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
-use proxy::{ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, Role, Usage, response_id};
+use proxy::{
+    ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, ResponseFormat, Role, Usage,
+    response_id,
+};
 
-use crate::server::{AppState, judges_for_agent, record_llm_call};
+use crate::server::{AppState, judges_for_agent, record_llm_call, record_token_spend};
 
 /// Interval between SSE heartbeat events during subagent handoff.
 /// 20 s gives comfortable margin against the common 60 s proxy idle timeout.
@@ -39,7 +42,13 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     pub include_usage: bool,
     pub inner: CompletionStream,
     pub model: String,
+    /// When set to a JSON variant, the accumulated reply is validated once
+    /// the stream completes. Already-streamed tokens can't be retro-repaired,
+    /// so an invalid reply surfaces as an SSE error event rather than a retry.
+    pub response_format: Option<ResponseFormat>,
     pub state: Arc<AppState<P>>,
+    /// API token to charge this turn's spend to, when token auth is on.
+    pub token_id: Option<auth::TokenId>,
     pub tracker_key: String,
     /// Root `turn` span the SSE body runs inside. Drives `Span::current()`
     /// for any post-stream side effects so memory writes / score jobs
@@ -52,6 +61,7 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
 /// # Panics
 ///
 /// Panics if invariants documented above are violated.
+#[allow(clippy::too_many_lines)] // one linear SSE state machine; splitting hurts readability
 pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
     cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
@@ -61,7 +71,9 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         include_usage,
         inner,
         model,
+        response_format,
         state,
+        token_id,
         tracker_key,
         turn_span,
         user_id,
@@ -82,6 +94,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         assistant_message_id,
         final_usage: Arc::clone(&final_usage),
         state,
+        token_id,
         tracker_key,
         turn_span: turn_span.clone(),
         user_id,
@@ -154,13 +167,21 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
             }
         }
 
+        // Structured output can't be repaired mid-stream — a reply that fails
+        // validation becomes an error event instead of a retry.
+        let final_text = accumulated.lock().unwrap().clone();
+        if !errored
+            && let Some(event) = meta.structured_output_error(response_format.as_ref(), &final_text)
+        {
+            yield Ok(event);
+            errored = true;
+        }
+
         if !errored {
-            let usage = if include_usage {
+            let usage = include_usage.then(|| {
                 let u = *final_usage.lock().unwrap();
-                Some(Usage::new(u.input_tokens, u.output_tokens, u.total_tokens))
-            } else {
-                None
-            };
+                Usage::new(u.input_tokens, u.output_tokens, u.total_tokens)
+            });
             yield Ok(meta.stop_event(usage));
         }
         yield Ok(Event::default().data("[DONE]"));
@@ -180,6 +201,7 @@ struct MemoryFlush<P: Agents + OneShotPrompt + 'static> {
     assistant_message_id: MessageId,
     final_usage: Arc<Mutex<ProviderUsage>>,
     state: Arc<AppState<P>>,
+    token_id: Option<auth::TokenId>,
     tracker_key: String,
     /// Root `turn` span; spawned cleanup work runs inside it so its
     /// own warnings carry the same correlation id.
@@ -195,6 +217,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
         let assistant_message_id = self.assistant_message_id;
         let usage = *self.final_usage.lock().unwrap();
         let state = Arc::clone(&self.state);
+        let token_id = self.token_id;
         let tracker_key = std::mem::take(&mut self.tracker_key);
         let turn_span = self.turn_span.clone();
         let llm_call_span = self.turn_span.clone();
@@ -206,6 +229,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
                 record_llm_call(&state, &agent_name, usage, &llm_call_span);
+                record_token_spend(&state, token_id, &agent_name, usage).await;
                 let um = state.memory.for_user(user_id);
                 if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
                     warn_memory_append_failed("user", &err);
@@ -331,6 +355,22 @@ impl StreamMeta {
                 "object": "chat.completion.chunk",
             }))
             .expect("error chunk serializes")
+    }
+
+    /// An error event when `text` doesn't satisfy a JSON `response_format`,
+    /// or `None` when it's valid (or no JSON format was requested). The
+    /// injected instruction already steered the model toward valid JSON;
+    /// this is the safety net for the cases where it didn't.
+    fn structured_output_error(
+        &self,
+        format: Option<&ResponseFormat>,
+        text: &str,
+    ) -> Option<Event> {
+        let format = format.filter(|f| f.requires_json())?;
+        format
+            .validate(text)
+            .err()
+            .map(|err| self.error_event(&err.to_string()))
     }
 
     fn role_event(&self) -> Event {

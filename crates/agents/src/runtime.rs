@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use coulisse_core::{AgentResolver, OneShotError, OneShotPrompt, TaskQueue, TaskStatus, UserId};
+use coulisse_core::{
+    AgentResolver, OneShotError, OneShotPrompt, SkillCatalog, TaskQueue, TaskStatus, UserId,
+};
 use futures::StreamExt as _;
 use mcp::McpServers;
 use providers::{
@@ -14,7 +16,9 @@ use tokio::sync::mpsc;
 
 use crate::AgentsError;
 use crate::config::{AgentConfig, AgentList};
-use crate::tools::{DispatchTaskTool, SubagentTool, TasksStatusTool, TelemetryTool};
+use crate::tools::{
+    DispatchTaskTool, SkillFileTool, SkillTool, SubagentTool, TasksStatusTool, TelemetryTool,
+};
 
 /// How many nested subagent calls are allowed before the hop limit kicks in.
 /// A→B→A→… is cut off once the depth reaches this number. Four levels is
@@ -44,6 +48,11 @@ pub(crate) struct AgentsInner {
     /// runtime never sees `experiments` directly — it just asks the
     /// resolver. Cli wires the impl (currently `ExperimentResolver`).
     pub(crate) resolver: Arc<dyn AgentResolver>,
+    /// On-disk skill catalog. When present, each skill an agent lists under
+    /// `skills:` becomes a tool whose description is advertised to the model
+    /// and whose body is returned on call. `None` when no skills directory
+    /// was loaded.
+    skills: Option<Arc<dyn SkillCatalog>>,
     /// Background-task submission surface. When present, agents see a
     /// built-in `dispatch_task` tool that enqueues fire-and-forget runs;
     /// when `None`, agents only have synchronous subagent dispatch.
@@ -123,6 +132,10 @@ pub struct BootConfig {
     /// agent names at call time. Cli builds this from
     /// `experiments::ExperimentResolver`.
     pub resolver: Arc<dyn AgentResolver>,
+    /// Optional skill catalog. When `Some`, agents that list skills under
+    /// `skills:` get one tool per skill plus a `skill_file` tool for
+    /// reading bundled resources.
+    pub skills: Option<Arc<dyn SkillCatalog>>,
     /// Optional background-task queue. When `Some`, agents see a built-in
     /// `dispatch_task` tool that enqueues fire-and-forget runs.
     pub task_queue: Option<Arc<dyn TaskQueue>>,
@@ -151,6 +164,7 @@ impl RigAgents {
                 mcp: config.mcp,
                 providers,
                 resolver: config.resolver,
+                skills: config.skills,
                 task_queue: config.task_queue,
                 task_status: config.task_status,
             }),
@@ -330,6 +344,33 @@ impl AgentsInner {
                 target_name: sub_name.clone(),
                 user_id,
             }));
+        }
+        if let Some(catalog) = &self.skills
+            && !agent.skills.is_empty()
+        {
+            let available: HashMap<String, String> = catalog
+                .list()
+                .into_iter()
+                .map(|info| (info.name, info.description))
+                .collect();
+            let mut exposed = false;
+            for skill_name in &agent.skills {
+                if let Some(description) = available.get(skill_name) {
+                    tools.push(Box::new(SkillTool {
+                        catalog: Arc::clone(catalog),
+                        description: description.clone(),
+                        name: skill_name.clone(),
+                    }));
+                    exposed = true;
+                }
+            }
+            // The bundled-file reader is only useful once at least one
+            // skill is actually exposed.
+            if exposed {
+                tools.push(Box::new(SkillFileTool {
+                    catalog: Arc::clone(catalog),
+                }));
+            }
         }
         if let Some(queue) = &self.task_queue {
             tools.push(Box::new(DispatchTaskTool {

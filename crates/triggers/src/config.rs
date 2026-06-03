@@ -36,7 +36,7 @@ pub enum TriggerKind {
         /// HTTP path Coulisse exposes for this trigger. Must start with
         /// `/hooks/` to keep webhook routes namespaced away from the
         /// proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks
-        /// (`/mcp/*`). External bridges (Matrix, Slack, GitHub, anything
+        /// (`/mcp/*`). External bridges (Slack, GitHub, anything
         /// HTTP-capable) POST JSON to this path to fire the trigger.
         path: String,
     },

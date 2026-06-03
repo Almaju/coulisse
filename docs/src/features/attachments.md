@@ -57,16 +57,16 @@ Then reference the file in a chat request:
 
 ## Configuration
 
-Add a `storage:` block to `coulisse.yaml`. Everything has a default — if you omit the block, a filesystem backend under `./coulisse-files` is used with no quota.
+Add a `storage:` block to `coulisse.yaml`. Everything has a default — if you omit the block, the filesystem backend is used with no quota. Filesystem blobs always live under `.coulisse/files`, next to your config; the path is not configurable.
 
 ```yaml
 storage:
   backend: fs           # "fs" (default) or "s3"
-  fs:
-    path: ./coulisse-files   # where blobs are stored on disk
   max_file_bytes: 52428800   # 50 MB per file — omit for no limit
   max_total_bytes: 524288000 # 500 MB total — omit for no limit
 ```
+
+> **Docker:** mount the `.coulisse/` directory to persist uploaded files (and the rest of Coulisse's state) across container restarts.
 
 ### S3-compatible backend
 

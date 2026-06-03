@@ -11,17 +11,20 @@
 //! connection from `McpServers`.
 
 mod config;
+mod dcr;
+mod discovery;
 mod error;
 pub mod oauth;
 mod pool;
 pub mod routes;
 mod sanitize;
 mod server;
+mod sse_client;
 pub mod vault;
 
 pub use config::{McpOAuthConfig, McpServerConfig, McpToolAccess, McpTransport};
 pub use error::McpError;
 pub use pool::UserMcpPool;
-pub use routes::{OAuthRouterState, router as oauth_router};
+pub use routes::{ConnectLinkSigner, OAuthRouterState, router as oauth_router};
 pub use server::McpServers;
-pub use vault::{McpMigrator, StoredToken, TokenVault, VaultMigrator};
+pub use vault::{McpMigrator, StoredClient, StoredToken, TokenVault, VaultMigrator};
