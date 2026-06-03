@@ -14,12 +14,13 @@
 # Useful for local / single-user setups; omit for multi-tenant.
 default_user_id: main
 
-# Memory: sqlite for conversation history. Add `user_state: true` to
-# enable long-term per-user facts and preferences (Coulisse will pick
-# the embedder and extraction model automatically based on your
-# `providers:`). See docs/configuration/memory.md.
+# Memory is on by default (conversation history in .coulisse/, next to
+# this file — no path to configure). Add `user_state: true` to also keep
+# long-term per-user facts and preferences; Coulisse picks the embedder
+# and extraction model automatically from your `providers:`. The whole
+# block is optional. See docs/configuration/memory.md.
 memory:
-  storage: ./.coulisse/memory.db
+  user_state: true
 
 providers:
   openai:

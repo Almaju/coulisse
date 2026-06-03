@@ -51,6 +51,22 @@ over from crashes are detected and removed.
 
 Equivalent to `coulisse stop && coulisse start`.
 
+## `coulisse reset`
+
+Delete the SQLite database, wiping **all** stored state — conversation
+memory, long-term memories, telemetry, judge scores, rate-limit windows,
+background tasks, and API tokens. Your `coulisse.yaml` is never touched.
+
+Destructive and irreversible, so it refuses to run while a server holds the
+database open (stop it first), and prompts for confirmation unless `-y` is
+passed. Removes the database file (`.coulisse/coulisse-memory.db`) plus its
+`-wal`/`-shm` sidecars.
+
+```bash
+coulisse reset       # warns, lists the files, asks to confirm
+coulisse reset -y    # skip the prompt (for scripts / fresh starts)
+```
+
 ## `coulisse status`
 
 Report whether the detached server is running and where its files live.
@@ -71,8 +87,26 @@ coulisse studio   # also: coulisse admin
 # opening http://localhost:8421/admin/
 ```
 
-The URL honors `port:` from `coulisse.yaml`, so multiple Coulisse
+The URL honors `server.port` from `coulisse.yaml`, so multiple Coulisse
 instances on different ports each open their own studio.
+
+## `coulisse token`
+
+Mint, list, and revoke the self-issued API tokens that gate `/v1/*` when
+[`auth.proxy.tokens`](../features/api-tokens.md) is enabled. Operates on
+the same database the running server uses, so changes are live immediately.
+
+```bash
+coulisse token create laptop --principal alice         # unlimited
+coulisse token create ci --principal alice \
+  --budget monthly --limit 20                          # $20 / month cap
+coulisse token list                                    # tokens + spend
+coulisse token revoke <id>                             # immediate 401 for clients
+```
+
+`create` prints the secret (`sk-coulisse-…`) to stdout — shown only once —
+and the id/context to stderr, so `coulisse token create … > key.txt`
+captures just the key.
 
 ## `coulisse check`
 
@@ -126,11 +160,14 @@ under `/usr/local/bin` you may need `sudo`.
 your-project/
 ├── coulisse.yaml
 └── .coulisse/
-    ├── coulisse.pid     # written by `start`, removed on clean exit
-    ├── coulisse.log     # detached stdout/stderr
-    └── memory.db        # if you point memory.storage here
+    ├── coulisse.pid          # written by `start`, removed on clean exit
+    ├── coulisse.log          # detached stdout/stderr
+    ├── secrets.env           # MCP OAuth encryption keys (when configured)
+    ├── files/                # uploaded file blobs (fs storage backend)
+    └── coulisse-memory.db    # SQLite database
 ```
 
-`.coulisse/` is the recommended target for `memory.storage` so
-the whole runtime footprint of one project sits under a single
-directory.
+`.coulisse/` holds the whole runtime footprint of one project under a
+single directory: the SQLite database, uploaded files, logs, PID, and
+secrets all land here, and the paths are not configurable. Mount this one
+directory to persist Coulisse's state in Docker.

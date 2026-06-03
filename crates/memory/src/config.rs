@@ -4,23 +4,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::TokenCount;
 
-/// User-facing YAML shape for the `memory:` block. Two pillars:
+/// User-facing YAML shape for the `memory:` block. One pillar:
 ///
-/// - `storage` — where the `SQLite` database lives (path, or `:memory:` for
-///   ephemeral).
 /// - `user_state` — long-term, per-user facts and preferences. Off by default;
 ///   `user_state: true` enables it with auto-derived defaults; an explicit
 ///   struct lets advanced users override the embedder, the extraction model,
 ///   and recall/dedup tuning.
 ///
-/// Resolved into a [`MemoryConfig`] by the orchestrator (cli) before being
-/// handed to [`Store::open`]. Resolution looks at the configured `providers:`
-/// map to fill in any auto-derived choices.
+/// The database itself always lives at `.coulisse/coulisse-memory.db` next to
+/// the config — there is no path knob. Resolved into a [`MemoryConfig`] by the
+/// orchestrator (cli) before being handed to [`Store::open`]; resolution looks
+/// at the configured `providers:` map to fill in any auto-derived choices.
 #[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryYaml {
-    #[serde(default)]
-    pub storage: Option<String>,
     #[serde(default)]
     pub user_state: UserStateYaml,
 }
@@ -141,9 +138,10 @@ impl Default for MemoryConfig {
 }
 
 /// Where memory data is stored. `InMemory` is an ephemeral `SQLite` database
-/// that evaporates with the process — useful for tests and short-lived demos.
-/// `Sqlite` is a file-backed database; for Docker deployments, point `path`
-/// at a volume-mounted directory so data survives container restarts.
+/// that evaporates with the process — used by tests and short-lived demos.
+/// `Sqlite` is the file-backed database the orchestrator points at
+/// `.coulisse/coulisse-memory.db`. To persist across Docker restarts, mount
+/// the `.coulisse/` directory (next to the config) on a volume.
 #[derive(Clone, Debug)]
 pub enum BackendConfig {
     InMemory,
@@ -154,21 +152,6 @@ impl Default for BackendConfig {
     fn default() -> Self {
         Self::Sqlite {
             path: default_sqlite_path(),
-        }
-    }
-}
-
-impl BackendConfig {
-    /// Parse the YAML `storage:` value. `:memory:` (or empty/absent → handled
-    /// upstream) maps to ephemeral `SQLite`; anything else is a filesystem path.
-    #[must_use]
-    pub fn from_storage(value: &str) -> Self {
-        if value == ":memory:" {
-            Self::InMemory
-        } else {
-            Self::Sqlite {
-                path: PathBuf::from(value),
-            }
         }
     }
 }
@@ -243,9 +226,14 @@ pub fn default_recall_k() -> usize {
     5
 }
 
+/// Bare filename of the default `SQLite` database. The orchestrator (cli)
+/// places it under the project's `.coulisse/` state dir; standalone use of
+/// the crate falls back to the current directory via [`default_sqlite_path`].
+pub const DEFAULT_SQLITE_FILENAME: &str = "coulisse-memory.db";
+
 #[must_use]
 pub fn default_sqlite_path() -> PathBuf {
-    PathBuf::from("./coulisse-memory.db")
+    PathBuf::from(format!("./{DEFAULT_SQLITE_FILENAME}"))
 }
 
 #[must_use]

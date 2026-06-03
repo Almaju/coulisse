@@ -74,7 +74,7 @@ You should see a startup banner like:
   Proxy   →  http://localhost:8421/v1
   Admin   →  http://localhost:8421/admin
 
-  Memory     sqlite at ./.coulisse/memory.db; embedder=hash (dims=256, OFFLINE — no semantic understanding)
+  Memory     sqlite at .coulisse/coulisse-memory.db; user_state: disabled (history only)
   Auth       proxy: open · admin: open
 
   Agents (1)

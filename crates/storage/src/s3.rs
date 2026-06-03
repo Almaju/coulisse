@@ -116,9 +116,8 @@ mod inner {
 
         fn list_keys<'a>(
             &'a self,
-        ) -> Pin<
-            Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>,
-        > {
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>>
+        {
             // S3 uses lazy reconciliation via get_content; no boot scan.
             Box::pin(async move { Ok(vec![]) })
         }

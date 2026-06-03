@@ -1,11 +1,12 @@
 use agents::AgentsError;
+use auth::BudgetError;
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use limits::LimitError;
 use memory::MemoryError;
 use providers::CallError;
-use proxy::LanguageTagError;
+use proxy::{LanguageTagError, ResponseFormatError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,12 +23,18 @@ pub enum ApiError {
     Agents(#[from] AgentsError),
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Budget(#[from] BudgetError),
+    #[error("{0}")]
+    Forbidden(String),
     #[error("invalid `metadata.language`: {0}")]
     Language(#[from] LanguageTagError),
     #[error("{0}")]
     Limit(#[from] LimitError),
     #[error("memory backend error: {0}")]
     Memory(#[from] MemoryError),
+    #[error("{0}")]
+    ResponseFormat(#[from] ResponseFormatError),
 }
 
 impl IntoResponse for ApiError {
@@ -41,11 +48,25 @@ impl IntoResponse for ApiError {
                 AgentsError::UnknownAgent(_) => (StatusCode::NOT_FOUND, "not_found"),
                 _ => (StatusCode::BAD_GATEWAY, "upstream_error"),
             },
+            // A bad schema is the client's mistake (400); a reply that never
+            // validates after repair retries is the upstream model's (502).
             Self::BadRequest(_)
             | Self::Language(_)
-            | Self::Limit(LimitError::InvalidMetadata { .. }) => {
+            | Self::Limit(LimitError::InvalidMetadata { .. })
+            | Self::ResponseFormat(ResponseFormatError::InvalidSchema(_)) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
+            // Budget caps mirror OpenAI's quota response: 429 with
+            // `insufficient_quota` so SDKs surface it as a billing stop
+            // rather than a transient rate limit. A store error behind the
+            // check is ours (500).
+            Self::Budget(BudgetError::Exceeded { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, "insufficient_quota")
+            }
+            Self::Budget(BudgetError::Store(_)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "token_error")
+            }
+            Self::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Self::Limit(LimitError::Database(_) | LimitError::Migrate(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "rate_limit_error")
             }
@@ -54,6 +75,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
             }
             Self::Memory(_) => (StatusCode::INTERNAL_SERVER_ERROR, "memory_error"),
+            Self::ResponseFormat(
+                ResponseFormatError::NotJson(_) | ResponseFormatError::SchemaViolation(_),
+            ) => (StatusCode::BAD_GATEWAY, "upstream_error"),
         };
         let body = Json(serde_json::json!({
             "error": {

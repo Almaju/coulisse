@@ -1,0 +1,171 @@
+# yaml-language-server: $schema=../coulisse.schema.json
+#
+# Automated PR review bot.
+#
+# GitHub fires a webhook on every `pull_request.opened` and
+# `pull_request.synchronize`; an in-house bridge POSTs the relevant
+# fields (repo, PR number, author, title, diff URL) to the
+# `/hooks/pr-opened` webhook trigger below. Coulisse spins up a reviewer
+# agent that fans out to three specialist subagents — security, perf,
+# clarity — and posts the consolidated review back to the PR via the
+# GitHub MCP. Different reviewers exist as separate agents wired under a
+# bandit experiment so the highest-scoring prompt wins traffic over time.
+#
+# Customers of this setup: a 30-person engineering org that wants a
+# first-pass review on every PR before a human takes a look.
+
+public_base_url: https://coulisse.acme.example.com
+
+memory:
+  storage: /var/lib/coulisse/review.db
+  # No long-term user state — each PR is a fresh conversation; we don't
+  # want the bot to "remember" arbitrary facts about contributors.
+  user_state: false
+
+providers:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+  openai:
+    api_key: ${OPENAI_API_KEY}
+
+mcp:
+  # Shared GitHub app — every reviewer run uses the same installation
+  # token. Static OAuth because we registered Coulisse as a GitHub App
+  # rather than relying on per-user DCR.
+  github:
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    oauth:
+      mode: static
+      authorization_url: https://github.com/login/oauth/authorize
+      token_url: https://github.com/login/oauth/access_token
+      client_id: ${GITHUB_APP_CLIENT_ID}
+      client_secret: ${GITHUB_APP_CLIENT_SECRET}
+      redirect_uri: https://coulisse.acme.example.com/mcp/github/oauth/callback
+      scopes: [repo, write:discussion]
+
+auth:
+  admin:
+    oidc:
+      issuer_url: https://auth.acme.example.com/application/o/coulisse/
+      client_id: ${OIDC_CLIENT_ID}
+      client_secret: ${OIDC_CLIENT_SECRET}
+      redirect_url: https://coulisse.acme.example.com/admin/oidc/callback
+  mcp_consumer_secret: ${COULISSE_MCP_SECRET}
+
+judges:
+  - name: review_quality
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    sampling_rate: 1.0
+    rubrics:
+      precision:   Did the reviewer flag real bugs and avoid nit-picky noise?
+      actionable:  Are the suggested fixes concrete enough that a dev could apply them in minutes?
+      coverage:    Did the review surface every meaningful issue in the diff, or miss obvious ones?
+
+agents:
+  # Variant A — single-pass review with all instructions inline.
+  - name: reviewer-monolithic
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    judges: [review_quality]
+    max_turns: 16
+    mcp_tools:
+      - server: github
+    preamble: |
+      You review GitHub pull requests. Read the diff, the PR description,
+      and any relevant files via the GitHub MCP. Post one consolidated
+      review comment covering correctness, security, performance, and
+      clarity. Cite file:line for every issue. Skip cosmetics.
+
+  # Variant B — orchestrator + specialist subagents. Same toolchain,
+  # different decomposition.
+  - name: reviewer-team
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    judges: [review_quality]
+    max_turns: 16
+    subagents: [security-reviewer, perf-reviewer, clarity-reviewer]
+    mcp_tools:
+      - server: github
+        only: [get_pull_request, list_pull_request_files, get_file_contents, create_pull_request_review]
+    preamble: |
+      You coordinate a PR review. Fetch the diff, then run all three
+      specialists in parallel (security, perf, clarity). Merge their
+      findings into one review comment, deduplicated, sorted by severity.
+      Post it via `create_pull_request_review`.
+
+  - name: security-reviewer
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Audit a PR diff for security issues — injection, auth bypass, secrets, unsafe deserialization.
+    mcp_tools:
+      - server: github
+        only: [get_pull_request, get_file_contents]
+    preamble: |
+      You audit code for security issues. Focus exclusively on real
+      vulnerabilities — injection, auth bypass, leaked secrets, unsafe
+      deserialization, missing input validation. Return a list with
+      file:line and a one-line fix suggestion. Empty list if clean.
+
+  - name: perf-reviewer
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    purpose: Audit a PR diff for performance pitfalls — N+1 queries, accidental quadratic loops, unnecessary allocations.
+    mcp_tools:
+      - server: github
+        only: [get_pull_request, get_file_contents]
+    preamble: |
+      You audit code for performance issues. Call out N+1 queries,
+      accidental quadratic complexity, blocking calls in async code,
+      and unnecessary allocations on hot paths. File:line per finding.
+
+  - name: clarity-reviewer
+    provider: openai
+    model: gpt-4o
+    purpose: Audit a PR diff for readability — confusing names, dead code, missing error handling, dense control flow.
+    mcp_tools:
+      - server: github
+        only: [get_pull_request, get_file_contents]
+    preamble: |
+      You audit code for clarity. Flag confusing names, dead code,
+      missing error handling, dense control flow. Be terse — bullet
+      points with file:line. Skip style/formatting (linters cover that).
+
+# Pick the better reviewer over time. The bandit reads `review_quality`
+# scores and shifts traffic toward whichever variant scores higher,
+# while exploring 10% of the time to keep the loser sampled.
+experiments:
+  - name: reviewer
+    strategy: bandit
+    metric: review_quality.precision
+    epsilon: 0.1
+    min_samples: 30
+    bandit_window_seconds: 1209600   # 14 days
+    variants:
+      - agent: reviewer-monolithic
+      - agent: reviewer-team
+
+# GitHub posts to this path on every PR open or update. The bridge
+# normalizes the GitHub event payload before forwarding so the prompt
+# template below stays simple.
+triggers:
+  - name: pr-opened
+    type: webhook
+    path: /hooks/pr-opened
+    agent: reviewer
+    prompt: |
+      Review PR {{repo}}#{{number}} ("{{title}}") by @{{author}}.
+      Read the diff, post a single consolidated review comment.
+
+telemetry:
+  fmt:
+    enabled: true
+  sqlite:
+    enabled: true
+  otlp:
+    endpoint: https://otel.acme.example.com:4317
+    protocol: grpc
+    service_name: coulisse-review
+    headers:
+      authorization: "Bearer ${OTEL_API_KEY}"

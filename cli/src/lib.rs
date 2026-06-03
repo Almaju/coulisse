@@ -14,6 +14,7 @@ pub mod files;
 pub mod memory_resolve;
 pub mod openapi;
 pub mod paths;
+pub mod secrets;
 pub mod server;
 pub mod shadow;
 pub mod smoke_runner;

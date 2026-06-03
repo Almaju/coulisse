@@ -6,11 +6,11 @@ The goal is to collapse the plumbing that every multi-agent project ends up re-i
 
 # Architecture
 
-One crate per YAML section. Coulisse's features map 1:1 to the top-level sections of `coulisse.yaml`: `agents`, `auth`, `experiments`, `judges`, `limits`, `mcp`, `memory`, `providers`, `telemetry`. Each is its own crate.
+One crate per feature, and most map 1:1 to a top-level section of `coulisse.yaml`: `agents`, `auth`, `experiments`, `judges`, `mcp`, `memory`, `providers`, `server`, `sidecars`, `skills`, `smoke` (the `smoke_tests:` section), `storage`, `telemetry`, `triggers`. Two feature crates have no section of their own: `limits` (rate-limit config is per-request/per-token metadata, not a top-level block) and `tasks` (the background task queue is internal infrastructure, driven by `triggers` and the `dispatch_task` tool rather than configured directly). `core` and `proxy` are infrastructure leaves, not features (see below).
 
-The studio UI is **not** its own crate. Each feature crate that has admin pages (`memory`, `telemetry`, `judges`, `experiments`) owns an `admin` module with its own routes, askama templates, and view models. Cli composes them: it merges every feature's admin router under `/admin/*`, owns the shared `base.html` shell (a tower middleware wraps non-htmx responses), and applies the `auth.admin` scope. Cross-feature views (e.g. tool-call panels inside a conversation page) are filled in via htmx fragments — the browser orchestrates the composition so feature crates remain decoupled.
+The studio UI is **not** its own crate. Each feature crate that has admin pages (`memory`, `telemetry`, `judges`, `experiments`, `smoke`) owns an `admin` module with its own routes, askama templates, and view models. Cli composes them: it merges every feature's admin router under `/admin/*`, owns the shared `base.html` shell (a tower middleware wraps non-htmx responses), and applies the `auth.admin` scope. Cross-feature views (e.g. tool-call panels inside a conversation page) are filled in via htmx fragments — the browser orchestrates the composition so feature crates remain decoupled.
 
-**Layout.** Feature crates live under `crates/`. The orchestrator binary lives at `cli/` (top level), separate from the features it composes — its role is structurally distinct, so its location is too. The workspace root holds nothing but the workspace manifest and project-level files (`coulisse.yaml`, `docs/`, `Justfile`, `.githooks/`).
+**Layout.** Feature crates live under `crates/`. The orchestrator binary lives at `cli/` (top level), separate from the features it composes — its role is structurally distinct, so its location is too. The workspace root holds nothing but the workspace manifest and project-level files (`docs/`, `examples/`, `Justfile`, `.githooks/`). The runtime `coulisse.yaml` is gitignored — never commit it (it carries API keys). The `--from-example` template lives at `cli/src/commands/init_example.yaml` (a code asset compiled into the binary).
 
 **Dependency rule.** Feature crates depend only on `coulisse-core` (a tiny crate of shared domain types and traits). Feature crates never depend on each other. The `cli` crate is the only place that depends on every feature crate; it is the orchestrator.
 
@@ -19,7 +19,7 @@ Two defensible exceptions: `agents → providers` and `agents → mcp`. Both wra
 **Each feature crate owns:**
 
 - its `Config` struct (parses its own YAML slice)
-- its tables and queries — `memory` owns `messages`/`memories`, `judges` owns `scores`, `telemetry` owns `events`/`tool_calls`, `limits` owns `rate_limit_windows`. Cli opens one shared SQLite pool (via `memory::open_pool`) and hands clones to each crate; each crate runs its own `CREATE TABLE IF NOT EXISTS`. No crate exposes its pool to siblings, and no crate is the de-facto database layer.
+- its tables and queries — `memory` owns `messages`/`memories`, `judges` owns `scores`, `telemetry` owns `events`/`tool_calls`, `limits` owns `rate_limit_windows`, `auth` owns `api_tokens`/`token_usage`, `storage` owns `storage_files`, `tasks` owns `tasks`, `smoke` owns `smoke_runs`/`smoke_messages`. Cli opens one shared SQLite pool (via `memory::open_pool`) and hands clones to each crate; each crate runs its own migrations. No crate exposes its pool to siblings, and no crate is the de-facto database layer.
 - its public methods, named for what they do (`Limits::check`, `Memory::assemble_context`, `Agents::complete`, `Judges::append_score`)
 - its admin HTTP router via `admin_router(&self) -> Option<Router>`, mounted by cli at `/admin/<name>`
 - its background tasks (the feature spawns its own `tokio::spawn`; cli does not manage task lifecycles)

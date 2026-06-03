@@ -26,7 +26,7 @@ impl SchemaMigrator for Schema {
     }
 }
 
-/// Metadata row returned for every file, matching the OpenAI Files API shape.
+/// Metadata row returned for every file, matching the `OpenAI` Files API shape.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct FileObject {
     /// File size in bytes.
@@ -39,13 +39,13 @@ pub struct FileObject {
     pub filename: String,
     /// Stable `file-<uuid>` identifier.
     pub id: String,
-    /// Always `"file"` for compatibility with the OpenAI Files API.
+    /// Always `"file"` for compatibility with the `OpenAI` Files API.
     pub object: &'static str,
     /// Purpose string provided at upload (e.g. `"assistants"`).
     pub purpose: String,
 }
 
-/// Core storage handle. Owns a SQLite pool (for the metadata index) and a
+/// Core storage handle. Owns a `SQLite` pool (for the metadata index) and a
 /// blob backend (filesystem or S3).
 pub struct Store {
     backend: BlobBackend,
@@ -86,8 +86,8 @@ impl Store {
     ///
     /// Order of operations:
     /// 1. Validate MIME via magic bytes and per-file size limit (fast).
-    /// 2. Write blob to backend (before touching SQLite — crash-safe).
-    /// 3. Open a SQLite transaction.
+    /// 2. Write blob to backend (before touching `SQLite` — crash-safe).
+    /// 3. Open a `SQLite` transaction.
     /// 4. Check for SHA-256 dedup; if duplicate, delete the backend blob
     ///    and return the existing record.
     /// 5. Evict FIFO until the new file fits within `max_total_bytes`.
@@ -119,18 +119,20 @@ impl Store {
             .unwrap_or(content_type)
             .trim();
         if !mime::is_allowed(declared_ct) {
-            return Err(StorageError::UnsupportedContentType(declared_ct.to_string()));
+            return Err(StorageError::UnsupportedContentType(
+                declared_ct.to_string(),
+            ));
         }
 
         let size = bytes.len() as u64;
 
-        if let Some(max_file) = self.quota.max_file_bytes {
-            if size > max_file {
-                return Err(StorageError::FileTooLarge {
-                    limit: max_file,
-                    size,
-                });
-            }
+        if let Some(max_file) = self.quota.max_file_bytes
+            && size > max_file
+        {
+            return Err(StorageError::FileTooLarge {
+                limit: max_file,
+                size,
+            });
         }
 
         let sha256 = hex_sha256(&bytes);
@@ -272,7 +274,7 @@ impl Store {
     /// within `max_total_bytes`. Must be called inside an open transaction.
     ///
     /// v1 limitation: concurrent uploads from separate processes are not
-    /// serialised at the SQLite level — two processes can both pass the
+    /// serialised at the `SQLite` level — two processes can both pass the
     /// quota check and both insert, temporarily exceeding the limit. The
     /// next upload from either process will then evict back to within the
     /// quota. Within a single process the `pool.begin()` in `upload`
@@ -323,13 +325,12 @@ impl Store {
         Ok(())
     }
 
-    /// At boot, scan the fs backend and remove SQLite rows whose blob key no
+    /// At boot, scan the fs backend and remove `SQLite` rows whose blob key no
     /// longer exists on disk. For S3, skip the scan (lazy reconciliation
     /// via `get_content`).
     async fn reconcile_at_boot(&self) {
-        let physical_keys = match self.backend.list_keys().await {
-            Ok(k) => k,
-            Err(_) => return,
+        let Ok(physical_keys) = self.backend.list_keys().await else {
+            return;
         };
 
         if physical_keys.is_empty() {
@@ -337,14 +338,12 @@ impl Store {
             return;
         }
 
-        let rows = match sqlx::query_as::<_, (String, String)>(
-            "SELECT id, storage_key FROM storage_files",
-        )
-        .fetch_all(&self.pool)
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => return,
+        let Ok(rows) =
+            sqlx::query_as::<_, (String, String)>("SELECT id, storage_key FROM storage_files")
+                .fetch_all(&self.pool)
+                .await
+        else {
+            return;
         };
 
         let physical_set: std::collections::HashSet<String> = physical_keys.into_iter().collect();
@@ -450,9 +449,13 @@ mod tests {
 
     async fn fs_store(dir: &tempfile::TempDir) -> Store {
         let backend = FsBackend::new(dir.path()).await.unwrap();
-        Store::open(pool().await, BlobBackend::Fs(backend), QuotaConfig::default())
-            .await
-            .unwrap()
+        Store::open(
+            pool().await,
+            BlobBackend::Fs(backend),
+            QuotaConfig::default(),
+        )
+        .await
+        .unwrap()
     }
 
     async fn fs_store_with_quota(dir: &tempfile::TempDir, max_total: u64) -> Store {
@@ -551,13 +554,7 @@ mod tests {
 
         for i in 0..10u8 {
             store
-                .upload(
-                    &format!("{i}.txt"),
-                    "text/plain",
-                    "x",
-                    "u",
-                    vec![i; 5],
-                )
+                .upload(&format!("{i}.txt"), "text/plain", "x", "u", vec![i; 5])
                 .await
                 .unwrap();
         }
@@ -628,10 +625,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fs_store(&dir).await;
 
-        let err = store
-            .get_metadata("file-does-not-exist")
-            .await
-            .unwrap_err();
+        let err = store.get_metadata("file-does-not-exist").await.unwrap_err();
         assert!(matches!(err, StorageError::NotFound(_)));
     }
 

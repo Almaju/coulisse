@@ -5,16 +5,27 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+askama.workspace = true
 axum.workspace = true
 axum-oidc = "0.6"
 base64.workspace = true
+coulisse-core.workspace = true
+hex.workspace = true
 http = "1"
+rand.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
-time = "0.3"
+time = { version = "0.3", features = ["std"] }
 tower = { version = "0.5", features = ["util"] }
 tower-sessions = "0.15"
+uuid = { workspace = true, features = ["serde", "v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

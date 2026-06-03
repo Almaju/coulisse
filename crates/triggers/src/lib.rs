@@ -7,8 +7,8 @@
 //!
 //! Decoupled from any specific chat tool by design. Cron is purely
 //! internal. Webhooks (next slice) will accept POSTs from anything that
-//! can speak HTTP, so connecting Matrix or Slack or GitHub is just running
-//! a tiny bridge that POSTs to Coulisse.
+//! can speak HTTP, so connecting Slack or GitHub or any other source is
+//! just running a tiny bridge that POSTs to Coulisse.
 
 mod boot;
 mod config;

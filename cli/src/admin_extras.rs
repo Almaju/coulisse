@@ -1,11 +1,17 @@
-//! Cli-owned admin endpoints for sections that don't have a feature
-//! crate admin module today: providers and MCP servers. Same shape as
-//! the per-feature admin routers — content negotiation, JSON/YAML/form
-//! body parsing, write-through to `coulisse.yaml`. Edits land in the
-//! file and refresh the admin display via the `ConfigStore` snapshot;
-//! the runtime that consumes them (`providers::Providers` and
-//! `mcp::McpServers`) is built at boot and still requires a restart
-//! to swap.
+//! Cli-owned admin endpoints for the config sections edited straight
+//! through the `ConfigStore` rather than a feature crate's database:
+//! the `providers` and `mcp` collections, and the `auth`, `memory`,
+//! `storage` and `telemetry` singletons. These edits only need the
+//! shared `ConfigPersister` and the section's own serde shape — no
+//! feature-crate database — so they live at the config layer that owns
+//! `coulisse.yaml` rather than with the feature crates' runtime/data
+//! admin pages.
+//!
+//! Same shape as the per-feature admin routers — content negotiation,
+//! JSON/YAML/form body parsing, write-through to `coulisse.yaml`. Edits
+//! land in the file and refresh the admin display via the `ConfigStore`
+//! snapshot; the runtime that consumes them is built at boot and still
+//! requires a restart to swap.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,6 +55,10 @@ pub fn router(store: Arc<ConfigStore>) -> Router {
             get(mcp_detail).put(mcp_update).delete(mcp_remove),
         )
         .route("/mcp/{name}/edit", get(mcp_edit_form))
+        .route("/auth", get(auth_get).put(auth_put))
+        .route("/memory", get(memory_get).put(memory_put))
+        .route("/storage", get(storage_get).put(storage_put))
+        .route("/telemetry", get(telemetry_get).put(telemetry_put))
         .with_state(state)
 }
 
@@ -420,6 +430,7 @@ async fn persist_mcp(
 fn mcp_summary(server: &McpServerConfig) -> String {
     match &server.transport {
         McpTransport::Http { url } => format!("http · {url}"),
+        McpTransport::Sse { url } => format!("sse · {url}"),
         McpTransport::Stdio { command, args, .. } => {
             if args.is_empty() {
                 format!("stdio · {command}")
@@ -428,6 +439,171 @@ fn mcp_summary(server: &McpServerConfig) -> String {
             }
         }
     }
+}
+
+// NOTE: singleton config sections (auth, memory, storage, telemetry)
+//
+// Unlike providers/mcp these are single objects, not collections, so
+// there is no list/new/delete — just view (GET) and replace (PUT). The
+// edit form round-trips the section's own YAML slice; secrets render in
+// cleartext, which is acceptable on an admin-only surface and matches
+// the providers editor. None of these are hot-reloaded at runtime; the
+// edit lands in `coulisse.yaml` and applies after restart.
+
+#[derive(Template)]
+#[template(path = "section_edit.html")]
+struct SectionEditPage {
+    action: String,
+    hint: String,
+    title: String,
+    yaml: String,
+}
+
+fn render_section(
+    title: &str,
+    hint: &str,
+    action: &str,
+    yaml: String,
+) -> Result<Response, AdminError> {
+    Ok(Html(
+        SectionEditPage {
+            action: action.to_string(),
+            hint: hint.to_string(),
+            title: title.to_string(),
+            yaml,
+        }
+        .render()?,
+    )
+    .into_response())
+}
+
+async fn persist_section<T: serde::Serialize>(
+    state: &State_,
+    section: &str,
+    body: &T,
+) -> Result<(), AdminError> {
+    let value = serde_yaml::to_value(body).map_err(|err| AdminError::Internal(err.to_string()))?;
+    state
+        .store
+        .write_section(section, value)
+        .await
+        .map_err(AdminError::from)
+}
+
+fn to_yaml<T: serde::Serialize>(value: &T) -> Result<String, AdminError> {
+    serde_yaml::to_string(value).map_err(|err| AdminError::Internal(err.to_string()))
+}
+
+async fn auth_get(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let cfg = state.store.snapshot();
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(&cfg.auth).into_response());
+    }
+    render_section(
+        "Auth",
+        "Authentication for the /v1 proxy and /admin studio scopes. Secrets show in cleartext on this admin-only page. Changes take effect after restart.",
+        "/admin/auth",
+        to_yaml(&cfg.auth)?,
+    )
+}
+
+async fn auth_put(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+    EitherFormOrJson(body): EitherFormOrJson<auth::Config>,
+) -> Result<Response, AdminError> {
+    persist_section(&state, "auth", &body).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(body).into_response());
+    }
+    Ok(redirect_to("/admin/auth"))
+}
+
+async fn memory_get(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let cfg = state.store.snapshot();
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(&cfg.memory).into_response());
+    }
+    render_section(
+        "Memory",
+        "Conversation storage and long-term user-state (recall/extraction) settings. Changes take effect after restart.",
+        "/admin/memory",
+        to_yaml(&cfg.memory)?,
+    )
+}
+
+async fn memory_put(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+    EitherFormOrJson(body): EitherFormOrJson<memory::MemoryYaml>,
+) -> Result<Response, AdminError> {
+    persist_section(&state, "memory", &body).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(body).into_response());
+    }
+    Ok(redirect_to("/admin/memory"))
+}
+
+async fn storage_get(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let cfg = state.store.snapshot();
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(&cfg.storage).into_response());
+    }
+    render_section(
+        "Storage",
+        "OpenAI-compatible file storage backend (filesystem or S3) and quotas. Changes take effect after restart.",
+        "/admin/storage",
+        to_yaml(&cfg.storage)?,
+    )
+}
+
+async fn storage_put(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+    EitherFormOrJson(body): EitherFormOrJson<storage::StorageYaml>,
+) -> Result<Response, AdminError> {
+    persist_section(&state, "storage", &body).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(body).into_response());
+    }
+    Ok(redirect_to("/admin/storage"))
+}
+
+async fn telemetry_get(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+) -> Result<Response, AdminError> {
+    let cfg = state.store.snapshot();
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(&cfg.telemetry).into_response());
+    }
+    render_section(
+        "Telemetry",
+        "Observability wiring: stderr logs, the SQLite mirror that drives this studio, and the optional OTLP exporter. Changes take effect after restart.",
+        "/admin/telemetry",
+        to_yaml(&cfg.telemetry)?,
+    )
+}
+
+async fn telemetry_put(
+    State(state): State<State_>,
+    fmt: ResponseFormat,
+    EitherFormOrJson(body): EitherFormOrJson<telemetry::Config>,
+) -> Result<Response, AdminError> {
+    persist_section(&state, "telemetry", &body).await?;
+    if matches!(fmt, ResponseFormat::Json) {
+        return Ok(Json(body).into_response());
+    }
+    Ok(redirect_to("/admin/telemetry"))
 }
 
 #[derive(Debug)]

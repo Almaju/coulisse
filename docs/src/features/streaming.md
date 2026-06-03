@@ -80,7 +80,7 @@ When an agent delegates to a subagent, the stream doesn't go silent — Coulisse
 
 ### `handoff_started`
 
-Emitted within 3 seconds of delegation, before the subagent starts its own turn:
+Emitted immediately before the subagent is invoked:
 
 ```text
 event: handoff_started

@@ -15,6 +15,12 @@
     },
     "auth": {
       "description": "Authentication for the OpenAI-compatible `/v1/*` proxy and the `/admin/*` (studio) surfaces. Each scope is independent: omit a scope to leave it unauthenticated (fine for local dev, never for anything exposed beyond loopback).",
+      "default": {
+        "admin": null,
+        "mcp_admin": null,
+        "mcp_consumer_secret": null,
+        "proxy": null
+      },
       "allOf": [
         {
           "$ref": "#/definitions/AuthConfig"
@@ -55,7 +61,6 @@
     "memory": {
       "description": "Memory subsystem config. Two pillars: `storage` (where data lives) and `user_state` (long-term per-user memory; off by default). Omit the whole block for sensible defaults — history-only on a local `SQLite` file.",
       "default": {
-        "storage": null,
         "user_state": false
       },
       "allOf": [
@@ -64,21 +69,33 @@
         }
       ]
     },
-    "port": {
-      "description": "HTTP port the proxy/admin server binds to. Defaults to 8421. Useful when running multiple Coulisse instances against different `coulisse.yaml` files on the same machine.",
-      "default": null,
-      "type": [
-        "integer",
-        "null"
-      ],
-      "format": "uint16",
-      "minimum": 0.0
-    },
     "providers": {
       "type": "object",
       "additionalProperties": {
         "$ref": "#/definitions/ProviderConfig"
       }
+    },
+    "public_base_url": {
+      "description": "Externally reachable base URL of this Coulisse instance, with no trailing slash (e.g. `https://coulisse.example.com`). Used to build MCP OAuth redirect URIs and the per-user connect links surfaced to LLMs via `NotConnectedTool`. Defaults to `http://localhost:{port}`, which is what you want for a personal/local setup; set it explicitly when Coulisse is reachable on a different hostname (deployed, behind a tunnel, behind a reverse proxy).",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server": {
+      "description": "HTTP-server wiring: bind address, port (default 8421), tokio worker threads, and request body cap. Omit the block for sensible defaults (`0.0.0.0:8421`, CPU-sized thread pool, axum's default body limit).",
+      "default": {
+        "bind": "0.0.0.0",
+        "max_body_bytes": null,
+        "port": 8421,
+        "worker_threads": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/ServerConfig"
+        }
+      ]
     },
     "sidecars": {
       "description": "Long-lived helper processes Coulisse spawns alongside itself (chat-platform bridges, monitoring agents, anything you'd otherwise launch in a separate terminal). Each entry declares a command, optional args/env/cwd, and a restart policy. Coulisse captures stdout/stderr into its own log; non-zero exits restart per policy.",
@@ -88,6 +105,14 @@
         "$ref": "#/definitions/SidecarConfig"
       }
     },
+    "skills": {
+      "description": "Reusable skill bundles loaded from a directory (default `./skills`). Each subdirectory with a `SKILL.md` becomes a skill; agents opt in by listing skill names under their own `skills:` array. Omit the block to use the default directory.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/SkillsConfig"
+        }
+      ]
+    },
     "smoke_tests": {
       "description": "Synthetic-user evaluation tests. Each entry pairs a persona prompt with a target agent (or experiment); admin UI exposes a \"Run now\" button that drives the conversation, persists every turn, and fans the assistant turns out to the configured judges. Useful for iterating on agent prompts and comparing experiment variants.",
       "default": [],
@@ -96,8 +121,31 @@
         "$ref": "#/definitions/SmokeTestConfig"
       }
     },
+    "storage": {
+      "description": "OpenAI-compatible file storage (`/v1/files/*`). Defaults to filesystem backend under `./coulisse-files` with no quota. Set `max_total_bytes` / `max_file_bytes` to enable FIFO eviction and per-file size limits.",
+      "default": {
+        "backend": "fs",
+        "max_file_bytes": null,
+        "max_total_bytes": null,
+        "s3": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/StorageConfig"
+        }
+      ]
+    },
     "telemetry": {
       "description": "Observability wiring: stderr fmt logs (always on by default), `SQLite` mirror that drives the studio UI (on by default), and an optional OpenTelemetry OTLP exporter for shipping traces to Grafana / `SigNoz` / Jaeger / etc.",
+      "default": {
+        "fmt": {
+          "enabled": true
+        },
+        "otlp": null,
+        "sqlite": {
+          "enabled": true
+        }
+      },
       "allOf": [
         {
           "$ref": "#/definitions/TelemetryConfig"
@@ -110,6 +158,14 @@
       "type": "array",
       "items": {
         "$ref": "#/definitions/TriggerConfig"
+      }
+    },
+    "vars": {
+      "description": "Named text snippets you can splice into any string field using `${vars.<name>}`. Resolved after env-var expansion, single-pass (a var's value is not itself re-expanded). Useful for sharing preamble footers across agents, common paths, repeated strings.",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
       }
     }
   },
@@ -163,6 +219,13 @@
             "null"
           ]
         },
+        "skills": {
+          "description": "Names of skills (loaded from the top-level `skills:` directory) this agent can use. Each listed skill becomes a tool: its description is advertised to the model, and calling it returns the skill's full instructions. Names not present in the catalog are ignored. Empty = no skills.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "subagents": {
           "description": "Other agents exposed to this agent as tools. Names must match entries in the top-level `agents:` list. Self-reference is rejected; duplicate entries are rejected. Calling a subagent runs a fresh conversation against that agent's preamble + MCP tools; the subagent's final message is returned as the tool result.",
           "type": "array",
@@ -208,9 +271,22 @@
       "type": "object",
       "properties": {
         "admin": {
+          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/ScopeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mcp_admin": {
+          "description": "Bearer token that guards the `/mcp-admin` MCP server endpoint. Distinct from `auth.admin` (HTTP Basic / OIDC studio) — this is a shared secret for IDE clients (Claude Code, Cursor) that use the Model Context Protocol to inspect and manage a deployed Coulisse instance.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpAdminConfig"
             },
             {
               "type": "null"
@@ -226,6 +302,7 @@
           ]
         },
         "proxy": {
+          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/ScopeConfig"
@@ -238,10 +315,11 @@
       }
     },
     "ScopeConfig": {
-      "description": "One scope's auth method. Exactly one of `basic` or `oidc` must be set when the scope block is present — they are mutually exclusive so the server never has to choose between two competing session schemes.",
+      "description": "One scope's auth method. Exactly one of `basic`, `oidc`, or `tokens` must be set when the scope block is present — they are mutually exclusive so the server never has to choose between competing schemes. `tokens` is valid on the `proxy` scope only.",
       "type": "object",
       "properties": {
         "basic": {
+          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/BasicConfig"
@@ -251,10 +329,32 @@
             }
           ]
         },
+        "identity": {
+          "description": "How the per-user identity for `/v1/*` requests is derived. Only meaningful on the `proxy` scope — the `admin` surface has no per-user partitioning, so setting anything but the default here is rejected at startup.",
+          "default": "from_request",
+          "allOf": [
+            {
+              "$ref": "#/definitions/IdentityMode"
+            }
+          ]
+        },
         "oidc": {
+          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/OidcConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tokens": {
+          "description": "Self-issued API tokens (`sk-coulisse-…`). Write `tokens: {}` to turn the scheme on; tokens themselves are minted at runtime via the studio or `coulisse token create`. Each token binds the request to its own principal, so it implies credential-bound identity regardless of the `identity` field.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TokensConfig"
             },
             {
               "type": "null"
@@ -278,6 +378,25 @@
           "type": "string"
         }
       }
+    },
+    "IdentityMode": {
+      "description": "Where the user identifier that partitions memory, recall, MCP sessions, and rate limits comes from.",
+      "oneOf": [
+        {
+          "description": "Derive the identity from the authenticated principal — the Basic username or the OIDC `sub` claim. A request body that claims a different `safety_identifier` is rejected. Required for adversarial multi-tenant serving, where clients cannot be trusted to declare their own identity honestly.",
+          "type": "string",
+          "enum": [
+            "from_credential"
+          ]
+        },
+        {
+          "description": "Trust the `safety_identifier` (or deprecated `user`) field in the request body. The default: correct for single-user setups and for trusted first-party backends that set the identifier on behalf of their own authenticated users.",
+          "type": "string",
+          "enum": [
+            "from_request"
+          ]
+        }
+      ]
     },
     "OidcConfig": {
       "description": "OIDC (`OpenID` Connect) login. Validated against any compliant `IdP` — Authentik, Keycloak, Auth0, Google, Microsoft, Okta. Access control (who may use the surface) is delegated to the `IdP`'s application bindings, not configured here.",
@@ -317,6 +436,22 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "TokensConfig": {
+      "description": "Marker for the self-issued-token auth scheme. Empty today — its presence is the switch — but a struct so future per-scheme options (custom header, default budget) have a home without a YAML break.",
+      "type": "object"
+    },
+    "McpAdminConfig": {
+      "description": "Bearer-token auth for the MCP admin endpoint.",
+      "type": "object",
+      "required": [
+        "token"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
         }
       }
     },
@@ -504,6 +639,25 @@
           }
         },
         {
+          "description": "MCP-over-SSE (older protocol revision). The server hosts a long-lived `GET <url>` event-stream; its first event announces the POST endpoint for outgoing JSON-RPC messages. Used by servers that haven't moved to streamable-HTTP yet — most notably Atlassian's `https://mcp.atlassian.com/v1/sse`.",
+          "type": "object",
+          "required": [
+            "transport",
+            "url"
+          ],
+          "properties": {
+            "transport": {
+              "type": "string",
+              "enum": [
+                "sse"
+              ]
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        },
+        {
           "type": "object",
           "required": [
             "command",
@@ -548,50 +702,74 @@
       }
     },
     "McpOAuthConfig": {
-      "type": "object",
-      "required": [
-        "authorization_url",
-        "client_id",
-        "client_secret",
-        "redirect_uri",
-        "token_url"
-      ],
-      "properties": {
-        "authorization_url": {
-          "type": "string"
-        },
-        "client_id": {
-          "type": "string"
-        },
-        "client_secret": {
-          "type": "string"
-        },
-        "redirect_uri": {
-          "type": "string"
-        },
-        "scopes": {
-          "default": [],
-          "type": "array",
-          "items": {
-            "type": "string"
+      "description": "OAuth configuration for an MCP server. Two flavours, picked by the `mode` discriminator in YAML:\n\n- `discover` (the default) — MCP-spec OAuth 2.1 with discovery + Dynamic Client Registration (DCR). Coulisse fetches the provider's authorization-server metadata and registers itself as a client on first authorization. No credentials in YAML. This is what modern MCP servers (Todoist, Atlassian, Linear, …) want, and what you get for free by just declaring a `url:` — you never write `oauth:` at all. - `static` — classic OAuth 2.0 with pre-registered app credentials, for the rare provider that doesn't support DCR. You register Coulisse as a client at the provider's console and paste the `client_id` / `client_secret` here.\n\nBoth variants drive the same per-user token flow: tokens are stored in the vault keyed by `(server_name, user_id)`, and the `NotConnectedTool` placeholder surfaces a per-user connect link to the LLM when a user hasn't authorized yet.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "discover"
+              ]
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
-        "token_url": {
-          "type": "string"
+        {
+          "type": "object",
+          "required": [
+            "authorization_url",
+            "client_id",
+            "client_secret",
+            "mode",
+            "redirect_uri",
+            "token_url"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "static"
+              ]
+            },
+            "authorization_url": {
+              "type": "string"
+            },
+            "client_id": {
+              "type": "string"
+            },
+            "client_secret": {
+              "type": "string"
+            },
+            "redirect_uri": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "token_url": {
+              "type": "string"
+            }
+          }
         }
-      }
+      ]
     },
     "MemoryYaml": {
-      "description": "User-facing YAML shape for the `memory:` block. Two pillars:\n\n- `storage` — where the `SQLite` database lives (path, or `:memory:` for ephemeral). - `user_state` — long-term, per-user facts and preferences. Off by default; `user_state: true` enables it with auto-derived defaults; an explicit struct lets advanced users override the embedder, the extraction model, and recall/dedup tuning.\n\nResolved into a [`MemoryConfig`] by the orchestrator (cli) before being handed to [`Store::open`]. Resolution looks at the configured `providers:` map to fill in any auto-derived choices.",
+      "description": "User-facing YAML shape for the `memory:` block. One pillar:\n\n- `user_state` — long-term, per-user facts and preferences. Off by default; `user_state: true` enables it with auto-derived defaults; an explicit struct lets advanced users override the embedder, the extraction model, and recall/dedup tuning.\n\nThe database itself always lives at `.coulisse/coulisse-memory.db` next to the config — there is no path knob. Resolved into a [`MemoryConfig`] by the orchestrator (cli) before being handed to [`Store::open`]; resolution looks at the configured `providers:` map to fill in any auto-derived choices.",
       "type": "object",
       "properties": {
-        "storage": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "user_state": {
           "default": false,
           "allOf": [
@@ -789,6 +967,44 @@
         }
       }
     },
+    "ServerConfig": {
+      "description": "The `server:` block. Every field is optional with a sensible default, so omitting the block entirely yields a server that binds `0.0.0.0:8421` with tokio's default worker-thread count and no request body cap.",
+      "type": "object",
+      "properties": {
+        "bind": {
+          "description": "IP address to bind. Defaults to `0.0.0.0` (all interfaces). Set to `127.0.0.1` to refuse connections from anything but loopback — the right posture for a personal instance fronted by a reverse proxy or tunnel.",
+          "default": "0.0.0.0",
+          "type": "string"
+        },
+        "max_body_bytes": {
+          "description": "Largest request body the proxy will accept, in bytes. `None` (the default) leaves axum's built-in 2 MiB limit in place; set a number to raise or lower it. Guards against a client streaming an unbounded body into memory.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "port": {
+          "description": "TCP port to bind. Defaults to 8421. Useful when running multiple Coulisse instances against different `coulisse.yaml` files on the same machine — give each yaml its own port.",
+          "default": 8421,
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "worker_threads": {
+          "description": "Number of tokio worker threads. `None` (the default) lets tokio size the pool to the number of CPU cores. Set a fixed number to cap concurrency on a shared host. Read once at startup, before the runtime is built — changing it requires a restart.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        }
+      }
+    },
     "SidecarConfig": {
       "type": "object",
       "required": [
@@ -861,6 +1077,17 @@
         }
       ]
     },
+    "SkillsConfig": {
+      "description": "YAML slice under the top-level `skills:` key. Omit the block entirely and Coulisse still scans the default `./skills` directory, so dropping a `SKILL.md` folder there is all it takes to add a skill — no config required. Point `dir` elsewhere to load skills from a different folder.",
+      "type": "object",
+      "properties": {
+        "dir": {
+          "description": "Directory holding one subdirectory per skill, each with a `SKILL.md`. Relative paths resolve against the process working directory. Defaults to `./skills`. A missing directory is not an error — it simply yields no skills.",
+          "default": "./skills",
+          "type": "string"
+        }
+      }
+    },
     "SmokeTestConfig": {
       "description": "One smoke test: a synthetic-user persona that drives a conversation against an agent (or experiment) for evaluation. Each repetition uses a fresh synthetic `user_id`, so split/bandit experiments sample variants naturally across reps.",
       "type": "object",
@@ -929,12 +1156,94 @@
         }
       }
     },
+    "StorageConfig": {
+      "description": "Top-level `storage:` block in `coulisse.yaml`.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "Storage backend. Defaults to `fs` if unset. The filesystem backend keeps blobs under `.coulisse/files` next to the config — there is no path knob; switch to `s3` for anything else.",
+          "default": "fs",
+          "allOf": [
+            {
+              "$ref": "#/definitions/BackendKind"
+            }
+          ]
+        },
+        "max_file_bytes": {
+          "description": "Maximum bytes that may be stored per individual file. Defaults to no limit.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "max_total_bytes": {
+          "description": "Maximum bytes that may be stored across all files (global quota). FIFO eviction removes the oldest file when the limit would be exceeded. Defaults to no limit.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "s3": {
+          "description": "S3-compatible backend options. Required when `backend: s3`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/S3Config"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "BackendKind": {
+      "type": "string",
+      "enum": [
+        "fs",
+        "s3"
+      ]
+    },
+    "S3Config": {
+      "description": "S3-compatible backend configuration.",
+      "type": "object",
+      "required": [
+        "bucket"
+      ],
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint_url": {
+          "description": "Custom endpoint URL for `MinIO`, R2, or other S3-compatible services.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "AWS region. Defaults to `us-east-1`.",
+          "default": "us-east-1",
+          "type": "string"
+        }
+      }
+    },
     "TelemetryConfig": {
       "description": "Top-level config. Every field is optional — a missing `telemetry:` block falls back to the documented defaults (fmt to stderr at info, sqlite enabled, no OTLP).",
       "type": "object",
       "properties": {
         "fmt": {
           "description": "Stderr fmt layer. Defaults: enabled, level inherited from `RUST_LOG` if set, otherwise `info,sqlx=warn`.",
+          "default": {
+            "enabled": true
+          },
           "allOf": [
             {
               "$ref": "#/definitions/FmtConfig"
@@ -943,6 +1252,7 @@
         },
         "otlp": {
           "description": "OpenTelemetry OTLP exporter. Absent (the default) = no external traces shipped. Set `endpoint` to point at a Grafana, `SigNoz`, Jaeger or any OTLP-compatible collector.",
+          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/OtlpConfig"
@@ -954,6 +1264,9 @@
         },
         "sqlite": {
           "description": "`SQLite` layer that mirrors spans into the `events` and `tool_calls` tables for the studio UI. Defaults: enabled. Disable only if you don't need the studio's per-turn event tree.",
+          "default": {
+            "enabled": true
+          },
           "allOf": [
             {
               "$ref": "#/definitions/SqliteConfig"
@@ -994,6 +1307,7 @@
         },
         "protocol": {
           "description": "Wire protocol. Defaults to `grpc` (port 4317).",
+          "default": "grpc",
           "allOf": [
             {
               "$ref": "#/definitions/OtlpProtocol"
@@ -1077,7 +1391,7 @@
               ]
             },
             "path": {
-              "description": "HTTP path Coulisse exposes for this trigger. Must start with `/hooks/` to keep webhook routes namespaced away from the proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks (`/mcp/*`). External bridges (Matrix, Slack, GitHub, anything HTTP-capable) POST JSON to this path to fire the trigger.",
+              "description": "HTTP path Coulisse exposes for this trigger. Must start with `/hooks/` to keep webhook routes namespaced away from the proxy (`/v1/*`), studio (`/admin/*`), and OAuth callbacks (`/mcp/*`). External bridges (Slack, GitHub, anything HTTP-capable) POST JSON to this path to fire the trigger.",
               "type": "string"
             }
           }

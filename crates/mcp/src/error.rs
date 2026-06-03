@@ -8,8 +8,36 @@ pub enum McpError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    #[error(
+        "Coulisse is not configured with a public_base_url, and Dynamic Client Registration \
+         for MCP server '{server}' needs one. Set `public_base_url:` at the top level of \
+         coulisse.yaml (e.g. `http://localhost:8421` for local use, or your deployed origin)."
+    )]
+    DcrMissingBaseUrl { server: String },
+    #[error(
+        "MCP server '{server}' uses oauth: discover, but its authorization metadata \
+         omits the registration_endpoint required for Dynamic Client Registration. \
+         Switch this server's YAML to oauth: static with pre-registered credentials."
+    )]
+    DcrUnsupported { server: String },
     #[error("failed to decrypt token for server '{server}': {err}")]
     Decrypt { server: String, err: aes_gcm::Error },
+    #[error("failed to fetch OAuth metadata from {url}: {source}")]
+    Discovery {
+        url: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("malformed MCP server URL '{url}' (cannot derive origin for OAuth discovery)")]
+    DiscoveryInvalidUrl { url: String },
+    #[error("OAuth discovery at {url} returned HTTP {status}")]
+    DiscoveryStatus { status: u16, url: String },
+    #[error("Dynamic Client Registration failed for server '{server}': {source}")]
+    DynamicClientRegistration {
+        server: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[error("failed to list tools for MCP server '{server}': {source}")]
     ListTools {
         server: String,
