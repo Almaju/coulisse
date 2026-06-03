@@ -11,6 +11,9 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Added
 
+- **`coulisse reset`.** Deletes the SQLite database — wiping conversation memory, long-term memories, telemetry, judge scores, rate-limit windows, background tasks, and API tokens (the `coulisse.yaml` is untouched). Refuses to run while a server holds the database open, and prompts for confirmation unless `-y` is passed; removes the `-wal`/`-shm` sidecars too. See [CLI → `coulisse reset`](docs/src/reference/cli.md#coulisse-reset).
+- **Self-issued API tokens.** Set `auth.proxy.tokens: {}` to gate `/v1/*` on Coulisse-minted `sk-coulisse-…` bearer keys — the same model as the OpenAI dashboard. Each token binds to a principal (the user id that partitions memory, recall, and rate limits) and carries a spend budget: `unlimited`, a lifetime `total` cap, or a per-calendar-month `monthly` cap. A request that would exceed the cap is rejected with `429 insufficient_quota` before any provider call; spend is tracked per token in USD from the same pricing table the cost tracker uses. Mint/monitor/revoke from the studio **Tokens** page (`/admin/tokens`) or the new `coulisse token create|list|revoke` CLI. Only a SHA-256 digest of each secret is stored — the plaintext is shown once at creation. New `auth` schema (`api_tokens`, `token_usage` tables) at version 0.1.0. See [API tokens](docs/src/features/api-tokens.md).
+- **`server:` config block.** New top-level section for how the process binds and listens: `bind` (default `0.0.0.0`), `port` (default `8421`), `worker_threads` (default: CPU count), and `max_body_bytes` (default: axum's 2 MiB). Lives in its own `server` crate. See [YAML reference → `server`](docs/src/reference/yaml.md#server).
 - **Structured outputs (`response_format`).** The chat endpoint now accepts OpenAI's `response_format` field — `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {...}}`. Coulisse enforces it uniformly for every provider by injecting a shape instruction into the system preamble and validating the reply server-side, so structured output works even on models with no native structured-output mode. Non-streaming requests re-prompt the model with the exact validation error up to twice before failing; a malformed schema is rejected with `400` up front, and a reply that never validates returns `502`. Streaming validates the accumulated reply at the end and surfaces an SSE error event on failure. See [Structured outputs](docs/src/features/structured-output.md).
 - Auto-generated infrastructure secrets — `COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY` are persisted to `.coulisse/secrets.env` on first boot when unset.
 - `npx mcp-remote <URL>` shims are auto-rewritten to native HTTP + `oauth: { mode: discover }`.
@@ -42,6 +45,7 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
+- The top-level `port:` field moved under the new `server:` block (`server.port`). A bare top-level `port:` is no longer read. Breaking.
 - `mcp.<server>.oauth:` now requires `mode:` (`static` or `discover`). Breaking.
 - `auth.mcp_consumer_secret` is now optional.
 - `mcp` crate schema bumped to `0.2.0` (new `mcp_oauth_clients` table).

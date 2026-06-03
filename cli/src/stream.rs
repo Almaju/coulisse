@@ -17,7 +17,7 @@ use proxy::{
     response_id,
 };
 
-use crate::server::{AppState, judges_for_agent, record_llm_call};
+use crate::server::{AppState, judges_for_agent, record_llm_call, record_token_spend};
 
 /// Interval between SSE heartbeat events during subagent handoff.
 /// 20 s gives comfortable margin against the common 60 s proxy idle timeout.
@@ -47,6 +47,8 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     /// so an invalid reply surfaces as an SSE error event rather than a retry.
     pub response_format: Option<ResponseFormat>,
     pub state: Arc<AppState<P>>,
+    /// API token to charge this turn's spend to, when token auth is on.
+    pub token_id: Option<auth::TokenId>,
     pub tracker_key: String,
     /// Root `turn` span the SSE body runs inside. Drives `Span::current()`
     /// for any post-stream side effects so memory writes / score jobs
@@ -59,6 +61,7 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
 /// # Panics
 ///
 /// Panics if invariants documented above are violated.
+#[allow(clippy::too_many_lines)] // one linear SSE state machine; splitting hurts readability
 pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
     cx: StreamContext<P>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
@@ -70,6 +73,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         model,
         response_format,
         state,
+        token_id,
         tracker_key,
         turn_span,
         user_id,
@@ -90,6 +94,7 @@ pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
         assistant_message_id,
         final_usage: Arc::clone(&final_usage),
         state,
+        token_id,
         tracker_key,
         turn_span: turn_span.clone(),
         user_id,
@@ -196,6 +201,7 @@ struct MemoryFlush<P: Agents + OneShotPrompt + 'static> {
     assistant_message_id: MessageId,
     final_usage: Arc<Mutex<ProviderUsage>>,
     state: Arc<AppState<P>>,
+    token_id: Option<auth::TokenId>,
     tracker_key: String,
     /// Root `turn` span; spawned cleanup work runs inside it so its
     /// own warnings carry the same correlation id.
@@ -211,6 +217,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
         let assistant_message_id = self.assistant_message_id;
         let usage = *self.final_usage.lock().unwrap();
         let state = Arc::clone(&self.state);
+        let token_id = self.token_id;
         let tracker_key = std::mem::take(&mut self.tracker_key);
         let turn_span = self.turn_span.clone();
         let llm_call_span = self.turn_span.clone();
@@ -222,6 +229,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
                 record_llm_call(&state, &agent_name, usage, &llm_call_span);
+                record_token_spend(&state, token_id, &agent_name, usage).await;
                 let um = state.memory.for_user(user_id);
                 if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
                     warn_memory_append_failed("user", &err);

@@ -290,16 +290,25 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "auth"
 version = "0.1.0"
 dependencies = [
+ "askama",
  "axum",
  "axum-oidc",
  "base64 0.22.1",
+ "coulisse-core",
+ "hex",
  "http 1.4.1",
+ "rand 0.9.4",
  "schemars 0.8.22",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
  "thiserror 2.0.18",
  "time",
+ "tokio",
  "tower",
  "tower-sessions 0.15.0",
+ "uuid",
 ]
 
 [[package]]
@@ -1252,6 +1261,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "server",
  "sidecars",
  "smoke",
  "storage",
@@ -4693,6 +4703,18 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "schemars 0.8.22",
+ "serde",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

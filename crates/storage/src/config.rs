@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level `storage:` block in `coulisse.yaml`.
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[schemars(rename = "StorageConfig")]
 pub struct StorageYaml {
     /// Storage backend. Defaults to `fs` if unset.
@@ -24,7 +24,7 @@ pub struct StorageYaml {
     pub s3: Option<S3Config>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
     #[default]
@@ -33,7 +33,7 @@ pub enum BackendKind {
 }
 
 /// File-system backend configuration.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct FsConfig {
     /// Directory where blobs are stored. Defaults to `./coulisse-files`.
     #[serde(default = "default_fs_path")]
@@ -53,7 +53,7 @@ fn default_fs_path() -> std::path::PathBuf {
 }
 
 /// S3-compatible backend configuration.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct S3Config {
     pub bucket: String,
     /// Custom endpoint URL for `MinIO`, R2, or other S3-compatible services.

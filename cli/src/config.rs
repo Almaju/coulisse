@@ -17,6 +17,7 @@ use mcp::McpServerConfig;
 use memory::MemoryYaml;
 use providers::{ProviderConfig, ProviderKind};
 use serde::Deserialize;
+use server::ServerConfig;
 use sidecars::SidecarConfig;
 use smoke::SmokeTestConfig;
 use storage::StorageYaml;
@@ -61,11 +62,6 @@ pub struct Config {
     /// local `SQLite` file.
     #[serde(default)]
     pub memory: MemoryYaml,
-    /// HTTP port the proxy/admin server binds to. Defaults to 8421. Useful
-    /// when running multiple Coulisse instances against different
-    /// `coulisse.yaml` files on the same machine.
-    #[serde(default)]
-    pub port: Option<u16>,
     pub providers: HashMap<ProviderKind, ProviderConfig>,
     /// Externally reachable base URL of this Coulisse instance, with no
     /// trailing slash (e.g. `https://coulisse.example.com`). Used to build
@@ -76,6 +72,11 @@ pub struct Config {
     /// behind a tunnel, behind a reverse proxy).
     #[serde(default)]
     pub public_base_url: Option<String>,
+    /// HTTP-server wiring: bind address, port (default 8421), tokio worker
+    /// threads, and request body cap. Omit the block for sensible defaults
+    /// (`0.0.0.0:8421`, CPU-sized thread pool, axum's default body limit).
+    #[serde(default)]
+    pub server: ServerConfig,
     /// Long-lived helper processes Coulisse spawns alongside itself
     /// (chat-platform bridges, monitoring agents, anything you'd otherwise
     /// launch in a separate terminal). Each entry declares a command,
@@ -255,7 +256,7 @@ impl Config {
         if let Some(url) = &self.public_base_url {
             return url.trim_end_matches('/').to_string();
         }
-        format!("http://localhost:{}", self.port.unwrap_or(8421))
+        format!("http://localhost:{}", self.server.port)
     }
 
     /// # Errors
@@ -358,6 +359,18 @@ impl Config {
             return Err(ConfigError::BlankDefaultUserId);
         }
         self.auth.validate().map_err(ConfigError::Auth)?;
+        // Credential-bound identity derives the user from the authenticated
+        // principal, so a shared `default_user_id` bucket would be a silent
+        // bypass — reject the combination rather than letting one win. Token
+        // auth implies credential-bound identity, so it triggers the same
+        // rejection even without an explicit `identity: from_credential`.
+        if self.default_user_id.is_some()
+            && self.auth.proxy.as_ref().is_some_and(|scope| {
+                scope.identity == auth::IdentityMode::FromCredential || scope.tokens.is_some()
+            })
+        {
+            return Err(ConfigError::CredentialIdentityWithDefaultUser);
+        }
         self.validate_mcp_oauth()?;
         let judge_names = self.validate_judges()?;
         let agent_names = self.validate_agents(&judge_names)?;
@@ -855,6 +868,10 @@ pub enum ConfigError {
     BanditWithoutMetric(String),
     #[error("default_user_id must be non-empty when set")]
     BlankDefaultUserId,
+    #[error(
+        "default_user_id cannot be combined with credential-bound proxy identity (auth.proxy.identity: from_credential, or auth.proxy.tokens which implies it) — the user is derived from the authenticated principal, so a shared default bucket would bypass it (remove default_user_id)"
+    )]
+    CredentialIdentityWithDefaultUser,
     #[error(
         "config variable '{var}' referenced via ${{vars.{var}}} is not declared in the `vars:` block\n  at {path}:{line_number}\n   | {line_content}\n   = help: add `{var}: ...` under the top-level `vars:` block"
     )]
@@ -2126,7 +2143,8 @@ agents:
   - name: assistant
     provider: openai
     model: gpt-4
-port: 8423
+server:
+  port: 8423
 ";
         let config: Config = serde_yaml::from_str(yaml).expect("parses");
         assert_eq!(config.effective_public_base_url(), "http://localhost:8423");

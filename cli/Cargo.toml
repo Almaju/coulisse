@@ -39,6 +39,7 @@ self_update.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
+server.workspace = true
 sidecars.workspace = true
 smoke.workspace = true
 storage.workspace = true

@@ -26,6 +26,8 @@ What's in Coulisse today, and what's coming.
 - YAML-driven config with startup validation.
 - Docker image with a volume-mounted SQLite store.
 
+- Credential-bound identity — `auth.proxy.identity: from_credential` derives the per-user identity from the authenticated principal (Basic username or OIDC `sub`) instead of trusting the request body, and rejects a mismatched `safety_identifier`. Makes adversarial multi-tenant serving safe; mutually exclusive with `default_user_id`. See [User identification](../configuration/user-id.md#binding-identity-to-the-credential).
+
 ## Planned
 
 ### Durable rate-limit state

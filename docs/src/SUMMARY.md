@@ -30,6 +30,7 @@
 - [Per-user OAuth for MCP](./features/mcp-oauth.md)
 - [Multi-backend support](./features/backends.md)
 - [Streaming responses](./features/streaming.md)
+- [API tokens](./features/api-tokens.md)
 - [Rate limiting](./features/rate-limiting.md)
 - [Token cost tracking](./features/pricing.md)
 - [Response language](./features/language.md)

@@ -110,13 +110,7 @@ fn run_as_detached_child(config_path: &Path, paths: &StatePaths) -> Result<(), S
 }
 
 fn serve_blocking(config_path: &Path, on_ready: impl FnOnce() + Send) -> Result<(), StartError> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(StartError::Io)?;
-    runtime
-        .block_on(serve::run(config_path, on_ready))
-        .map_err(StartError::Serve)
+    serve::run_blocking(config_path, on_ready).map_err(StartError::Serve)
 }
 
 fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartError> {

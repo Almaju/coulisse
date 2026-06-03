@@ -12,6 +12,7 @@ members = [
     "crates/mcp",
     "crates/memory",
     "crates/proxy",
+    "crates/server",
     "crates/sidecars",
     "crates/smoke",
     "crates/storage",
@@ -74,6 +75,7 @@ semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+server = { path = "crates/server" }
 sha2 = "0.10"
 sidecars = { path = "crates/sidecars" }
 smoke = { path = "crates/smoke" }

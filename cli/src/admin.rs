@@ -81,6 +81,28 @@ pub async fn shell(request: Request, next: Next) -> Response {
 
 pub mod live;
 
+/// Embedded studio client script (active-nav highlight + toasts). Served
+/// at `/admin/static/app.js`. The shell middleware passes non-HTML
+/// responses through untouched, so the JS content type survives.
+const APP_JS: &str = include_str!("../static/app.js");
+
+/// Static assets for the studio shell. Kept on the cli side because cli
+/// owns `base.html` and the chrome these assets enhance.
+pub fn static_router() -> Router {
+    Router::new().route("/static/app.js", get(app_js))
+}
+
+async fn app_js() -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        APP_JS,
+    )
+        .into_response()
+}
+
 #[derive(Template)]
 #[template(path = "overview.html")]
 struct OverviewPage;
@@ -206,7 +228,27 @@ pub async fn settings(State(view): State<SettingsHandle>) -> Result<Html<String>
 pub fn config_router(store: Arc<ConfigStore>) -> Router {
     Router::new()
         .route("/config", get(get_config).put(put_config))
+        .route("/config/edit", get(edit_config))
         .with_state(store)
+}
+
+#[derive(Template)]
+#[template(path = "config_edit.html")]
+struct ConfigEditPage {
+    yaml: String,
+}
+
+/// Full-file YAML editor page. Posts to `PUT /config` (`write_all`),
+/// which validates the whole config before replacing the file.
+async fn edit_config(
+    State(store): State<Arc<ConfigStore>>,
+) -> Result<Html<String>, ConfigEndpointError> {
+    let yaml = std::fs::read_to_string(store.path())
+        .map_err(|err| ConfigEndpointError::Io(err.to_string()))?;
+    let html = ConfigEditPage { yaml }
+        .render()
+        .map_err(|err| ConfigEndpointError::Io(err.to_string()))?;
+    Ok(Html(html))
 }
 
 async fn get_config(

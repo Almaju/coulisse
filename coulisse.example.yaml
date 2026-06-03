@@ -9,6 +9,30 @@
 # local / single-user setups: memory still works, just scoped to that bucket.
 # default_user_id: main
 
+# HTTP server wiring. Optional — omit for 0.0.0.0:8421 with a CPU-sized
+# thread pool and axum's default body limit. (The port lives here now, not
+# at the top level.)
+# server:
+#   bind: 0.0.0.0
+#   port: 8421
+#   worker_threads: 4
+#   max_body_bytes: 8388608   # 8 MiB
+
+# Authentication for the /v1/* proxy and the /admin/* studio. Each scope is
+# optional; omit one to leave that surface open (fine for loopback, never for
+# anything exposed). See docs/src/reference/yaml.md#auth.
+# auth:
+#   proxy:
+#     # Self-issued API tokens: clients send `Authorization: Bearer sk-coulisse-…`.
+#     # Mint them with `coulisse token create <label> --principal <user>` or in
+#     # the studio at /admin/tokens, where you also set per-token budgets and
+#     # watch spend. The empty map is the on switch.
+#     tokens: {}
+#   admin:
+#     basic:
+#       username: admin
+#       password: ${ADMIN_PASSWORD}
+
 # Memory subsystem. The whole block is optional — omit it for the default:
 # conversation history in .coulisse/coulisse-memory.db, no long-term memory. Add
 # `user_state: true` to also remember durable facts about each user across

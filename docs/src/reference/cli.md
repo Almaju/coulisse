@@ -51,6 +51,24 @@ over from crashes are detected and removed.
 
 Equivalent to `coulisse stop && coulisse start`.
 
+## `coulisse reset`
+
+Delete the SQLite database, wiping **all** stored state — conversation
+memory, long-term memories, telemetry, judge scores, rate-limit windows,
+background tasks, and API tokens. Your `coulisse.yaml` is never touched.
+
+Destructive and irreversible, so it refuses to run while a server holds the
+database open (stop it first), and prompts for confirmation unless `-y` is
+passed. Removes the database file plus its `-wal`/`-shm` sidecars.
+
+```bash
+coulisse reset       # warns, lists the files, asks to confirm
+coulisse reset -y    # skip the prompt (for scripts / fresh starts)
+```
+
+With an in-memory backend (`memory.storage: ":memory:"`) there's nothing on
+disk and the command is a no-op.
+
 ## `coulisse status`
 
 Report whether the detached server is running and where its files live.
@@ -71,8 +89,26 @@ coulisse studio   # also: coulisse admin
 # opening http://localhost:8421/admin/
 ```
 
-The URL honors `port:` from `coulisse.yaml`, so multiple Coulisse
+The URL honors `server.port` from `coulisse.yaml`, so multiple Coulisse
 instances on different ports each open their own studio.
+
+## `coulisse token`
+
+Mint, list, and revoke the self-issued API tokens that gate `/v1/*` when
+[`auth.proxy.tokens`](../features/api-tokens.md) is enabled. Operates on
+the same database the running server uses, so changes are live immediately.
+
+```bash
+coulisse token create laptop --principal alice         # unlimited
+coulisse token create ci --principal alice \
+  --budget monthly --limit 20                          # $20 / month cap
+coulisse token list                                    # tokens + spend
+coulisse token revoke <id>                             # immediate 401 for clients
+```
+
+`create` prints the secret (`sk-coulisse-…`) to stdout — shown only once —
+and the id/context to stderr, so `coulisse token create … > key.txt`
+captures just the key.
 
 ## `coulisse check`
 

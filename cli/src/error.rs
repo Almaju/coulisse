@@ -1,4 +1,5 @@
 use agents::AgentsError;
+use auth::BudgetError;
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +23,10 @@ pub enum ApiError {
     Agents(#[from] AgentsError),
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Budget(#[from] BudgetError),
+    #[error("{0}")]
+    Forbidden(String),
     #[error("invalid `metadata.language`: {0}")]
     Language(#[from] LanguageTagError),
     #[error("{0}")]
@@ -51,6 +56,17 @@ impl IntoResponse for ApiError {
             | Self::ResponseFormat(ResponseFormatError::InvalidSchema(_)) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
+            // Budget caps mirror OpenAI's quota response: 429 with
+            // `insufficient_quota` so SDKs surface it as a billing stop
+            // rather than a transient rate limit. A store error behind the
+            // check is ours (500).
+            Self::Budget(BudgetError::Exceeded { .. }) => {
+                (StatusCode::TOO_MANY_REQUESTS, "insufficient_quota")
+            }
+            Self::Budget(BudgetError::Store(_)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "token_error")
+            }
+            Self::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Self::Limit(LimitError::Database(_) | LimitError::Migrate(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "rate_limit_error")
             }

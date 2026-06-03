@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use agents::{Agents, BootConfig, DynamicAgents, RigAgents};
 use arc_swap::ArcSwap;
-use auth::Auth;
+use auth::{Auth, IdentityMode, TokenStore};
 use axum::Router;
 use axum::middleware::from_fn;
 use axum::response::Redirect;
@@ -47,14 +47,35 @@ use crate::smoke_runner::SmokeRunner;
 /// Panics if the boot-time task reaper fails (the only way to reach
 /// this state is filesystem permission errors on the `SQLite` WAL,
 /// which would prevent the server from doing useful work anyway).
-#[allow(clippy::too_many_lines)] // top-level wiring; readable as a flat sequence
-pub async fn run(
+pub fn run_blocking(
     config_path: &Path,
     on_ready: impl FnOnce() + Send,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Parse synchronously so the `server:` slice can size the tokio runtime
+    // before any async work begins — worker count is fixed once the runtime
+    // exists. Config parse failures surface here, before a runtime is even
+    // built.
     let config = Config::from_path(config_path)?;
-    let auth = Auth::from_config(config.auth.clone()).await?;
+    let runtime = config.server.runtime()?;
+    runtime.block_on(run(config, config_path, on_ready))
+}
+
+#[allow(clippy::too_many_lines)] // top-level wiring; readable as a flat sequence
+async fn run(
+    config: Config,
+    config_path: &Path,
+    on_ready: impl FnOnce() + Send,
+) -> Result<(), Box<dyn std::error::Error>> {
     let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
+    // Token auth binds identity to the credential by construction, so it
+    // forces `from_credential` regardless of the (possibly default) `identity`
+    // field — otherwise a tokened request could spoof another user via
+    // `safety_identifier`.
+    let proxy_identity = match config.auth.proxy.as_ref() {
+        Some(scope) if scope.tokens.is_some() => IdentityMode::FromCredential,
+        Some(scope) => scope.identity,
+        None => IdentityMode::default(),
+    };
     // State dir (`.coulisse/` next to the YAML) holds everything Coulisse
     // generates: the SQLite database when `storage:` is omitted, the MCP
     // secrets file, the detached log/pid. Keeps state out of the directory
@@ -79,6 +100,10 @@ pub async fn run(
         None
     };
     let stores = boot_stores(&config, &memory_config, mcp_secrets.as_ref()).await?;
+    // Auth is built after stores so the token scheme can borrow the token
+    // store opened during boot. OIDC discovery (its only network step) still
+    // happens here.
+    let auth = Auth::from_config(config.auth.clone(), Some(stores.token_store.clone())).await?;
     let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
     // Build the per-user connect-link signer once, then thread it into
     // both the MCP runtime (so `NotConnectedTool` can mint URLs) and the
@@ -88,7 +113,7 @@ pub async fn run(
     let runtime = build_runtime(&config, &memory_config, &stores, signer.clone()).await?;
     let worker_tasks = Arc::clone(&runtime.tasks);
     let worker_agents = Arc::clone(&runtime.prompter);
-    let proxy_state = build_proxy_state(default_user_id, &stores, runtime);
+    let proxy_state = build_proxy_state(default_user_id, proxy_identity, &stores, runtime);
     // Reap `running` tasks left over from a previous process before workers
     // start, so PM sees them as `errored` on the next wakeup instead of
     // believing the work is still in flight. Cutoff = now: any task still
@@ -121,7 +146,7 @@ pub async fn run(
     .await;
     sidecars::spawn_all(&config.sidecars);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port.unwrap_or(8421)));
+    let addr = config.server.socket_addr()?;
     print_banner(
         addr,
         &auth,
@@ -147,6 +172,7 @@ pub async fn run(
         smoke_list,
         smoke_store,
         telemetry,
+        token_store,
         yaml_agents,
         yaml_experiments,
         yaml_judges,
@@ -194,6 +220,7 @@ pub async fn run(
         smoke_store: Arc::clone(&smoke_store),
         tasks: Arc::clone(&worker_tasks),
         telemetry,
+        token_store,
         yaml_agents,
         yaml_experiments,
         yaml_judges,
@@ -239,6 +266,7 @@ pub async fn run(
         Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
         trigger_user_id,
     ));
+    let app = config.server.apply_layers(app);
     let listener = TcpListener::bind(addr).await?;
     // Signal readiness only after the port is bound — anything failing
     // before this point exits the child without firing the callback, so
@@ -266,6 +294,7 @@ struct Stores {
     smoke_list: smoke::SmokeList,
     smoke_store: Arc<SmokeStore>,
     telemetry: Arc<TelemetrySink>,
+    token_store: Arc<TokenStore>,
     yaml_agents: agents::AgentList,
     yaml_experiments: experiments::ExperimentList,
     yaml_judges: judges::JudgeList,
@@ -345,6 +374,12 @@ async fn boot_stores(
         .await?;
     log_experiments_merge(&report);
 
+    // Always opened: the studio token page is always mounted (it shows an
+    // empty state and the create form like every other admin page). Minted
+    // tokens only *gate* the proxy once `auth.proxy.tokens` is set — until
+    // then the page notes they're inert.
+    let token_store = Arc::new(TokenStore::open(pool.clone()).await?);
+
     Ok(Stores {
         agents_list,
         dynamic_agents,
@@ -360,6 +395,7 @@ async fn boot_stores(
         smoke_list,
         smoke_store,
         telemetry,
+        token_store,
         yaml_agents,
         yaml_experiments,
         yaml_judges,
@@ -490,6 +526,7 @@ async fn build_runtime(
 
 fn build_proxy_state(
     default_user_id: Option<UserId>,
+    proxy_identity: IdentityMode,
     stores: &Stores,
     runtime: Runtime,
 ) -> Arc<AppState<RigAgents>> {
@@ -501,6 +538,8 @@ fn build_proxy_state(
         judges: Arc::new(runtime.judges),
         judge_store: Arc::clone(&stores.judge_store),
         memory: Arc::clone(&stores.memory),
+        proxy_identity,
+        tokens: Arc::clone(&stores.token_store),
         tracker: runtime.tracker,
     })
 }
@@ -655,6 +694,7 @@ struct AdminWiring {
     smoke_store: Arc<SmokeStore>,
     tasks: Arc<Tasks>,
     telemetry: Arc<TelemetrySink>,
+    token_store: Arc<TokenStore>,
     yaml_agents: agents::AgentList,
     yaml_experiments: experiments::ExperimentList,
     yaml_judges: judges::JudgeList,
@@ -677,6 +717,7 @@ fn build_admin_router(w: AdminWiring) -> Router {
             w.yaml_agents,
         ))
         .merge(crate::admin::config_router(Arc::clone(&w.config_store)))
+        .merge(crate::admin::static_router())
         .merge(crate::admin_extras::router(Arc::clone(&w.config_store)))
         .merge(crate::openapi::router(w.config_store))
         .merge(experiments::admin::router(
@@ -711,6 +752,7 @@ fn build_admin_router(w: AdminWiring) -> Router {
             "/",
             get(|| async { Redirect::permanent("/admin/overview") }),
         )
+        .merge(auth::admin::router(w.token_store))
         .layer(from_fn(admin_shell))
 }
 

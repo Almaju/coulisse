@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use coulisse::commands::{
-    check, init, restart, schema, serve, start, status, stop, studio, update,
+    check, init, reset, restart, schema, serve, start, status, stop, studio, token, update,
 };
 
 const DEFAULT_CONFIG: &str = "coulisse.yaml";
@@ -38,6 +38,13 @@ enum Command {
         #[arg(long)]
         from_example: bool,
     },
+    /// Delete the database, wiping all stored state (memory, telemetry,
+    /// scores, tasks, API tokens). Leaves coulisse.yaml untouched.
+    Reset {
+        /// Skip the confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// Restart the running server (stop, then start detached).
     Restart,
     /// Emit the JSON Schema for `coulisse.yaml` to stdout. Redirect to
@@ -66,6 +73,11 @@ enum Command {
     /// Requires the server to be running — use `coulisse start` first.
     #[command(alias = "admin")]
     Studio,
+    /// Mint, list, and revoke self-issued API tokens.
+    Token {
+        #[command(subcommand)]
+        action: token::Action,
+    },
     /// Download and install the latest release from GitHub.
     Update,
 }
@@ -89,6 +101,7 @@ fn main() -> ExitCode {
             },
         )
         .map_err(std::convert::Into::into),
+        Some(Command::Reset { yes }) => reset::run(&config, &reset::Options { yes }),
         Some(Command::Restart) => restart::run(&config),
         Some(Command::Schema) => schema::run(),
         Some(Command::Start {
@@ -107,6 +120,7 @@ fn main() -> ExitCode {
             stop::run(&config, &stop::Options { force }).map_err(std::convert::Into::into)
         }
         Some(Command::Studio) => studio::run(&config).map_err(std::convert::Into::into),
+        Some(Command::Token { action }) => token::run(&config, &action),
         Some(Command::Update) => update::run().map_err(std::convert::Into::into),
     };
 
@@ -120,8 +134,5 @@ fn main() -> ExitCode {
 }
 
 fn run_foreground(config: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(serve::run(config, || {}))
+    serve::run_blocking(config, || {})
 }

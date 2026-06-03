@@ -99,6 +99,7 @@ async fn make_app_with_experiments(
     let (sqlite_layer, telemetry_guard) = telemetry::SqliteLayer::spawn(pool.clone());
     let subscriber_guard =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(sqlite_layer));
+    let tokens = Arc::new(auth::TokenStore::open(pool.clone()).await.unwrap());
     let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
@@ -108,6 +109,8 @@ async fn make_app_with_experiments(
         judges: Arc::new(judges),
         judge_store,
         memory,
+        proxy_identity: auth::IdentityMode::FromRequest,
+        tokens,
         tracker,
     });
     let app = coulisse::server::router(Arc::clone(&state));

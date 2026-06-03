@@ -1,11 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Two-scope auth configuration. Each scope is optional: unset means the
 /// corresponding surface (`/v1/*` for `proxy`, `/admin/*` for `admin`) is
 /// served unauthenticated. Both scopes accept the same shape, so a single
 /// pair of credentials can guard both by repeating the block.
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
 #[schemars(rename = "AuthConfig")]
 pub struct Config {
     #[serde(default)]
@@ -26,26 +26,67 @@ pub struct Config {
 }
 
 /// Bearer-token auth for the MCP admin endpoint.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct McpAdminConfig {
     pub token: String,
 }
 
-/// One scope's auth method. Exactly one of `basic` or `oidc` must be set
-/// when the scope block is present — they are mutually exclusive so the
-/// server never has to choose between two competing session schemes.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+/// One scope's auth method. Exactly one of `basic`, `oidc`, or `tokens`
+/// must be set when the scope block is present — they are mutually
+/// exclusive so the server never has to choose between competing schemes.
+/// `tokens` is valid on the `proxy` scope only.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct ScopeConfig {
     #[serde(default)]
     pub basic: Option<BasicConfig>,
+    /// How the per-user identity for `/v1/*` requests is derived. Only
+    /// meaningful on the `proxy` scope — the `admin` surface has no
+    /// per-user partitioning, so setting anything but the default here is
+    /// rejected at startup.
+    #[serde(default)]
+    pub identity: IdentityMode,
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
+    /// Self-issued API tokens (`sk-coulisse-…`). Write `tokens: {}` to turn
+    /// the scheme on; tokens themselves are minted at runtime via the studio
+    /// or `coulisse token create`. Each token binds the request to its own
+    /// principal, so it implies credential-bound identity regardless of the
+    /// `identity` field.
+    #[serde(default)]
+    pub tokens: Option<TokensConfig>,
+}
+
+/// Marker for the self-issued-token auth scheme. Empty today — its presence
+/// is the switch — but a struct so future per-scheme options (custom header,
+/// default budget) have a home without a YAML break.
+#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema, Serialize)]
+pub struct TokensConfig {}
+
+/// Where the user identifier that partitions memory, recall, MCP sessions,
+/// and rate limits comes from.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, schemars::JsonSchema, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityMode {
+    /// Derive the identity from the authenticated principal — the Basic
+    /// username or the OIDC `sub` claim. A request body that claims a
+    /// different `safety_identifier` is rejected. Required for adversarial
+    /// multi-tenant serving, where clients cannot be trusted to declare
+    /// their own identity honestly.
+    FromCredential,
+    /// Trust the `safety_identifier` (or deprecated `user`) field in the
+    /// request body. The default: correct for single-user setups and for
+    /// trusted first-party backends that set the identifier on behalf of
+    /// their own authenticated users.
+    #[default]
+    FromRequest,
 }
 
 /// Static HTTP Basic credentials. Appropriate for local dev or a
 /// single-operator deployment. Browsers prompt via the native login
 /// dialog; no session state.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct BasicConfig {
     pub password: String,
     #[serde(default = "default_username")]
@@ -56,7 +97,7 @@ pub struct BasicConfig {
 /// Authentik, Keycloak, Auth0, Google, Microsoft, Okta. Access control
 /// (who may use the surface) is delegated to the `IdP`'s application
 /// bindings, not configured here.
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct OidcConfig {
     pub client_id: String,
     /// Optional for public clients that use PKCE only. Authentik's default
@@ -87,6 +128,12 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if let Some(scope) = &self.admin {
             scope.validate("admin")?;
+            if scope.identity == IdentityMode::FromCredential {
+                return Err(ConfigError::IdentityOnAdminScope);
+            }
+            if scope.tokens.is_some() {
+                return Err(ConfigError::TokensOnAdminScope);
+            }
         }
         if let Some(mcp_admin) = &self.mcp_admin
             && mcp_admin.token.trim().is_empty()
@@ -107,46 +154,49 @@ impl Config {
 
 impl ScopeConfig {
     fn validate(&self, scope: &'static str) -> Result<(), ConfigError> {
-        match (&self.basic, &self.oidc) {
-            (None, None) => Err(ConfigError::ScopeWithoutAuth(scope)),
-            (None, Some(oidc)) => {
-                if oidc.client_id.is_empty() {
-                    return Err(ConfigError::BlankOidcField {
-                        scope,
-                        field: "client_id",
-                    });
-                }
-                if oidc.issuer_url.is_empty() {
-                    return Err(ConfigError::BlankOidcField {
-                        scope,
-                        field: "issuer_url",
-                    });
-                }
-                if oidc.redirect_url.is_empty() {
-                    return Err(ConfigError::BlankOidcField {
-                        scope,
-                        field: "redirect_url",
-                    });
-                }
-                Ok(())
+        let declared = usize::from(self.basic.is_some())
+            + usize::from(self.oidc.is_some())
+            + usize::from(self.tokens.is_some());
+        match declared {
+            0 => return Err(ConfigError::ScopeWithoutAuth(scope)),
+            1 => {}
+            _ => return Err(ConfigError::ScopeMultipleAuthMethods(scope)),
+        }
+        if let Some(oidc) = &self.oidc {
+            if oidc.client_id.is_empty() {
+                return Err(ConfigError::BlankOidcField {
+                    scope,
+                    field: "client_id",
+                });
             }
-            (Some(_), Some(_)) => Err(ConfigError::ScopeBothAuthMethods(scope)),
-            (Some(basic), None) => {
-                if basic.password.is_empty() {
-                    return Err(ConfigError::BlankBasicField {
-                        scope,
-                        field: "password",
-                    });
-                }
-                if basic.username.is_empty() {
-                    return Err(ConfigError::BlankBasicField {
-                        scope,
-                        field: "username",
-                    });
-                }
-                Ok(())
+            if oidc.issuer_url.is_empty() {
+                return Err(ConfigError::BlankOidcField {
+                    scope,
+                    field: "issuer_url",
+                });
+            }
+            if oidc.redirect_url.is_empty() {
+                return Err(ConfigError::BlankOidcField {
+                    scope,
+                    field: "redirect_url",
+                });
             }
         }
+        if let Some(basic) = &self.basic {
+            if basic.password.is_empty() {
+                return Err(ConfigError::BlankBasicField {
+                    scope,
+                    field: "password",
+                });
+            }
+            if basic.username.is_empty() {
+                return Err(ConfigError::BlankBasicField {
+                    scope,
+                    field: "username",
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -166,12 +216,22 @@ pub enum ConfigError {
         field: &'static str,
         scope: &'static str,
     },
-    #[error("auth.{0} block must declare exactly one of `basic` or `oidc`, not both (remove one)")]
-    ScopeBothAuthMethods(&'static str),
     #[error(
-        "auth.{0} block must declare one of `basic` or `oidc` (or remove the block to disable auth)"
+        "auth.admin.identity: `from_credential` is only valid on the proxy scope — the admin surface has no per-user partitioning"
+    )]
+    IdentityOnAdminScope,
+    #[error(
+        "auth.{0} block must declare exactly one of `basic`, `oidc`, or `tokens` (remove the extras)"
+    )]
+    ScopeMultipleAuthMethods(&'static str),
+    #[error(
+        "auth.{0} block must declare one of `basic`, `oidc`, or `tokens` (or remove the block to disable auth)"
     )]
     ScopeWithoutAuth(&'static str),
+    #[error(
+        "auth.admin.tokens: self-issued tokens are only valid on the proxy scope — the admin surface has no per-user partitioning"
+    )]
+    TokensOnAdminScope,
 }
 
 fn default_username() -> String {
@@ -180,4 +240,47 @@ fn default_username() -> String {
 
 fn default_oidc_scopes() -> Vec<String> {
     vec!["email".to_string(), "profile".to_string()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basic_scope(identity: IdentityMode) -> ScopeConfig {
+        ScopeConfig {
+            basic: Some(BasicConfig {
+                password: "pw".to_string(),
+                username: "gateway".to_string(),
+            }),
+            identity,
+            oidc: None,
+            tokens: None,
+        }
+    }
+
+    #[test]
+    fn identity_defaults_to_from_request() {
+        assert_eq!(IdentityMode::default(), IdentityMode::FromRequest);
+    }
+
+    #[test]
+    fn from_credential_on_proxy_is_valid() {
+        let config = Config {
+            proxy: Some(basic_scope(IdentityMode::FromCredential)),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn from_credential_on_admin_is_rejected() {
+        let config = Config {
+            admin: Some(basic_scope(IdentityMode::FromCredential)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::IdentityOnAdminScope)
+        ));
+    }
 }
