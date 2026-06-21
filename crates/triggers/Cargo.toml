@@ -8,7 +8,7 @@ version.workspace = true
 axum.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 coulisse-core.workspace = true
-cron = "0.12"
+cron = "0.17"
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
