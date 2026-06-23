@@ -9,7 +9,8 @@ mod tool;
 
 pub use chat::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
-    ChunkDelta, FinishReason, Message, Role, StreamOptions, Usage, response_id,
+    ChunkDelta, ContentPart, FinishReason, Message, MessageContent, Role, StreamOptions, Usage,
+    response_id,
 };
 pub use language::{LanguageTag, LanguageTagError};
 pub use response_format::{JsonSchemaSpec, ResponseFormat, ResponseFormatError};

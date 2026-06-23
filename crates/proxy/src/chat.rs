@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use coulisse_core::UserId;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::language::{LanguageTag, LanguageTagError};
 use crate::response_format::ResponseFormat;
@@ -85,7 +86,7 @@ impl ChatCompletionRequest {
     pub fn response_with(&self, text: String, usage: Usage) -> ChatCompletionResponse {
         let created = coulisse_core::now_secs();
         let message = Message {
-            content: Some(text),
+            content: Some(MessageContent::Text(text)),
             name: None,
             role: Role::Assistant,
             tool_call_id: None,
@@ -165,10 +166,48 @@ pub enum FinishReason {
     ToolCalls,
 }
 
+/// A single part within a multipart message content array. Unknown fields
+/// are preserved in `extra` so non-text parts (images, files) survive a
+/// round-trip to the upstream provider unchanged.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContentPart {
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// Message content: either a plain string (simple case) or an array of typed
+/// parts (multimodal — text, images, files). Mirrors the `OpenAI` API contract.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Parts(Vec<ContentPart>),
+    Text(String),
+}
+
+impl MessageContent {
+    /// Returns the concatenated text from all text parts, or the string
+    /// itself. Non-text parts (images, files) are silently skipped.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| p.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub role: Role,
@@ -180,8 +219,10 @@ pub struct Message {
 
 impl Message {
     #[must_use]
-    pub fn content_or_empty(&self) -> &str {
-        self.content.as_deref().unwrap_or("")
+    pub fn content_or_empty(&self) -> String {
+        self.content
+            .as_ref()
+            .map_or_else(String::new, MessageContent::text)
     }
 }
 
@@ -307,5 +348,42 @@ mod tests {
         metadata.insert("language".into(), String::new());
         let req = request_with_metadata(metadata);
         assert!(req.language().is_err());
+    }
+
+    #[test]
+    fn message_content_deserializes_plain_string() {
+        let content: MessageContent = serde_json::from_str(r#""hello""#).unwrap();
+        assert!(matches!(content, MessageContent::Text(ref s) if s == "hello"));
+        assert_eq!(content.text(), "hello");
+    }
+
+    #[test]
+    fn message_content_deserializes_parts_array() {
+        let content: MessageContent = serde_json::from_str(
+            r#"[{"type":"text","text":"first"},{"type":"text","text":"second"}]"#,
+        )
+        .unwrap();
+        assert!(matches!(content, MessageContent::Parts(_)));
+        assert_eq!(content.text(), "first\nsecond");
+    }
+
+    #[test]
+    fn message_content_text_skips_non_text_parts() {
+        let content: MessageContent = serde_json::from_str(
+            r#"[{"type":"text","text":"caption"},{"type":"input_file","file_id":"file-1"}]"#,
+        )
+        .unwrap();
+        assert_eq!(content.text(), "caption");
+    }
+
+    #[test]
+    fn content_part_round_trips_unknown_fields() {
+        let raw = r#"{"type":"input_file","file_id":"file-1"}"#;
+        let part: ContentPart = serde_json::from_str(raw).unwrap();
+        assert_eq!(part.kind, "input_file");
+        assert!(part.text.is_none());
+        let reserialized = serde_json::to_value(&part).unwrap();
+        assert_eq!(reserialized["type"], "input_file");
+        assert_eq!(reserialized["file_id"], "file-1");
     }
 }
