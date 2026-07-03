@@ -163,7 +163,7 @@ impl JudgeListRow {
 }
 
 pub(super) struct MatrixCell {
-    pub color_class: &'static str,
+    pub tone: &'static str,
     pub mean: String,
     pub samples: u32,
 }
@@ -212,20 +212,20 @@ pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix
                 .iter()
                 .map(|crit| match cell_map.get(crit.as_str()) {
                     None => MatrixCell {
-                        color_class: "text-slate-500",
+                        tone: "none",
                         mean: "—".into(),
                         samples: 0,
                     },
                     Some(c) => {
-                        let color_class = if c.mean >= 7.0 {
-                            "text-emerald-300"
+                        let tone = if c.mean >= 7.0 {
+                            "good"
                         } else if c.mean >= 4.0 {
-                            "text-amber-300"
+                            "mid"
                         } else {
-                            "text-rose-300"
+                            "bad"
                         };
                         MatrixCell {
-                            color_class,
+                            tone,
                             mean: format!("{:.1}", c.mean),
                             samples: c.samples,
                         }

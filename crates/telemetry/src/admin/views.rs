@@ -10,7 +10,6 @@ use crate::{Event, EventId, EventKind, ToolCall, ToolCallStats};
 pub(super) struct ToolCallRow {
     pub args: String,
     pub error: Option<String>,
-    pub kind_class: &'static str,
     pub kind_label: &'static str,
     pub outcome_label: &'static str,
     pub result: Option<String>,
@@ -19,13 +18,7 @@ pub(super) struct ToolCallRow {
 
 impl From<ToolCall> for ToolCallRow {
     fn from(t: ToolCall) -> Self {
-        let (kind_label, kind_class) = match t.kind {
-            ToolCallKind::Mcp => ("mcp", "bg-amber-950/60 text-amber-300 border-amber-900/60"),
-            ToolCallKind::Subagent => (
-                "subagent",
-                "bg-emerald-950/60 text-emerald-300 border-emerald-900/60",
-            ),
-        };
+        let kind_label = kind_display(t.kind);
         let outcome_label = if t.error.is_some() {
             "error"
         } else if t.result.is_some() {
@@ -36,7 +29,6 @@ impl From<ToolCall> for ToolCallRow {
         Self {
             args: t.args,
             error: t.error,
-            kind_class,
             kind_label,
             outcome_label,
             result: t.result,
@@ -58,7 +50,6 @@ pub(super) struct EventRow {
     pub duration: String,
     pub indent_px: usize,
     pub kind: &'static str,
-    pub kind_class: &'static str,
     pub label: String,
     pub payload_pretty: String,
 }
@@ -100,17 +91,11 @@ fn walk(
         let kind = event_kind_str(e.kind);
         let label = label_for(kind, &e.payload);
         let cost = format_cost(&e.payload);
-        let kind_class = match kind {
-            "llm_call" => "bg-sky-950/60 text-sky-300 border-sky-900/60",
-            "tool_call" => "bg-amber-950/60 text-amber-300 border-amber-900/60",
-            _ => "bg-slate-900 text-slate-300 border-slate-800",
-        };
         out.push(EventRow {
             cost,
             duration: e.duration_ms.map(|d| format!("{d}ms")).unwrap_or_default(),
             indent_px: depth.saturating_mul(12),
             kind,
-            kind_class,
             label,
             payload_pretty,
         });
@@ -167,13 +152,10 @@ fn event_kind_str(kind: EventKind) -> &'static str {
     }
 }
 
-fn kind_display(kind: ToolCallKind) -> (&'static str, &'static str) {
+fn kind_display(kind: ToolCallKind) -> &'static str {
     match kind {
-        ToolCallKind::Mcp => ("mcp", "bg-amber-950/60 text-amber-300 border-amber-900/60"),
-        ToolCallKind::Subagent => (
-            "subagent",
-            "bg-emerald-950/60 text-emerald-300 border-emerald-900/60",
-        ),
+        ToolCallKind::Mcp => "mcp",
+        ToolCallKind::Subagent => "subagent",
     }
 }
 
@@ -206,7 +188,6 @@ pub(super) struct ToolDetailRow {
     pub call_count: u32,
     pub error_count: u32,
     pub error_rate: String,
-    pub kind_class: &'static str,
     pub kind_label: &'static str,
     pub tool_name: String,
     pub user_count: u32,
@@ -217,7 +198,6 @@ pub(super) struct ToolListRow {
     pub error_count: u32,
     pub error_rate: String,
     pub error_rate_high: bool,
-    pub kind_class: &'static str,
     pub kind_label: &'static str,
     pub tool_name: String,
     pub user_count: u32,
@@ -251,12 +231,11 @@ pub(super) fn recent_tool_call_rows(calls: Vec<ToolCall>) -> Vec<RecentToolCallR
 }
 
 pub(super) fn tool_detail_row(stats: &ToolCallStats) -> ToolDetailRow {
-    let (kind_label, kind_class) = kind_display(stats.kind);
+    let kind_label = kind_display(stats.kind);
     ToolDetailRow {
         call_count: stats.call_count,
         error_count: stats.error_count,
         error_rate: format_error_rate(stats.error_count, stats.call_count),
-        kind_class,
         kind_label,
         tool_name: stats.tool_name.clone(),
         user_count: stats.user_count,
@@ -267,7 +246,7 @@ pub(super) fn tool_list_rows(stats: Vec<ToolCallStats>) -> Vec<ToolListRow> {
     stats
         .into_iter()
         .map(|s| {
-            let (kind_label, kind_class) = kind_display(s.kind);
+            let kind_label = kind_display(s.kind);
             let error_rate = format_error_rate(s.error_count, s.call_count);
             let error_rate_high =
                 s.call_count > 0 && (f64::from(s.error_count) / f64::from(s.call_count)) > 0.1;
@@ -276,7 +255,6 @@ pub(super) fn tool_list_rows(stats: Vec<ToolCallStats>) -> Vec<ToolListRow> {
                 error_count: s.error_count,
                 error_rate,
                 error_rate_high,
-                kind_class,
                 kind_label,
                 tool_name: s.tool_name,
                 user_count: s.user_count,

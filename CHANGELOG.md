@@ -31,11 +31,14 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 ### Fixed
 
 - Studio YAML editor forms (agents, judges, experiments, smoke tests,
-  providers, MCP, config sections, raw file) reliably send their body as
-  `Content-Type: application/yaml`. The previous inline script attached its
-  request-rewriting listener to a descendant `<form>` lookup that never
-  matched, so submissions could fall through as form-encoded and fail
-  validation.
+  providers, MCP, config sections, raw file) now actually send their body as
+  `Content-Type: application/yaml`, via a small `yaml-enc` htmx extension in
+  `app.js`. The previous per-template inline script was doubly broken: its
+  listener attached to a descendant `<form>` lookup that never matched, and
+  even when attached, htmx ignores a foreign `body` field on the
+  `configRequest` event — an extension's `encodeParameters` is the only
+  supported hook for replacing the request body. Saves from these forms
+  previously reached the server form-encoded and were rejected.
 
 ## [0.3.0] - 2026-06-03
 

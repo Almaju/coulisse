@@ -1,10 +1,32 @@
-// Studio client behaviors layered on top of htmx. Three jobs:
+// Studio client behaviors layered on top of htmx. Four jobs:
 // (1) highlight the sidebar link matching the current page, re-run after
 // every hx-boost navigation; (2) surface a toast on the result of any
 // mutating (non-GET) request, so saves and failures get uniform feedback
-// without per-form wiring; (3) drive the off-canvas sidebar on mobile.
+// without per-form wiring; (3) drive the off-canvas sidebar on mobile;
+// (4) the yaml-enc htmx extension used by every YAML editor form.
 
 (function () {
+  // Forms with hx-ext="yaml-enc" submit their `__yaml` textarea verbatim
+  // as the request body with Content-Type: application/yaml — browsers
+  // don't ship a YAML parser, and the server accepts YAML on the same
+  // routes as JSON. An htmx extension is the only supported hook for
+  // replacing the encoded body (htmx ignores foreign fields on the
+  // configRequest detail).
+  htmx.defineExtension('yaml-enc', {
+    onEvent: function (name, evt) {
+      if (name === 'htmx:configRequest') {
+        evt.detail.headers['Content-Type'] = 'application/yaml';
+      }
+    },
+    encodeParameters: function (xhr, parameters) {
+      var value =
+        typeof parameters.get === 'function'
+          ? parameters.get('__yaml')
+          : parameters['__yaml'];
+      return value || '';
+    },
+  });
+
   function markActiveNav() {
     var path = window.location.pathname;
     var links = document.querySelectorAll('aside nav a[href^="/admin/"]');

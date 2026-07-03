@@ -12,7 +12,7 @@
 
 <form
   hx-{{ method }}="{{ action }}"
-  hx-ext="json-enc"
+  hx-ext="yaml-enc"
   hx-target="#agent-edit-error"
   hx-swap="innerHTML"
   hx-on::after-request="if (event.detail.successful) { this.reset() }"
@@ -45,17 +45,3 @@
     <a href="{% if is_new %}/admin/agents{% else %}/admin/agents/{{ name }}{% endif %}" class="btn btn-ghost">Cancel</a>
   </div>
 </form>
-<script>
-  // WHY: the form submits its YAML body as a single string. Browsers don't
-  // ship a YAML parser, so send the raw body with
-  // `Content-Type: application/yaml`; the server accepts it on the same
-  // routes as JSON.
-  document.currentScript.previousElementSibling
-    ?.addEventListener?.('htmx:configRequest', function (e) {
-      const body = (e.detail.parameters && e.detail.parameters['__yaml']) || '';
-      e.detail.parameters = {};
-      e.detail.headers = e.detail.headers || {};
-      e.detail.headers['Content-Type'] = 'application/yaml';
-      e.detail.body = body;
-    });
-</script>
