@@ -36,7 +36,6 @@ pub(super) struct RunRow {
     pub id: String,
     pub started_at_label: String,
     pub status: String,
-    pub status_class: &'static str,
     pub total_turns: u32,
 }
 
@@ -55,7 +54,6 @@ pub(super) struct RunDetailView {
     pub is_running: bool,
     pub started_at_label: String,
     pub status: String,
-    pub status_class: &'static str,
     pub test_name: String,
     pub total_turns: u32,
     pub turns: Vec<TurnView>,
@@ -93,14 +91,12 @@ impl SmokeTestRow {
 
 impl RunRow {
     pub(super) fn build(run: &StoredRun) -> Self {
-        let (status_class, status) = status_pill(run.status);
         Self {
             agent_resolved: run.agent_resolved.clone().unwrap_or_else(|| "—".into()),
             experiment: run.experiment.clone(),
             id: run.id.0.to_string(),
             started_at_label: relative_time(run.started_at),
-            status,
-            status_class,
+            status: run.status.as_str().to_string(),
             total_turns: run.total_turns,
         }
     }
@@ -108,7 +104,6 @@ impl RunRow {
 
 impl RunDetailView {
     pub(super) fn build(run: &StoredRun, messages: Vec<StoredMessage>) -> Self {
-        let (status_class, status) = status_pill(run.status);
         let mut turns: Vec<TurnView> = messages
             .into_iter()
             .map(|m| TurnView {
@@ -133,22 +128,12 @@ impl RunDetailView {
             id: run.id.0.to_string(),
             is_running: run.status == RunStatus::Running,
             started_at_label: relative_time(run.started_at),
-            status,
-            status_class,
+            status: run.status.as_str().to_string(),
             test_name: run.test_name.clone(),
             total_turns: run.total_turns,
             turns,
         }
     }
-}
-
-fn status_pill(status: RunStatus) -> (&'static str, String) {
-    let class = match status {
-        RunStatus::Completed => "border-emerald-900/60 bg-emerald-950/60 text-emerald-300",
-        RunStatus::Failed => "border-rose-900/60 bg-rose-950/60 text-rose-300",
-        RunStatus::Running => "border-sky-900/60 bg-sky-950/60 text-sky-300",
-    };
-    (class, status.as_str().to_string())
 }
 
 /// Shorthand "5m ago" / "2h ago" / "3d ago" rendering. Avoids a chrono

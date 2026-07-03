@@ -1,111 +1,105 @@
-<div class="space-y-6">
-  {% let label = test.source.as_str() %}
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <a href="/admin/smoke" class="text-xs text-slate-500 hover:text-slate-300" hx-get="/admin/smoke" hx-push-url="true">&larr; Smoke tests</a>
-      <div class="mt-1 flex items-center gap-2">
-        <h1 class="text-2xl font-semibold tracking-tight font-mono {% if label == "tombstoned" %}text-slate-400 line-through{% else %}text-slate-100{% endif %}">{{ test.name }}</h1>
-        {% if label == "yaml" %}
-          <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
-        {% else if label == "override" %}
-          <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
-        {% else if label == "dynamic" %}
-          <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
-        {% else %}
-          <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
-        {% endif %}
-      </div>
-      {% if label != "tombstoned" %}
-      <p class="mt-1 text-sm text-slate-400">Target: <span class="font-mono text-slate-300">{{ test.target }}</span> · Persona: <span class="text-slate-300">{{ test.persona_model }}</span> · Up to {{ test.repetitions }} run{% if test.repetitions != 1 %}s{% endif %} of {{ test.max_turns }} turns.</p>
-      {% endif %}
-    </div>
-    <div class="flex items-center gap-2">
-      {% if label != "tombstoned" %}
-      <a
-        href="/admin/smoke/{{ test.name }}/edit"
-        class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
-      >Edit</a>
-      <button
-        class="rounded-md border border-emerald-700 bg-emerald-800/40 px-3 py-1.5 text-sm font-semibold text-emerald-200 hover:bg-emerald-800/70"
-        hx-post="/admin/smoke/{{ test.name }}/run"
-        hx-swap="none"
-      >Run now</button>
-      {% endif %}
-      {% if label == "override" %}
-      <button
-        hx-post="/admin/smoke/{{ test.name }}/reset"
-        class="rounded-md border border-amber-800 bg-amber-950/60 px-3 py-1.5 text-sm font-medium text-amber-200 hover:bg-amber-900/40"
-      >Reset to YAML</button>
-      {% endif %}
-      {% if label == "tombstoned" %}
-      <button
-        hx-post="/admin/smoke/{{ test.name }}/reset"
-        class="rounded-md border border-emerald-800 bg-emerald-950/60 px-3 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-900/40"
-      >{% if test.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
+{% let label = test.source.as_str() %}
+<a href="/admin/smoke" class="back-link" hx-get="/admin/smoke" hx-push-url="true">← Smoke tests</a>
+
+<div class="page-head" style="margin-top: 12px">
+  <div>
+    <div style="display: flex; align-items: center; gap: 10px">
+      <h1 class="page-title" style="{% if label == "tombstoned" %}color: var(--ink-faint); text-decoration: line-through{% endif %}">{{ test.name }}</h1>
+      {% if label == "yaml" %}
+        <span class="pill">yaml</span>
+      {% else if label == "override" %}
+        <span class="pill pill-amber">override</span>
+      {% else if label == "dynamic" %}
+        <span class="pill pill-live"><span class="dot"></span>dynamic</span>
       {% else %}
-      <button
-        hx-delete="/admin/smoke/{{ test.name }}"
-        hx-confirm="{% if test.yaml_backed %}Tombstone this smoke test?{% else %}Delete permanently?{% endif %}"
-        class="rounded-md border border-rose-800 bg-rose-950/60 px-3 py-1.5 text-sm font-medium text-rose-200 hover:bg-rose-900/40"
-      >{% if test.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+        <span class="pill pill-error">tombstoned</span>
       {% endif %}
     </div>
+    {% if label != "tombstoned" %}
+    <p class="page-sub">Target: <span class="mono">{{ test.target }}</span> · Persona: {{ test.persona_model }} · Up to {{ test.repetitions }} run{% if test.repetitions != 1 %}s{% endif %} of {{ test.max_turns }} turns.</p>
+    {% endif %}
   </div>
-  {% if label == "tombstoned" %}
-  <div class="rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3">
-    <p class="text-sm text-rose-200">
-      {% if test.yaml_backed %}
-        This smoke test is declared in YAML but tombstoned at runtime.
-      {% else %}
-        This smoke test is tombstoned and has no YAML backing.
-      {% endif %}
-    </p>
+  <div class="page-actions">
+    {% if label != "tombstoned" %}
+    <a href="/admin/smoke/{{ test.name }}/edit" class="btn">Edit</a>
+    <button
+      class="btn btn-primary"
+      hx-post="/admin/smoke/{{ test.name }}/run"
+      hx-swap="none"
+    >Run now</button>
+    {% endif %}
+    {% if label == "override" %}
+    <button hx-post="/admin/smoke/{{ test.name }}/reset" class="btn">Reset to YAML</button>
+    {% endif %}
+    {% if label == "tombstoned" %}
+    <button hx-post="/admin/smoke/{{ test.name }}/reset" class="btn">{% if test.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
+    {% else %}
+    <button
+      hx-delete="/admin/smoke/{{ test.name }}"
+      hx-confirm="{% if test.yaml_backed %}Tombstone this smoke test?{% else %}Delete permanently?{% endif %}"
+      class="btn btn-danger"
+    >{% if test.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+    {% endif %}
+  </div>
+</div>
+
+{% if label == "tombstoned" %}
+<div class="form-error" style="margin-bottom: 18px">
+  {% if test.yaml_backed %}
+    This smoke test is declared in YAML but tombstoned at runtime.
+  {% else %}
+    This smoke test is tombstoned and has no YAML backing.
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="table-card">
+  <div class="card-head">
+    <div class="eyebrow">Recent runs</div>
+  </div>
+  {% if recent_runs.is_empty() %}
+    <div class="card-pad">
+      <span class="muted" style="font-size: 12.5px; font-style: italic">No runs yet — click "Run now" to launch the persona against the target.</span>
+    </div>
+  {% else %}
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>Status</th>
+          <th>Resolved agent</th>
+          <th class="num">Turns</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in recent_runs %}
+        <tr
+          class="row-link"
+          hx-get="/admin/smoke/runs/{{ r.id }}"
+          hx-push-url="true"
+        >
+          <td>{{ r.started_at_label }}</td>
+          <td>
+            {% if r.status == "completed" %}
+              <span class="pill pill-live"><span class="dot"></span>{{ r.status }}</span>
+            {% else if r.status == "failed" %}
+              <span class="pill pill-error">{{ r.status }}</span>
+            {% else %}
+              <span class="pill pill-progress">{{ r.status }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="mono" style="font-size: 12px">{{ r.agent_resolved }}</span>
+            {% match r.experiment %}
+              {% when Some with (exp) %}<span class="muted" style="font-size: 11.5px; margin-left: 8px">via {{ exp }}</span>{% when None %}
+            {% endmatch %}
+          </td>
+          <td class="num">{{ r.total_turns }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
   </div>
   {% endif %}
-  <div class="rounded-lg border border-slate-800 bg-slate-900">
-    <div class="border-b border-slate-800 px-4 py-3">
-      <h2 class="text-sm font-semibold text-slate-100">Recent runs</h2>
-    </div>
-    <div class="px-4 py-3">
-      {% if recent_runs.is_empty() %}
-        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
-          No runs yet — click "Run now" to launch the persona against the target.
-        </div>
-      {% else %}
-      <div class="overflow-hidden rounded-md border border-slate-800">
-        <table class="w-full text-left">
-          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
-            <tr>
-              <th class="px-4 py-2 font-medium">Started</th>
-              <th class="px-4 py-2 font-medium">Status</th>
-              <th class="px-4 py-2 font-medium">Resolved agent</th>
-              <th class="px-4 py-2 text-right font-medium">Turns</th>
-            </tr>
-          </thead>
-          <tbody>
-          {% for r in recent_runs %}
-            <tr
-              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
-              hx-get="/admin/smoke/runs/{{ r.id }}"
-              hx-push-url="true"
-            >
-              <td class="px-4 py-3 text-sm text-slate-300">{{ r.started_at_label }}</td>
-              <td class="px-4 py-3 text-sm">
-                <span class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs {{ r.status_class }}">{{ r.status }}</span>
-              </td>
-              <td class="px-4 py-3 font-mono text-xs text-slate-300">
-                {{ r.agent_resolved }}
-                {% match r.experiment %}
-                  {% when Some with (exp) %}<span class="ml-2 text-slate-500">via {{ exp }}</span>{% when None %}
-                {% endmatch %}
-              </td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{{ r.total_turns }}</td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% endif %}
-    </div>
-  </div>
 </div>

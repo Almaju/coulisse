@@ -1,130 +1,140 @@
-<div class="space-y-6">
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Configuration</h1>
-      <p class="mt-1 text-sm text-slate-400">
-        Edit any section below — changes are validated and written to
-        <code class="font-mono text-xs">coulisse.yaml</code>. Agents, judges and experiments apply
-        live; providers, MCP, memory, telemetry, auth and storage apply after restart.
-      </p>
-    </div>
-    <a
-      href="/admin/config/edit"
-      class="shrink-0 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
-    >Edit raw YAML</a>
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Configuration</h1>
+    <p class="page-sub">
+      Edit any section below — changes are validated and written to
+      <code>coulisse.yaml</code>. Agents, judges and experiments apply
+      live; providers, MCP, memory, telemetry, auth and storage apply after restart.
+    </p>
   </div>
-  <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">Providers</h2>
-        <a href="/admin/providers" class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700">Manage</a>
-      </div>
-      <div class="px-4 py-3">
-        {% if settings.providers.is_empty() %}
-          <span class="text-xs italic text-slate-500">No providers configured</span>
-        {% else %}
-        <div class="space-y-2">
-          {% for p in settings.providers %}
-          <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-            <span class="font-mono text-sm text-slate-200">{{ p.kind }}</span>
-            <span class="font-mono text-xs text-slate-500">{{ p.masked_key }}</span>
-          </div>
-          {% endfor %}
+  <div class="page-actions">
+    <a href="/admin/config/edit" class="btn">Edit raw YAML</a>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">Providers</span>
+      <a href="/admin/providers" class="btn btn-sm">Manage</a>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 8px; padding: 14px 16px">
+      {% if settings.providers.is_empty() %}
+        <span class="muted" style="font-size: 12.5px">No providers configured</span>
+      {% else %}
+        {% for p in settings.providers %}
+        <div class="card-inset" style="align-items: center; display: flex; gap: 10px; justify-content: space-between; padding: 8px 12px">
+          <span class="mono" style="font-size: 12.5px; font-weight: 500">{{ p.kind }}</span>
+          <span class="mono muted" style="font-size: 11.5px">{{ p.masked_key }}</span>
         </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">MCP servers</span>
+      <a href="/admin/mcp" class="btn btn-sm">Manage</a>
+    </div>
+    <div style="padding: 14px 16px">
+      <span class="muted" style="font-size: 12.5px">Tool servers exposed to agents over the Model Context Protocol.</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">Memory</span>
+      <a href="/admin/memory" class="btn btn-sm">Edit</a>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px">
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Storage</span>
+        <span class="mono" style="font-size: 12px; text-align: right">{{ settings.memory_storage }}</span>
+      </div>
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">User state</span>
+        <span style="font-size: 12.5px; text-align: right">{{ settings.memory_user_state }}</span>
+      </div>
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Extractor</span>
+        <span style="font-size: 12.5px; text-align: right">{{ settings.memory_extractor }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">Telemetry</span>
+      <a href="/admin/telemetry" class="btn btn-sm">Edit</a>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px">
+      <div style="align-items: center; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Stderr logs</span>
+        {% if settings.telemetry_fmt %}
+          <span class="pill pill-live"><span class="dot"></span>Enabled</span>
+        {% else %}
+          <span class="pill">Disabled</span>
         {% endif %}
       </div>
-    </div>
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">MCP servers</h2>
-        <a href="/admin/mcp" class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700">Manage</a>
+      <div style="align-items: center; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">SQLite layer</span>
+        {% if settings.telemetry_sqlite %}
+          <span class="pill pill-live"><span class="dot"></span>Enabled</span>
+        {% else %}
+          <span class="pill">Disabled</span>
+        {% endif %}
       </div>
-      <div class="px-4 py-3">
-        <span class="text-xs text-slate-500">Tool servers exposed to agents over the Model Context Protocol.</span>
-      </div>
-    </div>
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">Memory</h2>
-        <a href="/admin/memory" class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700">Edit</a>
-      </div>
-      <div class="divide-y divide-slate-800">
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Storage</span>
-          <span class="font-mono text-sm text-slate-300">{{ settings.memory_storage }}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">User state</span>
-          <span class="text-sm text-slate-300">{{ settings.memory_user_state }}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Extractor</span>
-          <span class="text-sm text-slate-300">{{ settings.memory_extractor }}</span>
-        </div>
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">OTLP</span>
+        <span class="mono" style="font-size: 12px; text-align: right">{{ settings.telemetry_otlp }}</span>
       </div>
     </div>
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">Telemetry</h2>
-        <a href="/admin/telemetry" class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700">Edit</a>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">Auth</span>
+      <a href="/admin/auth" class="btn btn-sm">Edit</a>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px">
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Proxy scope</span>
+        <span style="font-size: 12.5px; text-align: right">{{ settings.auth_proxy }}</span>
       </div>
-      <div class="divide-y divide-slate-800">
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Stderr logs</span>
-          <span class="text-sm {% if settings.telemetry_fmt %}text-emerald-300{% else %}text-slate-500{% endif %}">{% if settings.telemetry_fmt %}Enabled{% else %}Disabled{% endif %}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">SQLite layer</span>
-          <span class="text-sm {% if settings.telemetry_sqlite %}text-emerald-300{% else %}text-slate-500{% endif %}">{% if settings.telemetry_sqlite %}Enabled{% else %}Disabled{% endif %}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">OTLP</span>
-          <span class="text-sm text-slate-300">{{ settings.telemetry_otlp }}</span>
-        </div>
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Admin scope</span>
+        <span style="font-size: 12.5px; text-align: right">{{ settings.auth_admin }}</span>
       </div>
     </div>
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">Auth</h2>
-        <a href="/admin/auth" class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700">Edit</a>
-      </div>
-      <div class="divide-y divide-slate-800">
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Proxy scope</span>
-          <span class="text-sm text-slate-300">{{ settings.auth_proxy }}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Admin scope</span>
-          <span class="text-sm text-slate-300">{{ settings.auth_admin }}</span>
-        </div>
-      </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">Storage</span>
+      <a href="/admin/storage" class="btn btn-sm">Edit</a>
     </div>
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">Storage</h2>
-        <a href="/admin/storage" class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700">Edit</a>
-      </div>
-      <div class="px-4 py-3">
-        <span class="text-xs text-slate-500">OpenAI-compatible file storage backend and quotas.</span>
-      </div>
+    <div style="padding: 14px 16px">
+      <span class="muted" style="font-size: 12.5px">OpenAI-compatible file storage backend and quotas.</span>
     </div>
-    <div class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="border-b border-slate-800 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-100">Summary</h2>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="eyebrow">Summary</span>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px">
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Agents</span>
+        <span class="mono" style="font-size: 12px">{{ settings.agent_count }}</span>
       </div>
-      <div class="divide-y divide-slate-800">
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Agents</span>
-          <span class="font-mono text-sm text-slate-300">{{ settings.agent_count }}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Experiments</span>
-          <span class="font-mono text-sm text-slate-300">{{ settings.experiment_count }}</span>
-        </div>
-        <div class="flex items-center justify-between px-4 py-3">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Judges</span>
-          <span class="font-mono text-sm text-slate-300">{{ settings.judge_count }}</span>
-        </div>
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Experiments</span>
+        <span class="mono" style="font-size: 12px">{{ settings.experiment_count }}</span>
+      </div>
+      <div style="align-items: baseline; display: flex; gap: 12px; justify-content: space-between">
+        <span class="muted" style="font-size: 12px; font-weight: 600">Judges</span>
+        <span class="mono" style="font-size: 12px">{{ settings.judge_count }}</span>
       </div>
     </div>
   </div>

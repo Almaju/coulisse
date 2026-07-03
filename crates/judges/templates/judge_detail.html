@@ -1,149 +1,153 @@
-<div class="space-y-6">
-  <a href="/admin/judges" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
-    <span>←</span>
-    <span>Back to judges</span>
-  </a>
-  {% let label = judge.source.as_str() %}
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <div class="flex items-center gap-2">
-        <h1 class="text-2xl font-semibold tracking-tight {% if label == "tombstoned" %}text-slate-400 line-through{% else %}text-slate-100{% endif %}">{{ judge.name }}</h1>
-        {% if label == "yaml" %}
-          <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
-        {% else if label == "override" %}
-          <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
-        {% else if label == "dynamic" %}
-          <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
+{% let label = judge.source.as_str() %}
+<a href="/admin/judges" class="back-link">← Judges</a>
+
+<div class="page-head" style="margin-top: 12px">
+  <div>
+    <div style="display: flex; align-items: center; gap: 10px">
+      <h1 class="page-title" style="{% if label == "tombstoned" %}color: var(--ink-faint); text-decoration: line-through{% endif %}">{{ judge.name }}</h1>
+      {% if label == "yaml" %}
+        <span class="pill">yaml</span>
+      {% else if label == "override" %}
+        <span class="pill pill-amber">override</span>
+      {% else if label == "dynamic" %}
+        <span class="pill pill-live"><span class="dot"></span>dynamic</span>
+      {% else %}
+        <span class="pill pill-error">tombstoned</span>
+      {% endif %}
+    </div>
+    {% if label != "tombstoned" %}
+    <p class="page-sub mono" style="font-size: 12.5px">{{ judge.provider }} / {{ judge.model }} · sampling {{ judge.sampling_rate }}</p>
+    {% endif %}
+  </div>
+  <div class="page-actions">
+    {% if label != "tombstoned" %}
+    <a href="/admin/judges/{{ judge.name }}/edit" class="btn">Edit</a>
+    {% endif %}
+    {% if label == "override" %}
+    <button hx-post="/admin/judges/{{ judge.name }}/reset" class="btn">Reset to YAML</button>
+    {% endif %}
+    {% if label == "tombstoned" %}
+    <button hx-post="/admin/judges/{{ judge.name }}/reset" class="btn">
+      {% if judge.yaml_backed %}Re-enable{% else %}Remove row{% endif %}
+    </button>
+    {% else %}
+    <button
+      hx-delete="/admin/judges/{{ judge.name }}"
+      hx-confirm="{% if judge.yaml_backed %}Tombstone this judge?{% else %}Delete this judge permanently?{% endif %}"
+      class="btn btn-danger"
+    >{% if judge.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+    {% endif %}
+  </div>
+</div>
+
+{% if label == "tombstoned" %}
+<div class="form-error" style="margin-bottom: 18px">
+  {% if judge.yaml_backed %}
+    This judge is declared in YAML but tombstoned at runtime. Re-enable to restore the YAML version.
+  {% else %}
+    This judge is tombstoned and has no YAML backing. Remove the row to clean it up.
+  {% endif %}
+</div>
+{% endif %}
+
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 18px; align-items: start">
+  <div class="section-gap">
+    <div class="card">
+      <div class="card-head">
+        <div class="eyebrow">Rubrics</div>
+      </div>
+      <div class="card-pad">
+        {% if judge.rubrics.is_empty() %}
+          <span class="muted" style="font-size: 12px; font-style: italic">No rubrics defined</span>
         {% else %}
-          <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
+          <div class="section-gap" style="gap: 8px">
+          {% for r in judge.rubrics %}
+            <div class="card-inset" style="padding: 10px 13px">
+              <div class="mono" style="font-size: 13px; font-weight: 500">{{ r.name }}</div>
+              <p class="muted" style="font-size: 12px; margin: 4px 0 0">{{ r.description }}</p>
+            </div>
+          {% endfor %}
+          </div>
         {% endif %}
       </div>
-      {% if label != "tombstoned" %}
-      <p class="mt-1 text-sm text-slate-400">{{ judge.provider }} / {{ judge.model }} · sampling {{ judge.sampling_rate }}</p>
-      {% endif %}
     </div>
-    <div class="flex items-center gap-2">
-      {% if label != "tombstoned" %}
-      <a
-        href="/admin/judges/{{ judge.name }}/edit"
-        class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
-      >Edit</a>
-      {% endif %}
-      {% if label == "override" %}
-      <button
-        hx-post="/admin/judges/{{ judge.name }}/reset"
-        class="rounded-md border border-amber-800 bg-amber-950/60 px-3 py-1.5 text-sm font-medium text-amber-200 hover:bg-amber-900/40"
-      >Reset to YAML</button>
-      {% endif %}
-      {% if label == "tombstoned" %}
-      <button
-        hx-post="/admin/judges/{{ judge.name }}/reset"
-        class="rounded-md border border-emerald-800 bg-emerald-950/60 px-3 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-900/40"
-      >{% if judge.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
-      {% else %}
-      <button
-        hx-delete="/admin/judges/{{ judge.name }}"
-        hx-confirm="{% if judge.yaml_backed %}Tombstone this judge?{% else %}Delete this judge permanently?{% endif %}"
-        class="rounded-md border border-rose-800 bg-rose-950/60 px-3 py-1.5 text-sm font-medium text-rose-200 hover:bg-rose-900/40"
-      >{% if judge.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
-      {% endif %}
-    </div>
-  </div>
-  {% if label == "tombstoned" %}
-  <div class="rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3">
-    <p class="text-sm text-rose-200">
-      {% if judge.yaml_backed %}
-        This judge is declared in YAML but tombstoned at runtime. Re-enable to restore the YAML version.
-      {% else %}
-        This judge is tombstoned and has no YAML backing. Remove the row to clean it up.
-      {% endif %}
-    </p>
-  </div>
-  {% endif %}
-  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-    <div class="space-y-6 lg:col-span-2">
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Rubrics</h2>
-        </div>
-        <div class="px-4 py-3">
-          {% if judge.rubrics.is_empty() %}
-            <span class="text-xs italic text-slate-500">No rubrics defined</span>
-          {% else %}
-            <div class="space-y-2">
-            {% for r in judge.rubrics %}
-              <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                <div class="font-mono text-sm text-slate-200">{{ r.name }}</div>
-                <p class="mt-1 text-xs text-slate-400">{{ r.description }}</p>
-              </div>
-            {% endfor %}
-            </div>
-          {% endif %}
-        </div>
+    {% if !matrix.criteria.is_empty() %}
+    <div class="table-card">
+      <div class="card-head">
+        <div class="eyebrow">Agent × criterion (7d)</div>
       </div>
-      {% if !matrix.criteria.is_empty() %}
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Agent × Criterion (7d)</h2>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              {% for c in matrix.criteria %}
+              <th class="num">{{ c }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+          {% for row in matrix.rows %}
+            <tr>
+              <td class="mono">
+                <a href="/admin/agents/{{ row.agent_name }}" style="color: inherit; text-decoration: none">{{ row.agent_name }}</a>
+              </td>
+              {% for cell in row.cells %}
+              <td class="num">
+                {% if cell.tone == "good" %}
+                  <span class="tag tag-moss">{{ cell.mean }}</span>
+                {% else if cell.tone == "mid" %}
+                  <span class="tag tag-amber">{{ cell.mean }}</span>
+                {% else if cell.tone == "bad" %}
+                  <span class="tag tag-wine">{{ cell.mean }}</span>
+                {% else %}
+                  <span class="mono muted">{{ cell.mean }}</span>
+                {% endif %}
+                <span class="mono muted" style="font-size: 10.5px">({{ cell.samples }})</span>
+              </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  <div class="section-gap">
+    <div class="table-card">
+      <div class="card-head">
+        <div class="eyebrow">Recent scores</div>
+      </div>
+      {% if recent_scores.is_empty() %}
+        <div class="card-pad">
+          <span class="muted" style="font-size: 12px; font-style: italic">No scores yet</span>
         </div>
-        <div class="overflow-x-auto px-4 py-3">
-          <table class="w-full text-left text-xs">
-            <thead class="text-slate-500 uppercase tracking-wide">
+      {% else %}
+        <div class="table-scroll">
+          <table class="table">
+            <thead>
               <tr>
-                <th class="py-1 font-medium">Agent</th>
-                {% for c in matrix.criteria %}
-                <th class="py-1 text-right font-medium">{{ c }}</th>
-                {% endfor %}
+                <th>Criterion</th>
+                <th class="num">Score</th>
+                <th class="num">When</th>
               </tr>
             </thead>
             <tbody>
-            {% for row in matrix.rows %}
-              <tr class="border-t border-slate-800">
-                <td class="py-1 font-mono text-slate-200">
-                  <a href="/admin/agents/{{ row.agent_name }}" class="hover:text-slate-100">{{ row.agent_name }}</a>
+            {% for s in recent_scores %}
+              <tr>
+                <td>
+                  <div>{{ s.criterion }}</div>
+                  <p class="muted" style="font-size: 11.5px; margin: 3px 0 0">{{ s.reasoning }}</p>
                 </td>
-                {% for cell in row.cells %}
-                <td class="py-1 text-right font-mono {{ cell.color_class }}">
-                  {{ cell.mean }}
-                  <span class="text-slate-500">({{ cell.samples }})</span>
-                </td>
-                {% endfor %}
+                <td class="num mono" style="font-weight: 500">{{ s.score }}</td>
+                <td class="num muted" style="font-size: 11px; white-space: nowrap">{{ s.created_at }}</td>
               </tr>
             {% endfor %}
             </tbody>
           </table>
         </div>
-      </div>
       {% endif %}
-    </div>
-    <div>
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Recent scores</h2>
-        </div>
-        <div class="px-4 py-3">
-          {% if recent_scores.is_empty() %}
-            <span class="text-xs italic text-slate-500">No scores yet</span>
-          {% else %}
-            <div class="space-y-2">
-            {% for s in recent_scores %}
-              <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                <div class="mb-1 flex items-center justify-between">
-                  <div class="min-w-0">
-                    <span class="text-sm text-slate-200">{{ s.criterion }}</span>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="font-mono text-sm text-slate-100">{{ s.score }}</span>
-                    <span class="text-xs text-slate-500">{{ s.created_at }}</span>
-                  </div>
-                </div>
-                <p class="text-xs text-slate-400">{{ s.reasoning }}</p>
-              </div>
-            {% endfor %}
-            </div>
-          {% endif %}
-        </div>
-      </div>
     </div>
   </div>
 </div>

@@ -1,15 +1,13 @@
 {% if conversations.is_empty() %}
-  <span class="text-xs italic text-slate-500">No conversations yet</span>
+  <span class="muted" style="font-size: 12px; font-style: italic">No conversations yet</span>
 {% else %}
-  <div class="space-y-1">
+  <div class="section-gap" style="gap: 8px">
   {% for c in conversations %}
     <a href="/admin/conversations/{{ c.user_id }}"
-       class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 transition-colors hover:bg-slate-800/50">
-      <span class="font-mono text-xs text-slate-300">{{ c.user_id_short }}</span>
-      <div class="flex items-center gap-3 text-xs text-slate-500">
-        <span>{{ c.message_count }} msgs</span>
-        <span>{{ c.last_activity_at }}</span>
-      </div>
+       class="card-inset"
+       style="align-items: center; color: inherit; display: flex; gap: 10px; justify-content: space-between; padding: 9px 12px; text-decoration: none">
+      <span class="mono" style="font-size: 12px">{{ c.user_id_short }}</span>
+      <span class="mono muted" style="font-size: 11.5px">{{ c.message_count }} msgs · {{ c.last_activity_at }}</span>
     </a>
   {% endfor %}
   </div>

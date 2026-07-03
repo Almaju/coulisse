@@ -1,129 +1,134 @@
-<div class="space-y-6">
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Experiments</h1>
-      <p class="mt-1 text-sm text-slate-400">A/B groups: <code class="font-mono text-xs">coulisse.yaml</code> entries plus runtime overrides in the database. Clients address them as <code class="font-mono text-xs">model</code>; each request resolves to one of the variant agents. Edits via this UI write to the database; routing tables rebuild on restart.</p>
-    </div>
-    <a
-      href="/admin/experiments/new"
-      class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
-    >New experiment</a>
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Experiments</h1>
+    <p class="page-sub">A/B groups: <code>coulisse.yaml</code> entries plus runtime overrides in the database. Clients address them as <code>model</code>; each request resolves to one of the variant agents. Edits via this UI write to the database; routing tables rebuild on restart.</p>
   </div>
-  {% if experiments.is_empty() %}
-    <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
-      No experiments configured. Add an <code class="font-mono text-xs">experiments:</code> entry to your config to start A/B testing.
+  <div class="page-actions">
+    <a href="/admin/experiments/new" class="btn btn-primary">+ New experiment</a>
+  </div>
+</div>
+
+{% if experiments.is_empty() %}
+  <div class="empty">
+    No experiments configured. Add an <code>experiments:</code> entry to your config to start A/B testing.
+  </div>
+{% else %}
+<div class="section-gap">
+  {% for exp in experiments %}
+  {% let label = exp.source.as_str() %}
+  <div id="{{ exp.name }}" class="card">
+    <div class="card-head">
+      <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px">
+        <span class="mono" style="font-size: 14px; font-weight: 600; {% if exp.tombstoned %}color: var(--ink-faint); text-decoration: line-through{% endif %}">{{ exp.name }}</span>
+        {% if label == "yaml" %}
+          <span class="pill">yaml</span>
+        {% else if label == "override" %}
+          <span class="pill pill-amber">override</span>
+        {% else if label == "dynamic" %}
+          <span class="pill pill-live"><span class="dot"></span>dynamic</span>
+        {% else %}
+          <span class="pill pill-error">tombstoned</span>
+        {% endif %}
+        {% if !exp.tombstoned %}
+          <span class="tag">{{ exp.strategy }}</span>
+          {% if exp.sticky_by_user %}
+            <span class="tag">sticky-by-user</span>
+          {% endif %}
+        {% endif %}
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px">
+        {% if !exp.tombstoned %}
+        <span class="muted" style="font-size: 12px; white-space: nowrap">{{ exp.variants.len() }} variant{% if exp.variants.len() != 1 %}s{% endif %}</span>
+        <a href="/admin/experiments/{{ exp.name }}/edit" class="btn btn-sm">Edit</a>
+        {% endif %}
+        {% if label == "override" %}
+        <button hx-post="/admin/experiments/{{ exp.name }}/reset" class="btn btn-sm">Reset to YAML</button>
+        {% endif %}
+        {% if label == "tombstoned" %}
+        <button hx-post="/admin/experiments/{{ exp.name }}/reset" class="btn btn-sm">{% if exp.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
+        {% else %}
+        <button
+          hx-delete="/admin/experiments/{{ exp.name }}"
+          hx-confirm="{% if exp.yaml_backed %}Tombstone this experiment?{% else %}Delete permanently?{% endif %}"
+          class="btn btn-sm btn-danger"
+        >{% if exp.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+        {% endif %}
+      </div>
     </div>
-  {% else %}
-    {% for exp in experiments %}
-    {% let label = exp.source.as_str() %}
-    <div id="{{ exp.name }}" class="rounded-lg border border-slate-800 bg-slate-900">
-      <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <div class="flex items-center gap-3">
-          <h2 class="font-mono text-sm font-semibold {% if exp.tombstoned %}text-slate-500 line-through{% else %}text-slate-100{% endif %}">{{ exp.name }}</h2>
-          {% if label == "yaml" %}
-            <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
-          {% else if label == "override" %}
-            <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
-          {% else if label == "dynamic" %}
-            <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
-          {% else %}
-            <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
-          {% endif %}
-          {% if !exp.tombstoned %}
-            <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-300">{{ exp.strategy }}</span>
-            {% if exp.sticky_by_user %}
-              <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-400">sticky-by-user</span>
-            {% endif %}
-          {% endif %}
-        </div>
-        <div class="flex items-center gap-2">
-          {% if !exp.tombstoned %}
-          <span class="text-xs text-slate-500">{{ exp.variants.len() }} variant{% if exp.variants.len() != 1 %}s{% endif %}</span>
-          <a
-            href="/admin/experiments/{{ exp.name }}/edit"
-            class="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
-          >Edit</a>
-          {% endif %}
-          {% if label == "override" %}
-          <button
-            hx-post="/admin/experiments/{{ exp.name }}/reset"
-            class="rounded-md border border-amber-800 bg-amber-950/60 px-2 py-1 text-xs font-medium text-amber-200 hover:bg-amber-900/40"
-          >Reset to YAML</button>
-          {% endif %}
-          {% if label == "tombstoned" %}
-          <button
-            hx-post="/admin/experiments/{{ exp.name }}/reset"
-            class="rounded-md border border-emerald-800 bg-emerald-950/60 px-2 py-1 text-xs font-medium text-emerald-200 hover:bg-emerald-900/40"
-          >{% if exp.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
-          {% else %}
-          <button
-            hx-delete="/admin/experiments/{{ exp.name }}"
-            hx-confirm="{% if exp.yaml_backed %}Tombstone this experiment?{% else %}Delete permanently?{% endif %}"
-            class="rounded-md border border-rose-800 bg-rose-950/60 px-2 py-1 text-xs font-medium text-rose-200 hover:bg-rose-900/40"
-          >{% if exp.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
-          {% endif %}
-        </div>
+    {% if exp.tombstoned %}
+    <div class="card-pad" style="color: var(--wine-text); font-size: 13px">
+      {% if exp.yaml_backed %}Declared in YAML but tombstoned at runtime.{% else %}Tombstoned. No YAML backing.{% endif %}
+    </div>
+    {% endif %}
+    {% if !exp.tombstoned %}
+    {% match exp.purpose %}
+      {% when Some with (text) %}
+      <div style="border-bottom: 1px solid var(--line); padding: 12px 22px">
+        <p class="muted" style="font-size: 12.5px; margin: 0">{{ text }}</p>
       </div>
-      {% if exp.tombstoned %}
-      <div class="border-b border-slate-800 px-4 py-3 text-sm text-rose-300">
-        {% if exp.yaml_backed %}Declared in YAML but tombstoned at runtime.{% else %}Tombstoned. No YAML backing.{% endif %}
-      </div>
-      {% endif %}
-      {% if !exp.tombstoned %}
-      {% match exp.purpose %}
-        {% when Some with (text) %}
-        <div class="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">{{ text }}</div>
-        {% when None %}
+      {% when None %}
+    {% endmatch %}
+    {% if exp.metric.is_some() || exp.epsilon.is_some() || exp.min_samples.is_some() || exp.sampling_rate.is_some() %}
+    <div class="tag-row" style="border-bottom: 1px solid var(--line); padding: 12px 22px">
+      {% match exp.metric %}
+        {% when Some with (m) %}<span class="tag">metric: {{ m }}</span>{% when None %}
       {% endmatch %}
-      <div class="flex flex-wrap gap-x-6 gap-y-1 border-b border-slate-800 px-4 py-3 text-xs text-slate-500">
-        {% match exp.metric %}
-          {% when Some with (m) %}<div>metric: <span class="font-mono text-slate-300">{{ m }}</span></div>{% when None %}
-        {% endmatch %}
-        {% match exp.epsilon %}
-          {% when Some with (e) %}<div>epsilon: <span class="font-mono text-slate-300">{{ e }}</span></div>{% when None %}
-        {% endmatch %}
-        {% match exp.min_samples %}
-          {% when Some with (n) %}<div>min_samples: <span class="font-mono text-slate-300">{{ n }}</span></div>{% when None %}
-        {% endmatch %}
-        {% match exp.sampling_rate %}
-          {% when Some with (r) %}<div>sampling_rate: <span class="font-mono text-slate-300">{{ r }}</span></div>{% when None %}
-        {% endmatch %}
+      {% match exp.epsilon %}
+        {% when Some with (e) %}<span class="tag">epsilon: {{ e }}</span>{% when None %}
+      {% endmatch %}
+      {% match exp.min_samples %}
+        {% when Some with (n) %}<span class="tag">min_samples: {{ n }}</span>{% when None %}
+      {% endmatch %}
+      {% match exp.sampling_rate %}
+        {% when Some with (r) %}<span class="tag">sampling_rate: {{ r }}</span>{% when None %}
+      {% endmatch %}
+    </div>
+    {% endif %}
+    <div style="padding: 16px 22px 14px">
+      <div class="eyebrow" style="margin-bottom: 8px">Traffic split</div>
+      <div class="split-bar">
+        {% for v in exp.variants %}
+        <i style="width: {{ v.share }}" title="{{ v.agent }} · {{ v.share }}"></i>
+        {% endfor %}
       </div>
-      <table class="w-full text-left">
-        <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
+    </div>
+    <div style="overflow-x: auto">
+      <table class="table">
+        <thead>
           <tr>
-            <th class="px-4 py-2 font-medium">Variant agent</th>
-            <th class="px-4 py-2 text-right font-medium">Weight</th>
-            <th class="px-4 py-2 text-right font-medium">Share</th>
+            <th>Variant agent</th>
+            <th class="num">Weight</th>
+            <th class="num">Share</th>
           </tr>
         </thead>
         <tbody>
         {% for v in exp.variants %}
-          <tr class="border-t border-slate-800">
-            <td class="px-4 py-2 font-mono text-xs text-slate-200">
-              {{ v.agent }}
+          <tr>
+            <td>
+              <span class="mono" style="font-size: 12px">{{ v.agent }}</span>
               {% if v.is_primary %}
-                <span class="ml-2 inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">primary</span>
+                <span class="tag tag-moss" style="margin-left: 8px">primary</span>
               {% endif %}
             </td>
-            <td class="px-4 py-2 text-right text-sm text-slate-300">{{ v.weight }}</td>
-            <td class="px-4 py-2 text-right text-sm text-slate-300">{{ v.share }}</td>
+            <td class="num">{{ v.weight }}</td>
+            <td class="num">{{ v.share }}</td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
-      {% match exp.means_url %}
-        {% when Some with (url) %}
-          <div class="border-t border-slate-800 px-4 py-3">
-            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Bandit means</h3>
-            <div hx-get="{{ url }}" hx-trigger="load" hx-target="this" hx-swap="innerHTML">
-              <span class="text-xs italic text-slate-500">Loading…</span>
-            </div>
-          </div>
-        {% when None %}
-      {% endmatch %}
-      {% endif %}
     </div>
-    {% endfor %}
-  {% endif %}
+    {% match exp.means_url %}
+      {% when Some with (url) %}
+      <div class="card-pad" style="border-top: 1px solid var(--line)">
+        <div class="eyebrow" style="margin-bottom: 10px">Bandit means</div>
+        <div hx-get="{{ url }}" hx-trigger="load" hx-target="this" hx-swap="innerHTML">
+          <span class="muted" style="font-size: 12px; font-style: italic">Loading…</span>
+        </div>
+      </div>
+      {% when None %}
+    {% endmatch %}
+    {% endif %}
+  </div>
+  {% endfor %}
 </div>
+{% endif %}

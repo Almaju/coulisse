@@ -1,11 +1,12 @@
-<div class="space-y-6">
+<div class="page-head">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Live activity</h1>
-    <p class="mt-1 text-sm text-slate-400">Background tasks and recent tool calls. Refreshes every 2 seconds.</p>
+    <h1 class="page-title" style="align-items: center; display: flex; gap: 12px">Live activity <span class="live-dot">live</span></h1>
+    <p class="page-sub">Background tasks and recent tool calls. Refreshes every 2 seconds.</p>
   </div>
-  <div hx-get="/admin/live/feed"
-       hx-trigger="load, every 2s"
-       hx-swap="innerHTML">
-    <p class="text-sm italic text-slate-500">Loading…</p>
-  </div>
+</div>
+<div hx-get="/admin/live/feed"
+     hx-target="this"
+     hx-trigger="load, every 2s"
+     hx-swap="innerHTML">
+  <div class="empty">Loading…</div>
 </div>
