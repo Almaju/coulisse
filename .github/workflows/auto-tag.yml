@@ -1,0 +1,55 @@
+name: Auto-tag release
+
+# When main advances, cut a release if (and only if) the workspace version in
+# Cargo.toml has been bumped to a version that isn't tagged yet. Pushing the
+# tag is what triggers release.yml (cargo-dist binaries + installers) and
+# docker.yml (multi-arch image) — so the whole release is: bump the version,
+# merge to main, done.
+#
+# The tag is pushed with RELEASE_PAT rather than the default GITHUB_TOKEN
+# because tags pushed by GITHUB_TOKEN do not trigger other workflows (GitHub's
+# recursion guard), which would leave release.yml and docker.yml asleep. See
+# docs/src/reference/releasing.md for the one-time secret setup.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Read workspace version
+        id: version
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Workspace version is $version"
+
+      - name: Skip if the tag already exists
+        id: check
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} already exists — nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} is new — cutting a release."
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
