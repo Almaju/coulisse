@@ -81,39 +81,127 @@ pub async fn shell(request: Request, next: Next) -> Response {
 
 pub mod live;
 
-/// Embedded studio client script (active-nav highlight + toasts). Served
-/// at `/admin/static/app.js`. The shell middleware passes non-HTML
-/// responses through untouched, so the JS content type survives.
+/// Embedded studio assets, served under `/admin/static/`. Everything the
+/// shell needs ships inside the binary — no CDN, no network dependency —
+/// so the studio renders identically offline and behind strict CSPs.
+/// The shell middleware passes non-HTML responses through untouched, so
+/// each asset's content type survives.
 const APP_JS: &str = include_str!("../static/app.js");
+const COULISSE_CSS: &str = include_str!("../static/coulisse.css");
+/// Vendored fonts (SIL Open Font License): Bricolage Grotesque and
+/// Hanken Grotesk as latin variable fonts, IBM Plex Mono as latin
+/// static weights.
+const FONT_BRICOLAGE: &[u8] = include_bytes!("../static/fonts/bricolage-grotesque-latin.woff2");
+const FONT_HANKEN: &[u8] = include_bytes!("../static/fonts/hanken-grotesk-latin.woff2");
+const FONT_PLEX_MONO_400: &[u8] = include_bytes!("../static/fonts/ibm-plex-mono-latin-400.woff2");
+const FONT_PLEX_MONO_500: &[u8] = include_bytes!("../static/fonts/ibm-plex-mono-latin-500.woff2");
+const HTMX_JS: &str = include_str!("../static/htmx.min.js");
 
 /// Static assets for the studio shell. Kept on the cli side because cli
 /// owns `base.html` and the chrome these assets enhance.
 pub fn static_router() -> Router {
-    Router::new().route("/static/app.js", get(app_js))
+    Router::new()
+        .route("/static/app.js", get(js_asset(APP_JS)))
+        .route("/static/coulisse.css", get(css_asset(COULISSE_CSS)))
+        .route(
+            "/static/fonts/bricolage-grotesque-latin.woff2",
+            get(font_asset(FONT_BRICOLAGE)),
+        )
+        .route(
+            "/static/fonts/hanken-grotesk-latin.woff2",
+            get(font_asset(FONT_HANKEN)),
+        )
+        .route(
+            "/static/fonts/ibm-plex-mono-latin-400.woff2",
+            get(font_asset(FONT_PLEX_MONO_400)),
+        )
+        .route(
+            "/static/fonts/ibm-plex-mono-latin-500.woff2",
+            get(font_asset(FONT_PLEX_MONO_500)),
+        )
+        .route("/static/htmx.min.js", get(js_asset(HTMX_JS)))
 }
 
-async fn app_js() -> Response {
-    (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        APP_JS,
-    )
-        .into_response()
+/// Immutable + max-age lets the browser skip re-fetching embedded assets
+/// across htmx navigations; the URL set is versioned with the binary.
+const STATIC_CACHE: &str = "public, max-age=86400";
+
+fn css_asset(body: &'static str) -> impl Fn() -> ReadyResponse + Clone {
+    static_asset(body.as_bytes(), "text/css; charset=utf-8")
+}
+
+fn font_asset(body: &'static [u8]) -> impl Fn() -> ReadyResponse + Clone {
+    static_asset(body, "font/woff2")
+}
+
+fn js_asset(body: &'static str) -> impl Fn() -> ReadyResponse + Clone {
+    static_asset(body.as_bytes(), "application/javascript; charset=utf-8")
+}
+
+type ReadyResponse = std::future::Ready<Response>;
+
+fn static_asset(
+    body: &'static [u8],
+    content_type: &'static str,
+) -> impl Fn() -> ReadyResponse + Clone {
+    move || {
+        std::future::ready(
+            (
+                [
+                    (header::CACHE_CONTROL, STATIC_CACHE),
+                    (header::CONTENT_TYPE, content_type),
+                ],
+                body,
+            )
+                .into_response(),
+        )
+    }
+}
+
+/// State for the Home page: the hot-reloadable settings summary for
+/// config counts, plus the telemetry sink for 24h activity numbers.
+/// Cross-feature composition lives in cli, per the project rule.
+#[derive(Clone)]
+pub struct HomeState {
+    pub settings: SettingsHandle,
+    pub telemetry: Arc<telemetry::Sink>,
+}
+
+pub fn home_router(state: HomeState) -> Router {
+    Router::new()
+        .route("/overview", get(home))
+        .with_state(state)
 }
 
 #[derive(Template)]
 #[template(path = "overview.html")]
-struct OverviewPage;
+struct HomePage {
+    agent_count: usize,
+    experiment_count: usize,
+    judge_count: usize,
+    turns_24h: u32,
+    users_24h: u32,
+}
 
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-pub async fn overview() -> Result<Html<String>, StatusCode> {
-    let html = OverviewPage
-        .render()
+const DAY_SECS: u64 = 86_400;
+
+async fn home(State(state): State<HomeState>) -> Result<Html<String>, StatusCode> {
+    let since = coulisse_core::now_secs().saturating_sub(DAY_SECS);
+    let activity = state
+        .telemetry
+        .recent_activity_counts(since)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let settings = state.settings.load_full();
+    let html = HomePage {
+        agent_count: settings.agent_count,
+        experiment_count: settings.experiment_count,
+        judge_count: settings.judge_count,
+        turns_24h: activity.turn_count,
+        users_24h: activity.user_count,
+    }
+    .render()
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Html(html))
 }
 

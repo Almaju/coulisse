@@ -1,25 +1,30 @@
 {% if rows.is_empty() %}
-  <span class="italic text-slate-500">No events for this turn (legacy message written before telemetry was enabled).</span>
+  <span class="muted" style="font-size: 12px; font-style: italic">No events for this turn (legacy message written before telemetry was enabled).</span>
 {% else %}
-  <div class="space-y-1">
+<div class="trace">
+  <div class="trace-body">
     {% for r in rows %}
       <div style="margin-left: {{ r.indent_px }}px">
-        <details class="rounded border border-slate-800 bg-slate-950/80 px-2 py-1">
-          <summary class="flex cursor-pointer items-center justify-between gap-2">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide {{ r.kind_class }}">{{ r.kind }}</span>
-              <span class="truncate font-mono text-[11px] text-slate-300">{{ r.label }}</span>
-            </div>
-            <div class="flex items-center gap-2 shrink-0">
-              {% if !r.cost.is_empty() %}
-                <span class="rounded border border-emerald-900/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-mono text-emerald-300">{{ r.cost }}</span>
-              {% endif %}
-              <span class="text-[10px] text-slate-500">{{ r.duration }}</span>
-            </div>
+        <details>
+          <summary style="cursor: pointer; display: flex; align-items: baseline; gap: 10px">
+            {% if r.kind == "tool_call" %}
+              <span class="t-tool">{{ r.kind }}</span>
+            {% else if r.kind == "turn_finish" %}
+              <span class="t-ok">{{ r.kind }}</span>
+            {% else if r.kind == "turn_start" %}
+              <span class="t-dim">{{ r.kind }}</span>
+            {% else %}
+              <span>{{ r.kind }}</span>
+            {% endif %}
+            <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.label }}</span>
+            <span class="t-dim" style="flex-shrink: 0">
+              {% if !r.cost.is_empty() %}{{ r.cost }} · {% endif %}{{ r.duration }}
+            </span>
           </summary>
-          <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 px-2 py-1 font-mono text-[11px] text-slate-300">{{ r.payload_pretty }}</pre>
+          <pre style="background: var(--velvet-night); border-radius: 8px; margin: 4px 0 8px; max-height: 192px; overflow: auto; overflow-wrap: break-word; padding: 8px 12px; white-space: pre-wrap">{{ r.payload_pretty }}</pre>
         </details>
       </div>
     {% endfor %}
   </div>
+</div>
 {% endif %}

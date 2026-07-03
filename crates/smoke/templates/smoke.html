@@ -1,74 +1,76 @@
-<div class="space-y-6">
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Smoke tests</h1>
-      <p class="mt-1 text-sm text-slate-400">Synthetic-user personas: <code class="font-mono text-xs">coulisse.yaml</code> entries plus runtime overrides in the database. Edits via this UI write to the database; the YAML file is never modified.</p>
-    </div>
-    <a
-      href="/admin/smoke/new"
-      class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
-    >New smoke test</a>
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Smoke tests</h1>
+    <p class="page-sub">Synthetic-user personas: <code>coulisse.yaml</code> entries plus runtime overrides in the database. Edits via this UI write to the database; the YAML file is never modified.</p>
   </div>
-  <div class="rounded-lg border border-slate-800 bg-slate-900">
-    <div class="border-b border-slate-800 px-4 py-3">
-      <h2 class="text-sm font-semibold text-slate-100">{{ tests.len() }} row{% if tests.len() != 1 %}s{% endif %}</h2>
-    </div>
-    <div class="px-4 py-3">
-      {% if tests.is_empty() %}
-        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
-          No smoke tests configured. Add a <code class="font-mono text-xs">smoke_tests:</code> entry to your YAML or click "New smoke test".
-        </div>
-      {% else %}
-      <div class="overflow-hidden rounded-md border border-slate-800">
-        <table class="w-full text-left">
-          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
-            <tr>
-              <th class="px-4 py-2 font-medium">Name</th>
-              <th class="px-4 py-2 font-medium">Source</th>
-              <th class="px-4 py-2 font-medium">Target</th>
-              <th class="px-4 py-2 font-medium">Persona</th>
-              <th class="px-4 py-2 text-right font-medium">Reps × Turns</th>
-              <th class="px-4 py-2 font-medium">Last run</th>
-            </tr>
-          </thead>
-          <tbody>
-          {% for t in tests %}
-            <tr
-              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
-              hx-get="/admin/smoke/{{ t.name }}"
-              hx-push-url="true"
-            >
-              <td class="px-4 py-3 font-mono text-sm {% if t.tombstoned %}text-slate-500 line-through{% else %}text-slate-200{% endif %}">{{ t.name }}</td>
-              <td class="px-4 py-3">
-                {% let label = t.source.as_str() %}
-                {% if label == "yaml" %}
-                  <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
-                {% else if label == "override" %}
-                  <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
-                {% else if label == "dynamic" %}
-                  <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
-                {% else %}
-                  <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
-                {% endif %}
-              </td>
-              <td class="px-4 py-3 font-mono text-sm text-slate-300">{% if t.tombstoned %}—{% else %}{{ t.target }}{% endif %}</td>
-              <td class="px-4 py-3 text-sm text-slate-300">{% if t.tombstoned %}—{% else %}{{ t.persona_model }}{% endif %}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if t.tombstoned %}—{% else %}{{ t.repetitions }} × {{ t.max_turns }}{% endif %}</td>
-              <td class="px-4 py-3 text-sm text-slate-300">
-                {% match t.last_run %}
-                  {% when Some with (run) %}
-                    <span class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs {{ run.status_class }}">{{ run.status }}</span>
-                    <span class="ml-2 text-xs text-slate-500">{{ run.started_at_label }}</span>
-                  {% when None %}
-                    <span class="text-xs italic text-slate-500">never</span>
-                {% endmatch %}
-              </td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% endif %}
-    </div>
+  <div class="page-actions">
+    <a href="/admin/smoke/new" class="btn btn-primary">+ New smoke test</a>
   </div>
 </div>
+
+{% if tests.is_empty() %}
+  <div class="empty">
+    No smoke tests configured. Add a <code>smoke_tests:</code> entry to your YAML or click "New smoke test".
+  </div>
+{% else %}
+<div class="table-card">
+  <div class="card-head">
+    <div class="eyebrow">{{ tests.len() }} row{% if tests.len() != 1 %}s{% endif %}</div>
+  </div>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Source</th>
+          <th>Target</th>
+          <th>Persona</th>
+          <th class="num">Reps × Turns</th>
+          <th>Last run</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for t in tests %}
+        <tr
+          class="row-link"
+          hx-get="/admin/smoke/{{ t.name }}"
+          hx-push-url="true"
+        >
+          <td><span class="mono" style="font-size: 12.5px; font-weight: 600; {% if t.tombstoned %}color: var(--ink-faint); text-decoration: line-through{% endif %}">{{ t.name }}</span></td>
+          <td>
+            {% let label = t.source.as_str() %}
+            {% if label == "yaml" %}
+              <span class="pill">yaml</span>
+            {% else if label == "override" %}
+              <span class="pill pill-amber">override</span>
+            {% else if label == "dynamic" %}
+              <span class="pill pill-live"><span class="dot"></span>dynamic</span>
+            {% else %}
+              <span class="pill pill-error">tombstoned</span>
+            {% endif %}
+          </td>
+          <td class="mono" style="font-size: 12px">{% if t.tombstoned %}—{% else %}{{ t.target }}{% endif %}</td>
+          <td>{% if t.tombstoned %}—{% else %}{{ t.persona_model }}{% endif %}</td>
+          <td class="num">{% if t.tombstoned %}—{% else %}{{ t.repetitions }} × {{ t.max_turns }}{% endif %}</td>
+          <td>
+            {% match t.last_run %}
+              {% when Some with (run) %}
+                {% if run.status == "completed" %}
+                  <span class="pill pill-live"><span class="dot"></span>{{ run.status }}</span>
+                {% else if run.status == "failed" %}
+                  <span class="pill pill-error">{{ run.status }}</span>
+                {% else %}
+                  <span class="pill pill-progress">{{ run.status }}</span>
+                {% endif %}
+                <span class="muted" style="font-size: 11.5px; margin-left: 8px">{{ run.started_at_label }}</span>
+              {% when None %}
+                <span class="muted" style="font-size: 11.5px; font-style: italic">never</span>
+            {% endmatch %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}

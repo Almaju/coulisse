@@ -96,7 +96,6 @@ pub(super) struct MessageRow {
     pub id: String,
     pub is_assistant: bool,
     pub role_label: &'static str,
-    pub role_tone: &'static str,
     pub token_count: u32,
 }
 
@@ -104,10 +103,10 @@ pub(super) fn message_rows(messages: Vec<StoredMessage>) -> Vec<MessageRow> {
     messages
         .into_iter()
         .map(|m| {
-            let (role_label, role_tone) = match m.role {
-                Role::Assistant => ("assistant", "bg-indigo-950/40 border-indigo-900/60"),
-                Role::System => ("system", "bg-slate-950/60 border-slate-800"),
-                Role::User => ("user", "bg-slate-900 border-slate-800"),
+            let role_label = match m.role {
+                Role::Assistant => "assistant",
+                Role::System => "system",
+                Role::User => "user",
             };
             MessageRow {
                 content: m.content,
@@ -115,7 +114,6 @@ pub(super) fn message_rows(messages: Vec<StoredMessage>) -> Vec<MessageRow> {
                 id: m.id.0.to_string(),
                 is_assistant: matches!(m.role, Role::Assistant),
                 role_label,
-                role_tone,
                 token_count: m.token_count.0,
             }
         })
