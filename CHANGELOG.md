@@ -11,6 +11,13 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
+- **Releases are now cut automatically on version bump.** Pushing to `main`
+  with a new workspace version in `Cargo.toml` auto-tags `v<version>`, which
+  triggers the existing cargo-dist (`release.yml`) and Docker (`docker.yml`)
+  workflows. No more hand-tagging — bump the version, merge, and
+  `coulisse update` picks up the resulting GitHub Release. Requires a
+  one-time `RELEASE_PAT` repository secret; see
+  [Releasing](docs/src/reference/releasing.md).
 - **Studio redesign — the "Agent Lab" identity.** The admin studio moved from
   Tailwind-via-CDN dark-slate styling to a hand-authored design system: warm
   oatmeal/sand neutrals with one mulberry signature hue, a velvet sidebar with
