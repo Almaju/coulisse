@@ -1,36 +1,68 @@
-<div class="space-y-6">
+<div class="page-head">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Overview</h1>
-    <p class="mt-1 text-sm text-slate-400">Quick links to every section of the studio.</p>
+    <h1 class="page-title">Welcome backstage</h1>
+    <p class="page-sub">
+      {{ agent_count }} agent{% if agent_count != 1 %}s{% endif %} ·
+      {{ judge_count }} judge{% if judge_count != 1 %}s{% endif %} ·
+      {{ experiment_count }} experiment{% if experiment_count != 1 %}s{% endif %}
+    </p>
   </div>
-  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-    <a href="/admin/live" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Live</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">Real-time activity board: who's working on what right now.</p>
-    </a>
-    <a href="/admin/agents" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Agents</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">View configured agents, their tools, subagents, and recent performance.</p>
-    </a>
-    <a href="/admin/conversations" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Conversations</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">Browse user conversations, message history, token usage, and memories.</p>
-    </a>
-    <a href="/admin/experiments" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Experiments</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">A/B test groups, variant traffic splits, and bandit performance.</p>
-    </a>
-    <a href="/admin/judges" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Judges</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">LLM-as-judge evaluators, score volumes, and quality breakdown by agent.</p>
-    </a>
-    <a href="/admin/tools" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Tools</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">MCP and subagent tool calls, error rates, and recent invocations.</p>
-    </a>
-    <a href="/admin/settings" class="group rounded-lg border border-slate-800 bg-slate-900 px-5 py-4 transition-colors hover:border-slate-700 hover:bg-slate-800/60">
-      <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Settings</div>
-      <p class="text-sm text-slate-300 group-hover:text-slate-100">Running configuration: providers, memory, telemetry, and auth.</p>
-    </a>
+  <div class="page-actions">
+    <a href="/admin/agents/new" class="btn btn-primary">+ New agent</a>
   </div>
+</div>
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">Turns · 24h</div>
+    <div class="stat-value">{{ turns_24h }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Active users · 24h</div>
+    <div class="stat-value">{{ users_24h }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Agents</div>
+    <div class="stat-value is-mulberry">{{ agent_count }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Experiments</div>
+    <div class="stat-value is-moss">{{ experiment_count }}</div>
+  </div>
+</div>
+
+<div class="eyebrow" style="margin-bottom: 12px">Agents</div>
+<div
+  hx-get="/admin/agents"
+  hx-select=".grid-cards"
+  hx-swap="innerHTML"
+  hx-target="this"
+  hx-trigger="load"
+>
+  <div class="empty">Loading agents…</div>
+</div>
+
+<div class="eyebrow" style="margin: 26px 0 12px">Keep an eye on</div>
+<div class="grid-cards">
+  <a href="/admin/live" class="card card-pad" style="text-decoration: none">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+      <span style="font-weight: 600; color: var(--ink)">Live board</span>
+      <span class="live-dot">live</span>
+    </div>
+    <p class="muted" style="margin: 0; font-size: 12.5px">
+      Tasks in flight and the latest tool calls, refreshed as they happen.
+    </p>
+  </a>
+  <a href="/admin/conversations" class="card card-pad" style="text-decoration: none">
+    <div style="font-weight: 600; color: var(--ink); margin-bottom: 8px">Conversations</div>
+    <p class="muted" style="margin: 0; font-size: 12.5px">
+      Message history, token spend, memories, and per-turn traces for every user.
+    </p>
+  </a>
+  <a href="/admin/tools" class="card card-pad" style="text-decoration: none">
+    <div style="font-weight: 600; color: var(--ink); margin-bottom: 8px">Tools</div>
+    <p class="muted" style="margin: 0; font-size: 12.5px">
+      MCP and subagent call volumes and error rates over the last seven days.
+    </p>
+  </a>
 </div>

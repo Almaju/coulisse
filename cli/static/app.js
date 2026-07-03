@@ -1,8 +1,8 @@
-// Studio client behaviors layered on top of htmx + Tailwind (both via
-// CDN). Two jobs: (1) highlight the sidebar link matching the current
-// page, re-run after every hx-boost navigation; (2) surface a toast on
-// the result of any mutating (non-GET) request, so saves and failures
-// get uniform feedback without per-form wiring.
+// Studio client behaviors layered on top of htmx. Three jobs:
+// (1) highlight the sidebar link matching the current page, re-run after
+// every hx-boost navigation; (2) surface a toast on the result of any
+// mutating (non-GET) request, so saves and failures get uniform feedback
+// without per-form wiring; (3) drive the off-canvas sidebar on mobile.
 
 (function () {
   function markActiveNav() {
@@ -12,16 +12,14 @@
     var bestLen = -1;
     links.forEach(function (a) {
       var href = a.getAttribute('href');
-      a.classList.remove('bg-slate-800', 'text-slate-100');
-      a.classList.add('text-slate-400');
+      a.classList.remove('is-active');
       if ((path === href || path.indexOf(href + '/') === 0) && href.length > bestLen) {
         best = a;
         bestLen = href.length;
       }
     });
     if (best) {
-      best.classList.add('bg-slate-800', 'text-slate-100');
-      best.classList.remove('text-slate-400');
+      best.classList.add('is-active');
     }
   }
 
@@ -31,9 +29,7 @@
       return;
     }
     var el = document.createElement('div');
-    el.className =
-      'pointer-events-auto rounded-md px-4 py-2 text-sm font-medium shadow-lg ' +
-      (ok ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white');
+    el.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
     el.textContent = message;
     box.appendChild(el);
     window.setTimeout(function () {
@@ -65,6 +61,17 @@
         msg = msg.slice(0, 200) + '…';
       }
       toast(msg, false);
+    }
+  });
+
+  document.addEventListener('click', function (evt) {
+    var toggle = evt.target.closest('.nav-toggle');
+    if (toggle) {
+      document.body.classList.toggle('nav-open');
+      return;
+    }
+    if (document.body.classList.contains('nav-open') && evt.target.closest('.sidebar a')) {
+      document.body.classList.remove('nav-open');
     }
   });
 })();

@@ -751,6 +751,10 @@ fn build_admin_router(w: AdminWiring) -> Router {
             w.yaml_smoke,
         ))
         .merge(telemetry::admin::router(Arc::clone(&w.telemetry)))
+        .merge(crate::admin::home_router(crate::admin::HomeState {
+            settings: Arc::clone(&w.settings_view),
+            telemetry: Arc::clone(&w.telemetry),
+        }))
         .merge(crate::admin::live::router(crate::admin::live::State {
             tasks: w.tasks,
             telemetry: w.telemetry,
@@ -760,7 +764,6 @@ fn build_admin_router(w: AdminWiring) -> Router {
                 .route("/settings", get(crate::admin::settings))
                 .with_state(w.settings_view),
         )
-        .route("/overview", get(crate::admin::overview))
         .route(
             "/",
             get(|| async { Redirect::permanent("/admin/overview") }),

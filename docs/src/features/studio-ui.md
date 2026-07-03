@@ -4,8 +4,11 @@ Coulisse ships a studio UI for browsing the conversations and memories the serve
 
 Point a browser at `http://localhost:8421/admin/` while the server is running, or run `coulisse studio` (alias `coulisse admin`) to open it for you.
 
+The sidebar is organized around the studio's three jobs — **Build** (Home, Agents, MCP servers), **Evaluate** (Experiments, Judges, Smoke tests), **Monitor** (Live, Conversations, Tools) — plus **Configure** (Providers, Tokens, Settings, Raw YAML). On a phone or narrow window the sidebar folds into a top-bar menu.
+
 ## What you can do
 
+- Land on **Home**: turns and active users over the last 24 hours, config counts, your agents as cards with their model, tool, and judge tags, and shortcuts to the monitoring pages.
 - List every user the server has seen, most recent activity first, with message and memory counts.
 - Open a user to see their full conversation (user, assistant, and system messages) with per-message token counts and relative timestamps.
 - See every tool invocation that happened during each assistant turn — rendered inline in the conversation as a collapsed block above the assistant bubble. Expand to see the args, the result (or error body), and a badge marking MCP vs subagent calls. This is the debug view for figuring out *what the agent tried and what came back*.
@@ -114,6 +117,8 @@ Omit the `auth.admin` block to leave the admin surface unauthenticated. That's f
 
 The studio is composed in the cli binary. Each feature crate (`memory`, `telemetry`, `judges`, `experiments`) owns its own admin module — its routes, its [askama](https://djc.github.io/askama/) templates, and its view models. Cli wires them together: a single `base.html` shell, the auth wrapping, and a tower middleware that wraps non-htmx responses in the layout so bookmarked deep URLs render with full navigation.
 
-Cross-feature views (e.g. tool-call panels inside a conversation page) are filled in via [htmx](https://htmx.org/) fragments — the conversation page, owned by `memory`, embeds `hx-get` requests against `telemetry` and `judges`. No feature crate depends on another for its admin surface; the browser orchestrates the composition. Tailwind (loaded via CDN) provides styling, and a small embedded `app.js` (served at `/admin/static/app.js`) highlights the active nav item and raises a toast on every save. Everything ships in the single Coulisse binary; there is no separate frontend build step.
+Cross-feature views (e.g. tool-call panels inside a conversation page) are filled in via [htmx](https://htmx.org/) fragments — the conversation page, owned by `memory`, embeds `hx-get` requests against `telemetry` and `judges`. No feature crate depends on another for its admin surface; the browser orchestrates the composition.
+
+Styling is a hand-authored design system (`/admin/static/coulisse.css`) shared by every feature crate's templates, and a small embedded `app.js` highlights the active nav item, drives the mobile menu, and raises a toast on every save. All assets — the stylesheet, htmx, and the three typefaces (Bricolage Grotesque, Hanken Grotesk, IBM Plex Mono, each under the SIL Open Font License) — are embedded in the binary and served from `/admin/static/`. The studio makes no CDN or network requests of its own, so it renders identically offline and behind strict Content-Security-Policy headers. There is no frontend build step.
 
 Editing the infrastructure sections (`auth`, `memory`, `storage`, `telemetry`, plus `providers` and `mcp`) lives in the cli crate rather than in the feature crates. Those edits only need the shared `ConfigPersister` trait and the section's own serde shape — not the feature crate's database — so they belong at the config layer that owns `coulisse.yaml`, not with the runtime/data admin pages the feature crates own.
