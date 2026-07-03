@@ -1,79 +1,47 @@
-<div class="space-y-6">
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Agents</h1>
-      <p class="mt-1 text-sm text-slate-400">Effective agent set: <code class="font-mono text-xs">coulisse.yaml</code> entries plus runtime overrides stored in the database. Edits via this UI write to the database; the YAML file is never modified.</p>
-    </div>
-    <a
-      href="/admin/agents/new"
-      class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
-    >New agent</a>
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Agents</h1>
+    <p class="page-sub">
+      Effective agent set: <code>coulisse.yaml</code> entries plus runtime
+      overrides stored in the database. Edits via this UI write to the
+      database; the YAML file is never modified.
+    </p>
   </div>
-  <div class="rounded-lg border border-slate-800 bg-slate-900">
-    <div class="border-b border-slate-800 px-4 py-3">
-      <h2 class="text-sm font-semibold text-slate-100">{{ agents.len() }} row{% if agents.len() != 1 %}s{% endif %}</h2>
-    </div>
-    <div class="px-4 py-3">
-      {% if agents.is_empty() %}
-        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
-          No agents configured.
-        </div>
-      {% else %}
-      <div class="overflow-hidden rounded-md border border-slate-800">
-        <table class="w-full text-left">
-          <thead class="bg-slate-950/60 text-xs uppercase tracking-wide text-slate-400">
-            <tr>
-              <th class="px-4 py-2 font-medium">Name</th>
-              <th class="px-4 py-2 font-medium">Source</th>
-              <th class="px-4 py-2 font-medium">Provider / Model</th>
-              <th class="px-4 py-2 text-right font-medium">Tools</th>
-              <th class="px-4 py-2 text-right font-medium">Subagents</th>
-              <th class="px-4 py-2 text-right font-medium">Judges</th>
-            </tr>
-          </thead>
-          <tbody>
-          {% for a in agents %}
-            <tr
-              class="cursor-pointer border-t border-slate-800 transition-colors hover:bg-slate-800/50"
-              hx-get="/admin/agents/{{ a.name }}"
-              hx-push-url="true"
-            >
-              <td class="px-4 py-3">
-                <div class="font-mono text-sm {% if a.tombstoned %}text-slate-500 line-through{% else %}text-slate-200{% endif %}">{{ a.name }}</div>
-                {% match a.purpose %}
-                  {% when Some with (p) %}
-                  <div class="mt-0.5 text-xs text-slate-500">{{ p }}</div>
-                  {% when None %}
-                {% endmatch %}
-              </td>
-              <td class="px-4 py-3">
-                {% let label = a.source.as_str() %}
-                {% if label == "yaml" %}
-                  <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
-                {% else if label == "override" %}
-                  <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
-                {% else if label == "dynamic" %}
-                  <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
-                {% else %}
-                  <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
-                {% endif %}
-              </td>
-              <td class="px-4 py-3 text-sm text-slate-300">
-                {% if a.tombstoned %}
-                  <span class="text-xs italic text-slate-500">disabled</span>
-                {% else %}
-                  {{ a.provider }} / {{ a.model }}
-                {% endif %}
-              </td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if a.tombstoned %}—{% else %}{{ a.tool_count }}{% endif %}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if a.tombstoned %}—{% else %}{{ a.subagent_count }}{% endif %}</td>
-              <td class="px-4 py-3 text-right text-sm text-slate-300">{% if a.tombstoned %}—{% else %}{{ a.judge_count }}{% endif %}</td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
+  <div class="page-actions">
+    <a href="/admin/agents/new" class="btn btn-primary">+ New agent</a>
+  </div>
+</div>
+
+<div class="grid-cards">
+  {% for a in agents %}
+    <a href="/admin/agents/{{ a.name }}" class="card card-pad" style="text-decoration: none; color: inherit">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px">
+        <span class="mono" style="font-size: 14px; font-weight: 600; {% if a.tombstoned %}color: var(--ink-faint); text-decoration: line-through{% endif %}">{{ a.name }}</span>
+        {% let label = a.source.as_str() %}
+        {% if label == "yaml" %}
+          <span class="pill">yaml</span>
+        {% else if label == "override" %}
+          <span class="pill pill-amber">override</span>
+        {% else if label == "dynamic" %}
+          <span class="pill pill-live"><span class="dot"></span>dynamic</span>
+        {% else %}
+          <span class="pill pill-error">tombstoned</span>
+        {% endif %}
+      </div>
+      {% match a.purpose %}
+        {% when Some with (p) %}
+        <p class="muted" style="font-size: 12.5px; line-height: 1.5; margin: 0 0 12px">{{ p }}</p>
+        {% when None %}
+      {% endmatch %}
+      {% if !a.tombstoned %}
+      <div class="tag-row">
+        <span class="tag">{{ a.provider }} · {{ a.model }}</span>
+        {% if a.tool_count > 0 %}<span class="tag tag-plum">{{ a.tool_count }} MCP</span>{% endif %}
+        {% if a.subagent_count > 0 %}<span class="tag tag-moss">{{ a.subagent_count }} subagent{% if a.subagent_count != 1 %}s{% endif %}</span>{% endif %}
+        {% if a.judge_count > 0 %}<span class="tag">{{ a.judge_count }} judge{% if a.judge_count != 1 %}s{% endif %}</span>{% endif %}
       </div>
       {% endif %}
-    </div>
-  </div>
+    </a>
+  {% endfor %}
+  <a href="/admin/agents/new" class="card-ghost">+ Compose a new agent</a>
 </div>

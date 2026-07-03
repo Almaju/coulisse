@@ -9,6 +9,37 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ## [Unreleased]
 
+### Changed
+
+- **Studio redesign — the "Agent Lab" identity.** The admin studio moved from
+  Tailwind-via-CDN dark-slate styling to a hand-authored design system: warm
+  oatmeal/sand neutrals with one mulberry signature hue, a velvet sidebar with
+  a faint curtain-pleat texture, and three embedded typefaces (Bricolage
+  Grotesque for display, Hanken Grotesk for UI, IBM Plex Mono for code — all
+  SIL OFL). Every studio page was restyled: agents render as cards with
+  model/tool/judge tags, conversations as chat bubbles, telemetry event trees
+  as a dark turn-trace panel, experiments with traffic-split bars, tokens with
+  budget meters. The sidebar is reorganized by job — Build / Evaluate /
+  Monitor / Configure — and folds into a top-bar menu on small screens
+  (previously the studio had no mobile navigation at all). The Overview page
+  became **Home**: 24-hour turn/user activity from telemetry, config counts,
+  and the agent card grid. All studio assets (stylesheet, htmx, fonts) are now
+  embedded in the binary and served from `/admin/static/` — no CDN, no network
+  dependency, CSP-friendly, and the UI no longer changes appearance when
+  `cdn.tailwindcss.com` ships a new default build.
+
+### Fixed
+
+- Studio YAML editor forms (agents, judges, experiments, smoke tests,
+  providers, MCP, config sections, raw file) now actually send their body as
+  `Content-Type: application/yaml`, via a small `yaml-enc` htmx extension in
+  `app.js`. The previous per-template inline script was doubly broken: its
+  listener attached to a descendant `<form>` lookup that never matched, and
+  even when attached, htmx ignores a foreign `body` field on the
+  `configRequest` event — an extension's `encodeParameters` is the only
+  supported hook for replacing the request body. Saves from these forms
+  previously reached the server form-encoded and were rejected.
+
 ## [0.3.0] - 2026-06-03
 
 ### Added

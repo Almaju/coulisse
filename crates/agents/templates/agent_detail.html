@@ -1,155 +1,143 @@
-<div class="space-y-6">
-  <a href="/admin/agents" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
-    <span>←</span>
-    <span>Back to agents</span>
-  </a>
-  {% let label = agent.source.as_str() %}
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <div class="flex items-center gap-2">
-        <h1 class="text-2xl font-semibold tracking-tight {% if label == "tombstoned" %}text-slate-400 line-through{% else %}text-slate-100{% endif %}">{{ agent.name }}</h1>
-        {% if label == "yaml" %}
-          <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">yaml</span>
-        {% else if label == "override" %}
-          <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">override</span>
-        {% else if label == "dynamic" %}
-          <span class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300">dynamic</span>
-        {% else %}
-          <span class="inline-flex items-center rounded-md border border-rose-900/60 bg-rose-950/60 px-2 py-0.5 text-xs text-rose-300">tombstoned</span>
-        {% endif %}
-      </div>
-      {% if label != "tombstoned" %}
-      <p class="mt-1 text-sm text-slate-400">{{ agent.provider }} / {{ agent.model }}</p>
+{% let label = agent.source.as_str() %}
+<a href="/admin/agents" class="back-link">← Agents</a>
+
+<div class="page-head" style="margin-top: 12px">
+  <div>
+    <div style="display: flex; align-items: center; gap: 10px">
+      <h1 class="page-title" style="{% if label == "tombstoned" %}color: var(--ink-faint); text-decoration: line-through{% endif %}">{{ agent.name }}</h1>
+      {% if label == "yaml" %}
+        <span class="pill">yaml</span>
+      {% else if label == "override" %}
+        <span class="pill pill-amber">override</span>
+      {% else if label == "dynamic" %}
+        <span class="pill pill-live"><span class="dot"></span>dynamic</span>
+      {% else %}
+        <span class="pill pill-error">tombstoned</span>
       {% endif %}
     </div>
-    <div class="flex items-center gap-2">
-      {% if label != "tombstoned" %}
-      <a
-        href="/admin/agents/{{ agent.name }}/edit"
-        class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
-      >Edit</a>
-      {% endif %}
-      {% if label == "override" %}
-      <button
-        hx-post="/admin/agents/{{ agent.name }}/reset"
-        class="rounded-md border border-amber-800 bg-amber-950/60 px-3 py-1.5 text-sm font-medium text-amber-200 hover:bg-amber-900/40"
-      >Reset to YAML</button>
-      {% endif %}
-      {% if label == "tombstoned" %}
-      <button
-        hx-post="/admin/agents/{{ agent.name }}/reset"
-        class="rounded-md border border-emerald-800 bg-emerald-950/60 px-3 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-900/40"
-      >{% if agent.yaml_backed %}Re-enable{% else %}Remove row{% endif %}</button>
-      {% else %}
-      <button
-        hx-delete="/admin/agents/{{ agent.name }}"
-        hx-confirm="{% if agent.yaml_backed %}Tombstone this agent? It will be hidden until you re-enable it.{% else %}Delete this agent permanently?{% endif %}"
-        class="rounded-md border border-rose-800 bg-rose-950/60 px-3 py-1.5 text-sm font-medium text-rose-200 hover:bg-rose-900/40"
-      >{% if agent.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
-      {% endif %}
-    </div>
+    {% if label != "tombstoned" %}
+    <p class="page-sub mono" style="font-size: 12.5px">{{ agent.provider }} · {{ agent.model }}</p>
+    {% endif %}
   </div>
-  {% if label == "tombstoned" %}
-  <div class="rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3">
-    <p class="text-sm text-rose-200">
-      {% if agent.yaml_backed %}
-        This agent is declared in YAML but tombstoned at runtime. Re-enable to restore the YAML version.
-      {% else %}
-        This agent is tombstoned and has no YAML backing. Remove the row to clean it up.
-      {% endif %}
-    </p>
+  <div class="page-actions">
+    {% if label != "tombstoned" %}
+    <a href="/admin/agents/{{ agent.name }}/edit" class="btn">Edit</a>
+    {% endif %}
+    {% if label == "override" %}
+    <button hx-post="/admin/agents/{{ agent.name }}/reset" class="btn">Reset to YAML</button>
+    {% endif %}
+    {% if label == "tombstoned" %}
+    <button hx-post="/admin/agents/{{ agent.name }}/reset" class="btn">
+      {% if agent.yaml_backed %}Re-enable{% else %}Remove row{% endif %}
+    </button>
+    {% else %}
+    <button
+      hx-delete="/admin/agents/{{ agent.name }}"
+      hx-confirm="{% if agent.yaml_backed %}Tombstone this agent? It will be hidden until you re-enable it.{% else %}Delete this agent permanently?{% endif %}"
+      class="btn btn-danger"
+    >{% if agent.yaml_backed %}Disable{% else %}Delete{% endif %}</button>
+    {% endif %}
   </div>
+</div>
+
+{% if label == "tombstoned" %}
+<div class="form-error">
+  {% if agent.yaml_backed %}
+    This agent is declared in YAML but tombstoned at runtime. Re-enable to restore the YAML version.
   {% else %}
-  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-    <div class="space-y-6 lg:col-span-2">
-      {% match agent.purpose %}
-        {% when Some with (p) %}
-        <div class="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Purpose</h2>
-          <p class="text-sm text-slate-200">{{ p }}</p>
-        </div>
-        {% when None %}
-      {% endmatch %}
-      {% if !agent.preamble.is_empty() %}
-      <details class="rounded-lg border border-slate-800 bg-slate-900">
-        <summary class="cursor-pointer border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-100">Preamble</summary>
-        <div class="px-4 py-3">
-          <pre class="whitespace-pre-wrap break-words font-mono text-xs text-slate-300">{{ agent.preamble }}</pre>
-        </div>
-      </details>
-      {% endif %}
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Configuration</h2>
-        </div>
-        <div class="divide-y divide-slate-800">
-          <div class="px-4 py-3">
-            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">MCP Tools</h3>
-            {% if agent.mcp_tools.is_empty() %}
-              <span class="text-xs italic text-slate-500">No tools configured</span>
-            {% else %}
-              <div class="space-y-1">
-              {% for t in agent.mcp_tools %}
-                <div class="flex items-center gap-2 text-sm">
-                  <span class="inline-flex items-center rounded-md border border-amber-900/60 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-300">{{ t.server }}</span>
-                  {% match t.only %}
-                    {% when Some with (names) %}
-                    <span class="text-xs text-slate-400">{{ names }}</span>
-                    {% when None %}
-                    <span class="text-xs text-slate-500 italic">all tools</span>
-                  {% endmatch %}
-                </div>
-              {% endfor %}
-              </div>
-            {% endif %}
-          </div>
-          <div class="px-4 py-3">
-            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Subagents</h3>
-            {% if agent.subagents.is_empty() %}
-              <span class="text-xs italic text-slate-500">None</span>
-            {% else %}
-              <div class="flex flex-wrap gap-2">
-              {% for s in agent.subagents %}
-                <a href="/admin/agents/{{ s }}" class="inline-flex items-center rounded-md border border-emerald-900/60 bg-emerald-950/60 px-2 py-0.5 text-xs text-emerald-300 hover:bg-emerald-900/40">{{ s }}</a>
-              {% endfor %}
-              </div>
-            {% endif %}
-          </div>
-          <div class="px-4 py-3">
-            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Judges</h3>
-            {% if agent.judges.is_empty() %}
-              <span class="text-xs italic text-slate-500">None</span>
-            {% else %}
-              <div class="flex flex-wrap gap-2">
-              {% for j in agent.judges %}
-                <a href="/admin/judges/{{ j }}" class="inline-flex items-center rounded-md border border-sky-900/60 bg-sky-950/60 px-2 py-0.5 text-xs text-sky-300 hover:bg-sky-900/40">{{ j }}</a>
-              {% endfor %}
-              </div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Recent conversations</h2>
-        </div>
-        <div class="px-4 py-3"
-             hx-get="/admin/agents/{{ agent.name }}/recent-conversations"
-             hx-trigger="load"
-             hx-swap="innerHTML">
-          <span class="text-xs italic text-slate-500">Loading…</span>
-        </div>
-      </div>
-    </div>
-    <div class="space-y-6">
-      <div hx-get="/admin/agents/{{ agent.name }}/scores"
-           hx-trigger="load"
-           hx-swap="innerHTML">
-        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-500">
-          Loading scores…
-        </div>
-      </div>
-    </div>
-  </div>
+    This agent is tombstoned and has no YAML backing. Remove the row to clean it up.
   {% endif %}
 </div>
+{% else %}
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 18px; align-items: start">
+  <div class="section-gap">
+    {% match agent.purpose %}
+      {% when Some with (p) %}
+      <div class="card card-pad">
+        <div class="eyebrow" style="margin-bottom: 10px">Purpose</div>
+        <p style="margin: 0; font-size: 13.5px">{{ p }}</p>
+      </div>
+      {% when None %}
+    {% endmatch %}
+    {% if !agent.preamble.is_empty() %}
+    <details class="disclosure" style="background: var(--surface)">
+      <summary>Preamble (system prompt)</summary>
+      <div class="disclosure-body">
+        <pre style="white-space: pre-wrap; overflow-wrap: break-word; font-size: 12px; line-height: 1.65; margin: 0; color: var(--ink-soft)">{{ agent.preamble }}</pre>
+      </div>
+    </details>
+    {% endif %}
+    <div class="card">
+      <div class="card-head">
+        <div class="eyebrow">Tools &amp; subagents</div>
+      </div>
+      <div class="card-pad section-gap" style="gap: 14px">
+        <div>
+          <div class="label">MCP tools</div>
+          {% if agent.mcp_tools.is_empty() %}
+            <span class="muted" style="font-size: 12px; font-style: italic">No tools configured</span>
+          {% else %}
+            <div class="section-gap" style="gap: 8px">
+            {% for t in agent.mcp_tools %}
+              <div class="card-inset" style="display: flex; align-items: center; gap: 10px; padding: 9px 12px">
+                <span class="tag tag-plum">{{ t.server }}</span>
+                {% match t.only %}
+                  {% when Some with (names) %}
+                  <span class="mono muted" style="font-size: 11.5px">{{ names }}</span>
+                  {% when None %}
+                  <span class="muted" style="font-size: 11.5px; font-style: italic">all tools</span>
+                {% endmatch %}
+              </div>
+            {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+        <div>
+          <div class="label">Subagents</div>
+          {% if agent.subagents.is_empty() %}
+            <span class="muted" style="font-size: 12px; font-style: italic">None</span>
+          {% else %}
+            <div class="tag-row">
+            {% for s in agent.subagents %}
+              <a href="/admin/agents/{{ s }}" class="tag tag-moss" style="text-decoration: none">{{ s }}</a>
+            {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+        <div>
+          <div class="label">Judges</div>
+          {% if agent.judges.is_empty() %}
+            <span class="muted" style="font-size: 12px; font-style: italic">None</span>
+          {% else %}
+            <div class="tag-row">
+            {% for j in agent.judges %}
+              <a href="/admin/judges/{{ j }}" class="tag" style="text-decoration: none">{{ j }}</a>
+            {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="eyebrow">Recent conversations</div>
+      </div>
+      <div class="card-pad"
+           hx-get="/admin/agents/{{ agent.name }}/recent-conversations"
+           hx-target="this"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <span class="muted" style="font-size: 12px; font-style: italic">Loading…</span>
+      </div>
+    </div>
+  </div>
+  <div class="section-gap">
+    <div hx-get="/admin/agents/{{ agent.name }}/scores"
+         hx-target="this"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <div class="empty">Loading scores…</div>
+    </div>
+  </div>
+</div>
+{% endif %}

@@ -1,95 +1,79 @@
-<div class="space-y-6">
-  <a href="/admin/conversations" class="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100">
-    <span>←</span>
-    <span>Back to users</span>
-  </a>
+<a href="/admin/conversations" class="back-link">← Back to users</a>
+
+<div class="page-head" style="margin-top: 12px">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-slate-100">Conversation</h1>
-    <p class="mt-1 font-mono text-xs text-slate-400">{{ user_id }}</p>
+    <h1 class="page-title">Conversation</h1>
+    <p class="page-sub mono" style="font-size: 12.5px">{{ user_id }}</p>
   </div>
-  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-    <div class="lg:col-span-2">
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Messages</h2>
-        </div>
-        <div class="px-4 py-3">
-          {% if messages.is_empty() %}
-            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
-              No messages recorded for this user.
-            </div>
-          {% else %}
-          <div class="space-y-3">
-            {% for m in messages %}
-              <div class="space-y-2">
-                {% if m.is_assistant %}
-                  <div hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/tool-calls"
-                       hx-trigger="load"
-                       hx-target="this"
-                       hx-swap="innerHTML"></div>
-                {% endif %}
-                <div class="rounded-lg border px-4 py-3 {{ m.role_tone }}">
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs font-semibold uppercase tracking-wide
-                      {% if m.is_assistant %}text-indigo-300{% else %}text-slate-300{% endif %}">
-                      {{ m.role_label }}
-                    </span>
-                    <div class="flex items-center gap-2 text-xs text-slate-500">
-                      <span>{{ m.token_count }} tok</span>
-                      <span>·</span>
-                      <span>{{ m.created_at }}</span>
-                    </div>
-                  </div>
-                  <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm text-slate-200">{{ m.content }}</pre>
+</div>
+
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 18px; align-items: start">
+  <div class="card">
+    <div class="card-head">
+      <div class="eyebrow">Messages</div>
+    </div>
+    <div class="card-pad">
+      {% if messages.is_empty() %}
+        <div class="empty">No messages recorded for this user.</div>
+      {% else %}
+      <div class="chat">
+        {% for m in messages %}
+          {% if m.is_assistant %}
+            <div hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/tool-calls"
+                 hx-trigger="load"
+                 hx-target="this"
+                 hx-swap="innerHTML"></div>
+          {% endif %}
+          <div class="bubble {% if m.is_assistant %}bubble-agent{% else if m.role_label == "system" %}bubble-system{% else %}bubble-user{% endif %}">
+            <pre style="white-space: pre-wrap; overflow-wrap: break-word; font-family: inherit; font-size: inherit; line-height: inherit; margin: 0">{{ m.content }}</pre>
+          </div>
+          <div class="bubble-meta mono" {% if !m.is_assistant && m.role_label != "system" %}style="align-self: flex-end"{% endif %}>
+            <span class="eyebrow" style="font-size: 10px">{{ m.role_label }}</span>
+            <span>{{ m.token_count }} tok</span>
+            <span>·</span>
+            <span>{{ m.created_at }}</span>
+          </div>
+          {% if m.is_assistant %}
+            <details class="disclosure" style="align-self: stretch; background: var(--surface)">
+              <summary>Telemetry</summary>
+              <div class="disclosure-body"
+                   hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/events"
+                   hx-trigger="toggle from:closest details once delay:50ms"
+                   hx-target="this"
+                   hx-swap="innerHTML">
+                <span class="muted" style="font-size: 12px; font-style: italic">Loading…</span>
+              </div>
+            </details>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="section-gap">
+    <div hx-get="/admin/users/{{ user_id }}/scores" hx-trigger="load" hx-target="this" hx-swap="innerHTML">
+      <div class="empty">Loading scores…</div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="eyebrow">Memories</div>
+      </div>
+      <div class="card-pad">
+        {% if memories.is_empty() %}
+          <div class="empty">No long-term memories for this user.</div>
+        {% else %}
+          <div class="section-gap" style="gap: 8px">
+            {% for m in memories %}
+              <div class="card-inset" style="padding: 9px 12px">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px">
+                  <span class="pill">{{ m.kind_label }}</span>
+                  <span class="muted mono" style="font-size: 11px">{{ m.created_at }}</span>
                 </div>
-                {% if m.is_assistant %}
-                  <details class="mt-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
-                    <summary class="cursor-pointer font-semibold uppercase tracking-wide text-slate-400">Telemetry</summary>
-                    <div class="mt-2"
-                         hx-get="/admin/users/{{ user_id }}/turns/{{ m.id }}/events"
-                         hx-trigger="toggle from:closest details once delay:50ms"
-                         hx-target="this"
-                         hx-swap="innerHTML">
-                      <span class="italic text-slate-500">Loading…</span>
-                    </div>
-                  </details>
-                {% endif %}
+                <p style="font-size: 13px; margin: 0">{{ m.content }}</p>
               </div>
             {% endfor %}
           </div>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-    <div class="space-y-6">
-      <div hx-get="/admin/users/{{ user_id }}/scores" hx-trigger="load" hx-target="this" hx-swap="innerHTML">
-        <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-500">
-          Loading scores…
-        </div>
-      </div>
-      <div class="rounded-lg border border-slate-800 bg-slate-900">
-        <div class="border-b border-slate-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-100">Memories</h2>
-        </div>
-        <div class="px-4 py-3">
-          {% if memories.is_empty() %}
-            <div class="rounded-lg border border-slate-800 bg-slate-900 px-6 py-10 text-center text-slate-400">
-              No long-term memories for this user.
-            </div>
-          {% else %}
-            <div class="space-y-2">
-              {% for m in memories %}
-                <div class="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                  <div class="mb-1 flex items-center justify-between">
-                    <span class="inline-flex items-center rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200">{{ m.kind_label }}</span>
-                    <span class="text-xs text-slate-500">{{ m.created_at }}</span>
-                  </div>
-                  <p class="text-sm text-slate-200">{{ m.content }}</p>
-                </div>
-              {% endfor %}
-            </div>
-          {% endif %}
-        </div>
+        {% endif %}
       </div>
     </div>
   </div>

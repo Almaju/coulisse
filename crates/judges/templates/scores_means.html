@@ -1,18 +1,26 @@
 {% if rows.is_empty() %}
-  <span class="text-xs italic text-slate-500">no scores yet</span>
+  <span class="muted" style="font-size: 12px; font-style: italic">no scores yet</span>
 {% else %}
-  <table class="w-full text-left text-xs">
-    <thead class="text-slate-500 uppercase tracking-wide">
-      <tr><th class="py-1 font-medium">Agent</th><th class="py-1 text-right font-medium">Samples</th><th class="py-1 text-right font-medium">Mean</th></tr>
-    </thead>
-    <tbody>
-      {% for r in rows %}
-        <tr class="border-t border-slate-800">
-          <td class="py-1 font-mono text-slate-200">{{ r.agent }}</td>
-          <td class="py-1 text-right text-slate-300">{{ r.samples }}</td>
-          <td class="py-1 text-right font-mono text-slate-100">{{ r.mean }}</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-card">
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th class="num">Samples</th>
+            <th class="num">Mean</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td class="mono">{{ r.agent }}</td>
+              <td class="num mono">{{ r.samples }}</td>
+              <td class="num mono" style="font-weight: 500">{{ r.mean }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 {% endif %}

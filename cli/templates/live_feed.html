@@ -1,45 +1,51 @@
-<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-  <section class="rounded-lg border border-slate-800 bg-slate-900 px-5 py-4">
-    <div class="mb-3 flex items-baseline justify-between">
-      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Tasks</h2>
-      <span class="text-xs text-slate-500">{{ tasks.len() }} shown</span>
+<div class="grid-2">
+  <section class="card">
+    <div class="card-head">
+      <span class="eyebrow">Tasks</span>
+      <span class="muted" style="font-size: 11.5px">{{ tasks.len() }} shown</span>
     </div>
-    {% if tasks.is_empty() %}
-      <p class="text-sm italic text-slate-500">No tasks yet. Dispatch one and it'll show up here.</p>
-    {% else %}
-      <ul class="space-y-2">
+    <div class="card-pad" style="display: flex; flex-direction: column; gap: 8px; padding: 14px 16px">
+      {% if tasks.is_empty() %}
+        <p class="muted" style="font-size: 13px; margin: 0">No tasks yet. Dispatch one and it'll show up here.</p>
+      {% else %}
         {% for t in tasks %}
-          <li class="flex items-center gap-3 text-sm">
-            <span class="font-mono text-xs text-slate-500">{{ t.id_short }}</span>
-            <span class="text-slate-200">{{ t.agent }}</span>
-            <span class="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-300">{{ t.state }}</span>
-            <span class="ml-auto text-xs text-slate-500">{{ t.age }}</span>
-          </li>
+        <div class="card-inset" style="align-items: center; display: flex; gap: 10px; padding: 8px 12px">
+          <span class="mono muted" style="font-size: 11px">{{ t.id_short }}</span>
+          <span class="mono" style="font-size: 12.5px; font-weight: 500">{{ t.agent }}</span>
+          {% if t.state == "running" %}
+            <span class="pill pill-progress">{{ t.state }}</span>
+          {% else if t.state == "done" %}
+            <span class="pill pill-live">{{ t.state }}</span>
+          {% else if t.state == "errored" %}
+            <span class="pill pill-error">{{ t.state }}</span>
+          {% else %}
+            <span class="pill">{{ t.state }}</span>
+          {% endif %}
+          <span class="muted" style="font-size: 11px; margin-left: auto; white-space: nowrap">{{ t.age }}</span>
+        </div>
         {% endfor %}
-      </ul>
-    {% endif %}
+      {% endif %}
+    </div>
   </section>
 
-  <section class="rounded-lg border border-slate-800 bg-slate-900 px-5 py-4">
-    <div class="mb-3 flex items-baseline justify-between">
-      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Recent tool calls</h2>
-      <span class="text-xs text-slate-500">{{ calls.len() }} shown</span>
+  <section class="trace">
+    <div class="trace-head">
+      <span>Recent tool calls</span>
+      <span>{{ calls.len() }} shown</span>
     </div>
-    {% if calls.is_empty() %}
-      <p class="text-sm italic text-slate-500">Nothing recent.</p>
-    {% else %}
-      <ul class="space-y-2">
+    <div class="trace-body">
+      {% if calls.is_empty() %}
+        <span class="t-dim">Nothing recent.</span>
+      {% else %}
         {% for c in calls %}
-          <li class="flex items-center gap-3 text-sm">
-            <span class="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-300">{{ c.kind }}</span>
-            <span class="font-mono text-slate-200">{{ c.tool_name }}</span>
-            {% if c.error %}
-              <span class="rounded bg-red-900/50 px-2 py-0.5 text-xs text-red-300">error</span>
-            {% endif %}
-            <span class="ml-auto text-xs text-slate-500">{{ c.age }}</span>
-          </li>
+        <div style="align-items: baseline; display: flex; gap: 12px">
+          <span class="t-dim">{{ c.kind }}</span>
+          <span class="{% if c.error %}t-err{% else %}t-tool{% endif %}">{{ c.tool_name }}</span>
+          {% if c.error %}<span class="t-err">error</span>{% endif %}
+          <span class="t-dim" style="margin-left: auto; white-space: nowrap">{{ c.age }}</span>
+        </div>
         {% endfor %}
-      </ul>
-    {% endif %}
+      {% endif %}
+    </div>
   </section>
 </div>
