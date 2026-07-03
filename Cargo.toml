@@ -82,7 +82,7 @@ sidecars = { path = "crates/sidecars" }
 skills = { path = "crates/skills" }
 smoke = { path = "crates/smoke" }
 storage = { path = "crates/storage" }
-sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
 tasks = { path = "crates/tasks" }
 telemetry = { path = "crates/telemetry" }
 triggers = { path = "crates/triggers" }
