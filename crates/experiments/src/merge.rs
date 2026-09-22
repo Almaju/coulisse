@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ExperimentConfig;
 use crate::store::DynamicExperimentRow;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Dynamic,
     Override,
@@ -81,7 +81,7 @@ pub fn merge(
     (merged, report)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminSource {
     Dynamic,
     Override,

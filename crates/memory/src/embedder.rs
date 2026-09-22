@@ -44,13 +44,13 @@ impl BundledEmbedder {
                 })?;
                 let client =
                     openai::Client::new(key).map_err(|source| ConfigError::ClientInit {
-                        provider: "openai".into(),
                         message: source.to_string(),
+                        provider: "openai".into(),
                     })?;
                 let dims = openai_dims(model)?;
                 Ok(Self::Openai {
-                    model: openai::EmbeddingModel::new(client, model, dims),
                     dims,
+                    model: openai::EmbeddingModel::new(client, model, dims),
                 })
             }
             EmbedderConfig::Voyage { api_key, model } => {
@@ -61,13 +61,13 @@ impl BundledEmbedder {
                 })?;
                 let client =
                     voyageai::Client::new(key).map_err(|source| ConfigError::ClientInit {
-                        provider: "voyage".into(),
                         message: source.to_string(),
+                        provider: "voyage".into(),
                     })?;
                 let dims = voyage_dims(model)?;
                 Ok(Self::Voyage {
-                    model: voyageai::EmbeddingModel::new(client, model, dims),
                     dims,
+                    model: voyageai::EmbeddingModel::new(client, model, dims),
                 })
             }
         }

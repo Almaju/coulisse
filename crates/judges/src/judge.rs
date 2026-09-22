@@ -46,10 +46,10 @@ impl Judge {
         }
         let criteria: Vec<String> = config.rubrics.keys().cloned().collect();
         Ok(Self {
-            preamble: build_preamble(&config.rubrics),
             criteria,
             model: config.model.clone(),
             name: config.name.clone(),
+            preamble: build_preamble(&config.rubrics),
             provider: config.provider.clone(),
             sampling_rate: config.sampling_rate,
         })

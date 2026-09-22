@@ -43,6 +43,12 @@ const SECRETS_FILENAME: &str = "secrets.env";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
+    #[error(
+        "{path} is malformed: expected `KEY=value` lines for COULISSE_VAULT_KEY and \
+         COULISSE_HMAC_KEY. Delete the file to regenerate, but note that this will \
+         invalidate every stored OAuth token."
+    )]
+    Malformed { path: String },
     #[error("failed to read {path}: {source}")]
     Read {
         path: String,
@@ -55,12 +61,6 @@ pub enum SecretsError {
         #[source]
         source: io::Error,
     },
-    #[error(
-        "{path} is malformed: expected `KEY=value` lines for COULISSE_VAULT_KEY and \
-         COULISSE_HMAC_KEY. Delete the file to regenerate, but note that this will \
-         invalidate every stored OAuth token."
-    )]
-    Malformed { path: String },
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +70,17 @@ pub struct Secrets {
 }
 
 impl Secrets {
+    fn generate() -> Self {
+        let mut vault = [0u8; 32];
+        rand::rng().fill_bytes(&mut vault);
+        let mut hmac = [0u8; 32];
+        rand::rng().fill_bytes(&mut hmac);
+        Self {
+            hmac_key: B64.encode(hmac),
+            vault_key: B64.encode(vault),
+        }
+    }
+
     /// Resolve secrets for this Coulisse instance. Reads the env vars
     /// (`COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY`) at the one well-
     /// defined spot — process boot, before any worker threads exist —
@@ -117,17 +128,6 @@ impl Secrets {
              back this file up; losing it invalidates every stored token"
         );
         Ok(secrets)
-    }
-
-    fn generate() -> Self {
-        let mut vault = [0u8; 32];
-        rand::rng().fill_bytes(&mut vault);
-        let mut hmac = [0u8; 32];
-        rand::rng().fill_bytes(&mut hmac);
-        Self {
-            hmac_key: B64.encode(hmac),
-            vault_key: B64.encode(vault),
-        }
     }
 }
 

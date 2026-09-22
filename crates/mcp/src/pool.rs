@@ -22,9 +22,9 @@ const DEFAULT_SESSION_CACHE_SIZE: u64 = 256;
 
 /// A single connected MCP session for a specific user and server.
 pub struct UserMcpSession {
+    _service: RunningService<RoleClient, ()>,
     pub(crate) sink: ServerSink,
     pub(crate) tools: HashMap<String, rmcp::model::Tool>,
-    _service: RunningService<RoleClient, ()>,
 }
 
 impl std::fmt::Debug for UserMcpSession {
@@ -62,14 +62,6 @@ impl UserMcpPool {
             signer,
             vault,
         }
-    }
-
-    /// Build the per-user connect URL to embed in a `NotConnectedTool`
-    /// placeholder, or `None` if the signer wasn't configured (which
-    /// shouldn't happen for any deployment that has an OAuth server, but
-    /// the test pool can be constructed without one).
-    pub(crate) fn signer(&self) -> Option<&ConnectLinkSigner> {
-        self.signer.as_ref()
     }
 
     /// Get or spawn a session for the given user and OAuth-enabled server.
@@ -160,43 +152,12 @@ impl UserMcpPool {
         Ok(session)
     }
 
-    /// Try refresh-token grant. On success, stores the new token pair
-    /// (handling refresh-token rotation) and returns the fresh tokens.
-    /// On failure, deletes the stored token and returns `NotConnected`
-    /// so the caller surfaces a fresh connect URL.
-    async fn refresh_or_force_reauth(
-        &self,
-        server_name: &str,
-        user_id_str: &str,
-        stored: &crate::vault::StoredToken,
-    ) -> Result<crate::vault::StoredToken, McpError> {
-        let Some(refresh_token) = stored.refresh_token.as_deref() else {
-            // No refresh token — the original grant didn't include
-            // `offline_access` or the provider simply doesn't issue
-            // them. Nothing to do but ask the user to reauth.
-            self.vault.delete_token(server_name, user_id_str).await?;
-            return Err(McpError::NotConnected {
-                server: server_name.to_string(),
-                user_id: user_id_str.to_string(),
-            });
-        };
-        match self
-            .do_refresh(server_name, user_id_str, refresh_token)
-            .await
-        {
-            Ok(new_stored) => Ok(new_stored),
-            Err(err) => {
-                tracing::warn!(
-                    server = %server_name, error = %err,
-                    "refresh failed; deleting token to force reauth"
-                );
-                self.vault.delete_token(server_name, user_id_str).await?;
-                Err(McpError::NotConnected {
-                    server: server_name.to_string(),
-                    user_id: user_id_str.to_string(),
-                })
-            }
-        }
+    /// Build the per-user connect URL to embed in a `NotConnectedTool`
+    /// placeholder, or `None` if the signer wasn't configured (which
+    /// shouldn't happen for any deployment that has an OAuth server, but
+    /// the test pool can be constructed without one).
+    pub(crate) fn signer(&self) -> Option<&ConnectLinkSigner> {
+        self.signer.as_ref()
     }
 
     async fn do_refresh(
@@ -219,8 +180,8 @@ impl UserMcpPool {
                 })?;
         let metadata: crate::discovery::AuthMetadata = serde_json::from_str(&client.metadata_json)
             .map_err(|source| McpError::Discovery {
-                url: format!("<cached metadata for {server_name}>"),
                 source: Box::new(source),
+                url: format!("<cached metadata for {server_name}>"),
             })?;
         let mut params: Vec<(&str, &str)> = vec![
             ("client_id", client.client_id.as_str()),
@@ -244,8 +205,8 @@ impl UserMcpPool {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
             return Err(McpError::Discovery {
-                url: metadata.token_endpoint.clone(),
                 source: format!("refresh failed: HTTP {status}: {body}").into(),
+                url: metadata.token_endpoint.clone(),
             });
         }
         #[derive(serde::Deserialize)]
@@ -287,6 +248,45 @@ impl UserMcpPool {
             expires_at: new_exp,
             refresh_token: Some(new_refresh.to_string()),
         })
+    }
+
+    /// Try refresh-token grant. On success, stores the new token pair
+    /// (handling refresh-token rotation) and returns the fresh tokens.
+    /// On failure, deletes the stored token and returns `NotConnected`
+    /// so the caller surfaces a fresh connect URL.
+    async fn refresh_or_force_reauth(
+        &self,
+        server_name: &str,
+        user_id_str: &str,
+        stored: &crate::vault::StoredToken,
+    ) -> Result<crate::vault::StoredToken, McpError> {
+        let Some(refresh_token) = stored.refresh_token.as_deref() else {
+            // No refresh token — the original grant didn't include
+            // `offline_access` or the provider simply doesn't issue
+            // them. Nothing to do but ask the user to reauth.
+            self.vault.delete_token(server_name, user_id_str).await?;
+            return Err(McpError::NotConnected {
+                server: server_name.to_string(),
+                user_id: user_id_str.to_string(),
+            });
+        };
+        match self
+            .do_refresh(server_name, user_id_str, refresh_token)
+            .await
+        {
+            Ok(new_stored) => Ok(new_stored),
+            Err(err) => {
+                tracing::warn!(
+                    server = %server_name, error = %err,
+                    "refresh failed; deleting token to force reauth"
+                );
+                self.vault.delete_token(server_name, user_id_str).await?;
+                Err(McpError::NotConnected {
+                    server: server_name.to_string(),
+                    user_id: user_id_str.to_string(),
+                })
+            }
+        }
     }
 }
 

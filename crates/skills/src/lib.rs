@@ -29,10 +29,10 @@ const MANIFEST: &str = "SKILL.md";
 /// — its body lives in `body`.
 #[derive(Clone, Debug)]
 pub struct Skill {
-    pub description: String,
-    pub name: String,
     body: String,
+    pub description: String,
     files: BTreeMap<String, String>,
+    pub name: String,
 }
 
 /// In-memory catalog of every skill under the configured directory.

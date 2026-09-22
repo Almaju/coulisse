@@ -32,7 +32,7 @@ pub struct Event {
 /// What kind of thing happened. The studio renders the `events` tree
 /// keyed on this enum; `SqliteLayer` writes one of these for each
 /// recorded `tracing` span.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     /// Single LLM provider call completed.

@@ -110,6 +110,25 @@ impl Sink {
         })
     }
 
+    /// Most recent tool calls across all users, newest first. Used by the
+    /// `/admin/live` activity feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn recent_tool_calls(&self, limit: u32) -> Result<Vec<ToolCall>, TelemetryError> {
+        let rows = sqlx::query(
+            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
+             turn_id, user_id FROM tool_calls \
+             ORDER BY created_at DESC \
+             LIMIT ?",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_tool_call).collect()
+    }
+
     /// Turn ids for `user_id`, most recently active first, capped at `limit`.
     /// Used by the studio UI to list a user's recent turns without loading
     /// the full event stream.
@@ -208,25 +227,6 @@ impl Sink {
              LIMIT ?",
         )
         .bind(tool_name)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_tool_call).collect()
-    }
-
-    /// Most recent tool calls across all users, newest first. Used by the
-    /// `/admin/live` activity feed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn recent_tool_calls(&self, limit: u32) -> Result<Vec<ToolCall>, TelemetryError> {
-        let rows = sqlx::query(
-            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
-             turn_id, user_id FROM tool_calls \
-             ORDER BY created_at DESC \
-             LIMIT ?",
-        )
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;

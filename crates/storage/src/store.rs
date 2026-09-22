@@ -82,6 +82,88 @@ impl Store {
         Ok(store)
     }
 
+    /// Delete a file by id. Idempotent: returns `Ok` if the file does not
+    /// exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database or backend error.
+    pub async fn delete(&self, id: &str) -> Result<(), StorageError> {
+        let blob_key = match blob_key_for_id(&self.pool, id).await {
+            Ok(k) => k,
+            Err(StorageError::NotFound(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        // Delete backend first — crash between these two steps leaves an
+        // orphaned index row, which is cleaned at the next boot reconciliation.
+        self.backend.delete(&blob_key).await?;
+        sqlx::query("DELETE FROM storage_files WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Retrieve file content by id.
+    ///
+    /// Returns `Vec<u8>` in v1. For files > 5 MB on S3 this buffers the
+    /// entire response in memory; streaming support is deferred to v2.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::NotFound` if the file has been evicted or
+    /// never uploaded.
+    pub async fn get_content(&self, id: &str) -> Result<(FileObject, Vec<u8>), StorageError> {
+        let meta = self.get_metadata(id).await?;
+        let blob_key = blob_key_for_id(&self.pool, id).await?;
+        match self.backend.get(&blob_key).await {
+            Ok(data) => Ok((meta, data)),
+            Err(StorageError::NotFound(_)) => {
+                // Lazy reconciliation: the blob is gone (e.g. evicted on S3
+                // externally). Remove the stale index row.
+                let _ = sqlx::query("DELETE FROM storage_files WHERE id = ?")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await;
+                Err(StorageError::NotFound(id.to_string()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Retrieve file metadata by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::NotFound` if no such file exists.
+    pub async fn get_metadata(&self, id: &str) -> Result<FileObject, StorageError> {
+        let row = sqlx::query_as::<_, FileRow>(
+            "SELECT bytes, content_type, created_at, filename, id, purpose \
+             FROM storage_files WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(FileRow::into_object)
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))
+    }
+
+    /// List all files, most recently uploaded first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error.
+    pub async fn list(&self) -> Result<Vec<FileObject>, StorageError> {
+        let rows = sqlx::query_as::<_, FileRow>(
+            "SELECT bytes, content_type, created_at, filename, id, purpose \
+             FROM storage_files ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(FileRow::into_object).collect())
+    }
+
     /// Upload a file. Returns the `FileObject` metadata.
     ///
     /// Order of operations:
@@ -186,88 +268,6 @@ impl Store {
             object: "file",
             purpose: purpose.to_string(),
         })
-    }
-
-    /// Retrieve file metadata by id.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::NotFound` if no such file exists.
-    pub async fn get_metadata(&self, id: &str) -> Result<FileObject, StorageError> {
-        let row = sqlx::query_as::<_, FileRow>(
-            "SELECT bytes, content_type, created_at, filename, id, purpose \
-             FROM storage_files WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(FileRow::into_object)
-            .ok_or_else(|| StorageError::NotFound(id.to_string()))
-    }
-
-    /// Retrieve file content by id.
-    ///
-    /// Returns `Vec<u8>` in v1. For files > 5 MB on S3 this buffers the
-    /// entire response in memory; streaming support is deferred to v2.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::NotFound` if the file has been evicted or
-    /// never uploaded.
-    pub async fn get_content(&self, id: &str) -> Result<(FileObject, Vec<u8>), StorageError> {
-        let meta = self.get_metadata(id).await?;
-        let blob_key = blob_key_for_id(&self.pool, id).await?;
-        match self.backend.get(&blob_key).await {
-            Ok(data) => Ok((meta, data)),
-            Err(StorageError::NotFound(_)) => {
-                // Lazy reconciliation: the blob is gone (e.g. evicted on S3
-                // externally). Remove the stale index row.
-                let _ = sqlx::query("DELETE FROM storage_files WHERE id = ?")
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await;
-                Err(StorageError::NotFound(id.to_string()))
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Delete a file by id. Idempotent: returns `Ok` if the file does not
-    /// exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database or backend error.
-    pub async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let blob_key = match blob_key_for_id(&self.pool, id).await {
-            Ok(k) => k,
-            Err(StorageError::NotFound(_)) => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        // Delete backend first — crash between these two steps leaves an
-        // orphaned index row, which is cleaned at the next boot reconciliation.
-        self.backend.delete(&blob_key).await?;
-        sqlx::query("DELETE FROM storage_files WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// List all files, most recently uploaded first.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error.
-    pub async fn list(&self) -> Result<Vec<FileObject>, StorageError> {
-        let rows = sqlx::query_as::<_, FileRow>(
-            "SELECT bytes, content_type, created_at, filename, id, purpose \
-             FROM storage_files ORDER BY created_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(FileRow::into_object).collect())
     }
 
     /// Evict the oldest files until the total stored bytes + `incoming` is
@@ -464,8 +464,8 @@ mod tests {
             pool().await,
             BlobBackend::Fs(backend),
             QuotaConfig {
-                max_total_bytes: Some(max_total),
                 max_file_bytes: None,
+                max_total_bytes: Some(max_total),
             },
         )
         .await

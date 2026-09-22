@@ -55,8 +55,8 @@ pub struct TestHarness {
     pub app: Router,
     pub sink: Arc<telemetry::Sink>,
     pub state: Arc<AppState<ScriptedAgents>>,
-    pub telemetry_guard: telemetry::SqliteLayerGuard,
     pub subscriber_guard: tracing::subscriber::DefaultGuard,
+    pub telemetry_guard: telemetry::SqliteLayerGuard,
 }
 
 async fn make_app(replies: Vec<ScriptedReply>) -> TestHarness {
@@ -107,8 +107,8 @@ async fn make_app_with_experiments(
         default_user_id: None,
         experiments,
         extractor: None,
-        judges: Arc::new(judges),
         judge_store,
+        judges: Arc::new(judges),
         memory,
         proxy_identity: auth::IdentityMode::FromRequest,
         tokens,
@@ -119,8 +119,8 @@ async fn make_app_with_experiments(
         app,
         sink,
         state,
-        telemetry_guard,
         subscriber_guard,
+        telemetry_guard,
     }
 }
 
@@ -1016,8 +1016,8 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
         app,
         sink,
         state,
-        telemetry_guard,
         subscriber_guard: _guard,
+        telemetry_guard,
     } = make_app(vec![reply]).await;
     let req = json_request(&serde_json::json!({
         "model": "assistant",

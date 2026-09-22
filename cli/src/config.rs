@@ -255,17 +255,6 @@ fn locate(source: &str, offset: usize) -> (usize, String) {
 }
 
 impl Config {
-    /// Effective public base URL with no trailing slash. Either the
-    /// explicit `public_base_url` field, or a sensible
-    /// `http://localhost:{port}` fallback for local/personal use.
-    #[must_use]
-    pub fn effective_public_base_url(&self) -> String {
-        if let Some(url) = &self.public_base_url {
-            return url.trim_end_matches('/').to_string();
-        }
-        format!("http://localhost:{}", self.server.port)
-    }
-
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
@@ -335,6 +324,17 @@ impl Config {
         Ok(config)
     }
 
+    /// Effective public base URL with no trailing slash. Either the
+    /// explicit `public_base_url` field, or a sensible
+    /// `http://localhost:{port}` fallback for local/personal use.
+    #[must_use]
+    pub fn effective_public_base_url(&self) -> String {
+        if let Some(url) = &self.public_base_url {
+            return url.trim_end_matches('/').to_string();
+        }
+        format!("http://localhost:{}", self.server.port)
+    }
+
     /// Whole-graph schema validation. Run once on YAML load and again on
     /// every runtime mutation so cross-references (agent → provider, agent
     /// → judge, agent → mcp, agent → subagent) stay consistent.
@@ -372,137 +372,6 @@ impl Config {
         self.validate_subagents(&agent_names, &experiment_names)?;
         self.validate_triggers(&agent_names, &experiment_names)?;
         self.validate_sidecars()?;
-        Ok(())
-    }
-
-    fn validate_sidecars(&self) -> Result<(), ConfigError> {
-        let mut seen: HashSet<&str> = HashSet::new();
-        for s in &self.sidecars {
-            if s.command.trim().is_empty() {
-                return Err(ConfigError::SidecarBlankCommand(s.name.clone()));
-            }
-            if !seen.insert(s.name.as_str()) {
-                return Err(ConfigError::DuplicateSidecar(s.name.clone()));
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_triggers(
-        &self,
-        agent_names: &HashSet<&str>,
-        experiment_names: &HashSet<&str>,
-    ) -> Result<(), ConfigError> {
-        let mut seen_names: HashSet<&str> = HashSet::new();
-        let mut seen_paths: HashSet<&str> = HashSet::new();
-        for t in &self.triggers {
-            if !seen_names.insert(t.name.as_str()) {
-                return Err(ConfigError::DuplicateTrigger(t.name.clone()));
-            }
-            // Templated `agent:` fields (e.g. `agent: "{{agent}}"` for
-            // webhooks) cannot be cross-validated at load time — the
-            // value isn't known until a request arrives. Skip the check
-            // and let the worker surface unknown-agent errors at run
-            // time via the task's error state.
-            let is_templated = t.agent.contains("{{");
-            if !is_templated
-                && !agent_names.contains(t.agent.as_str())
-                && !experiment_names.contains(t.agent.as_str())
-            {
-                return Err(ConfigError::TriggerUnknownAgent {
-                    agent: t.agent.clone(),
-                    trigger: t.name.clone(),
-                });
-            }
-            if let triggers::TriggerKind::Webhook { path } = &t.kind {
-                if !path.starts_with("/hooks/") {
-                    return Err(ConfigError::TriggerWebhookPathInvalid {
-                        path: path.clone(),
-                        trigger: t.name.clone(),
-                    });
-                }
-                if !seen_paths.insert(path.as_str()) {
-                    return Err(ConfigError::TriggerWebhookPathDuplicate {
-                        path: path.clone(),
-                        trigger: t.name.clone(),
-                    });
-                }
-            }
-        }
-        triggers::validate_all(&self.triggers).map_err(ConfigError::Trigger)?;
-        Ok(())
-    }
-
-    fn validate_mcp_oauth(&self) -> Result<(), ConfigError> {
-        let has_oauth = self.mcp.values().any(|c| c.oauth.is_some());
-        if !has_oauth {
-            return Ok(());
-        }
-        // `auth.mcp_consumer_secret` is optional: the per-user
-        // `GET /mcp/{server}/connect` flow uses HMAC-signed tokens, not
-        // the consumer secret. The secret only gates the admin
-        // `POST /connect-link` endpoint, which 503s when unset.
-        //
-        // `COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY` env vars are also
-        // optional — `crate::secrets::Secrets::load_or_generate` resolves
-        // them from env, the on-disk `.coulisse/secrets.env` file, or
-        // generates fresh material on first boot. Nothing to check here
-        // beyond the YAML shape.
-        for (name, cfg) in &self.mcp {
-            let Some(oauth) = &cfg.oauth else {
-                continue;
-            };
-            match oauth {
-                mcp::McpOAuthConfig::Discover { .. } => {
-                    // Discover requires the MCP server itself to expose
-                    // OAuth metadata; nothing to validate at YAML load.
-                    // For the HTTP transport (the only sensible one for
-                    // discover, since stdio doesn't expose a URL), we
-                    // could check `transport: http`, but a stdio server
-                    // that proxies an HTTP MCP and forwards Bearer auth
-                    // is conceivable — leave it.
-                }
-                mcp::McpOAuthConfig::Static {
-                    authorization_url,
-                    client_id,
-                    client_secret,
-                    redirect_uri,
-                    token_url,
-                    ..
-                } => {
-                    if authorization_url.is_empty() {
-                        return Err(ConfigError::McpOAuthBlankField {
-                            field: "authorization_url",
-                            server: name.clone(),
-                        });
-                    }
-                    if client_id.is_empty() {
-                        return Err(ConfigError::McpOAuthBlankField {
-                            field: "client_id",
-                            server: name.clone(),
-                        });
-                    }
-                    if client_secret.is_empty() {
-                        return Err(ConfigError::McpOAuthBlankField {
-                            field: "client_secret",
-                            server: name.clone(),
-                        });
-                    }
-                    if redirect_uri.is_empty() {
-                        return Err(ConfigError::McpOAuthBlankField {
-                            field: "redirect_uri",
-                            server: name.clone(),
-                        });
-                    }
-                    if token_url.is_empty() {
-                        return Err(ConfigError::McpOAuthBlankField {
-                            field: "token_url",
-                            server: name.clone(),
-                        });
-                    }
-                }
-            }
-        }
         Ok(())
     }
 
@@ -617,6 +486,92 @@ impl Config {
         Ok(judge_names)
     }
 
+    fn validate_mcp_oauth(&self) -> Result<(), ConfigError> {
+        let has_oauth = self.mcp.values().any(|c| c.oauth.is_some());
+        if !has_oauth {
+            return Ok(());
+        }
+        // `auth.mcp_consumer_secret` is optional: the per-user
+        // `GET /mcp/{server}/connect` flow uses HMAC-signed tokens, not
+        // the consumer secret. The secret only gates the admin
+        // `POST /connect-link` endpoint, which 503s when unset.
+        //
+        // `COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY` env vars are also
+        // optional — `crate::secrets::Secrets::load_or_generate` resolves
+        // them from env, the on-disk `.coulisse/secrets.env` file, or
+        // generates fresh material on first boot. Nothing to check here
+        // beyond the YAML shape.
+        for (name, cfg) in &self.mcp {
+            let Some(oauth) = &cfg.oauth else {
+                continue;
+            };
+            match oauth {
+                mcp::McpOAuthConfig::Discover { .. } => {
+                    // Discover requires the MCP server itself to expose
+                    // OAuth metadata; nothing to validate at YAML load.
+                    // For the HTTP transport (the only sensible one for
+                    // discover, since stdio doesn't expose a URL), we
+                    // could check `transport: http`, but a stdio server
+                    // that proxies an HTTP MCP and forwards Bearer auth
+                    // is conceivable — leave it.
+                }
+                mcp::McpOAuthConfig::Static {
+                    authorization_url,
+                    client_id,
+                    client_secret,
+                    redirect_uri,
+                    token_url,
+                    ..
+                } => {
+                    if authorization_url.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "authorization_url",
+                            server: name.clone(),
+                        });
+                    }
+                    if client_id.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "client_id",
+                            server: name.clone(),
+                        });
+                    }
+                    if client_secret.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "client_secret",
+                            server: name.clone(),
+                        });
+                    }
+                    if redirect_uri.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "redirect_uri",
+                            server: name.clone(),
+                        });
+                    }
+                    if token_url.is_empty() {
+                        return Err(ConfigError::McpOAuthBlankField {
+                            field: "token_url",
+                            server: name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_sidecars(&self) -> Result<(), ConfigError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for s in &self.sidecars {
+            if s.command.trim().is_empty() {
+                return Err(ConfigError::SidecarBlankCommand(s.name.clone()));
+            }
+            if !seen.insert(s.name.as_str()) {
+                return Err(ConfigError::DuplicateSidecar(s.name.clone()));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_smoke_tests(
         &self,
         agent_names: &HashSet<&str>,
@@ -685,6 +640,51 @@ impl Config {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate_triggers(
+        &self,
+        agent_names: &HashSet<&str>,
+        experiment_names: &HashSet<&str>,
+    ) -> Result<(), ConfigError> {
+        let mut seen_names: HashSet<&str> = HashSet::new();
+        let mut seen_paths: HashSet<&str> = HashSet::new();
+        for t in &self.triggers {
+            if !seen_names.insert(t.name.as_str()) {
+                return Err(ConfigError::DuplicateTrigger(t.name.clone()));
+            }
+            // Templated `agent:` fields (e.g. `agent: "{{agent}}"` for
+            // webhooks) cannot be cross-validated at load time — the
+            // value isn't known until a request arrives. Skip the check
+            // and let the worker surface unknown-agent errors at run
+            // time via the task's error state.
+            let is_templated = t.agent.contains("{{");
+            if !is_templated
+                && !agent_names.contains(t.agent.as_str())
+                && !experiment_names.contains(t.agent.as_str())
+            {
+                return Err(ConfigError::TriggerUnknownAgent {
+                    agent: t.agent.clone(),
+                    trigger: t.name.clone(),
+                });
+            }
+            if let triggers::TriggerKind::Webhook { path } = &t.kind {
+                if !path.starts_with("/hooks/") {
+                    return Err(ConfigError::TriggerWebhookPathInvalid {
+                        path: path.clone(),
+                        trigger: t.name.clone(),
+                    });
+                }
+                if !seen_paths.insert(path.as_str()) {
+                    return Err(ConfigError::TriggerWebhookPathDuplicate {
+                        path: path.clone(),
+                        trigger: t.name.clone(),
+                    });
+                }
+            }
+        }
+        triggers::validate_all(&self.triggers).map_err(ConfigError::Trigger)?;
         Ok(())
     }
 }
@@ -862,10 +862,6 @@ pub enum ConfigError {
     #[error("default_user_id must be non-empty when set")]
     BlankDefaultUserId,
     #[error(
-        "default_user_id cannot be combined with credential-bound proxy identity (auth.proxy.identity: from_credential, or auth.proxy.tokens which implies it) — the user is derived from the authenticated principal, so a shared default bucket would bypass it (remove default_user_id)"
-    )]
-    CredentialIdentityWithDefaultUser,
-    #[error(
         "config variable '{var}' referenced via ${{vars.{var}}} is not declared in the `vars:` block\n  at {path}:{line_number}\n   | {line_content}\n   = help: add `{var}: ...` under the top-level `vars:` block"
     )]
     ConfigVarNotSet {
@@ -874,6 +870,10 @@ pub enum ConfigError {
         path: String,
         var: String,
     },
+    #[error(
+        "default_user_id cannot be combined with credential-bound proxy identity (auth.proxy.identity: from_credential, or auth.proxy.tokens which implies it) — the user is derived from the authenticated principal, so a shared default bucket would bypass it (remove default_user_id)"
+    )]
+    CredentialIdentityWithDefaultUser,
     #[error("duplicate agent name in config: {0}")]
     DuplicateAgent(String),
     #[error("duplicate judge name in config: {0}")]
@@ -968,10 +968,10 @@ pub enum ConfigError {
     JudgeUnknownProvider { judge: String, provider: String },
     #[error("judge '{0}' declares no rubrics; add at least one `criterion: description` entry")]
     JudgeWithoutRubrics(String),
-    #[error("agent '{agent}' references MCP server '{server}' which is not configured")]
-    McpServerNotConfigured { agent: String, server: String },
     #[error("mcp server '{server}' has an oauth block but field '{field}' is blank")]
     McpOAuthBlankField { field: &'static str, server: String },
+    #[error("agent '{agent}' references MCP server '{server}' which is not configured")]
+    McpServerNotConfigured { agent: String, server: String },
     #[error("config must declare at least one agent")]
     NoAgents,
     #[error("failed to parse config: {0}")]
@@ -1021,8 +1021,6 @@ pub enum ConfigError {
          (keeps webhook routes namespaced away from /v1, /admin, and /mcp)"
     )]
     TriggerWebhookPathInvalid { path: String, trigger: String },
-    #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
-    UnknownSubagent { agent: String, subagent: String },
     #[error(
         "unclosed '${{' in config — every '${{' must have a matching '}}'\n  at {path}:{line_number}\n   | {line_content}"
     )]
@@ -1031,6 +1029,8 @@ pub enum ConfigError {
         line_number: usize,
         path: String,
     },
+    #[error("agent '{agent}' references subagent '{subagent}' which is not defined")]
+    UnknownSubagent { agent: String, subagent: String },
 }
 
 /// Errors raised while expanding `${VAR}` placeholders in the raw YAML
@@ -1775,7 +1775,7 @@ smoke_tests:
     #[test]
     fn expand_env_vars_unset_variable_errors() {
         match expand_env_vars_with("${MISSING}", lookup) {
-            Err(ExpandError::EnvVarNotSet { var, offset }) => {
+            Err(ExpandError::EnvVarNotSet { offset, var }) => {
                 assert_eq!(var, "MISSING");
                 assert_eq!(offset, 0);
             }
@@ -1795,7 +1795,7 @@ smoke_tests:
     fn expand_env_vars_records_offset_on_third_line() {
         let source = "line1: a\nline2: b\nline3: ${MISSING}\n";
         match expand_env_vars_with(source, lookup) {
-            Err(ExpandError::EnvVarNotSet { var, offset }) => {
+            Err(ExpandError::EnvVarNotSet { offset, var }) => {
                 assert_eq!(var, "MISSING");
                 let (line_number, line_content) = locate(source, offset);
                 assert_eq!(line_number, 3);
@@ -1831,7 +1831,7 @@ smoke_tests:
     fn config_var_pass_errors_on_unknown_var() {
         let vars = HashMap::new();
         match expand_config_vars("${vars.ghost}", &vars) {
-            Err(ExpandError::ConfigVarNotSet { var, offset }) => {
+            Err(ExpandError::ConfigVarNotSet { offset, var }) => {
                 assert_eq!(var, "ghost");
                 assert_eq!(offset, 0);
             }
@@ -1925,9 +1925,9 @@ agents:
 ";
         match Config::from_str(yaml, "<test>") {
             Err(ConfigError::ConfigVarNotSet {
-                var,
-                line_number,
                 line_content,
+                line_number,
+                var,
                 ..
             }) => {
                 assert_eq!(var, "ghost");

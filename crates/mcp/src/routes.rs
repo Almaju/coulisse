@@ -160,16 +160,16 @@ async fn resolve(
                 McpTransport::Http { url } | McpTransport::Sse { url } => url,
                 McpTransport::Stdio { .. } => {
                     return Err(McpError::Discovery {
-                        url: format!("<{server}>"),
                         source: "oauth: discover requires transport: http or sse (stdio servers have no URL to discover from)".into(),
+                        url: format!("<{server}>"),
                     });
                 }
             };
             if let Some(stored) = state.vault.get_client(server).await? {
                 let metadata: discovery::AuthMetadata = serde_json::from_str(&stored.metadata_json)
                     .map_err(|source| McpError::Discovery {
-                        url: format!("<cached metadata for {server}>"),
                         source: Box::new(source),
+                        url: format!("<cached metadata for {server}>"),
                     })?;
                 let effective = resolve_scopes(server, scopes, &metadata.scopes_supported);
                 return Ok(ResolvedOAuth {
@@ -202,8 +202,8 @@ async fn resolve(
             }
             let metadata_json =
                 serde_json::to_string(&metadata).map_err(|source| McpError::Discovery {
-                    url: format!("<serialize metadata for {server}>"),
                     source: Box::new(source),
+                    url: format!("<serialize metadata for {server}>"),
                 })?;
             state
                 .vault

@@ -145,9 +145,9 @@ mod tests {
         let err = tracker.check("alice", limits).await.unwrap_err();
         match err {
             LimitError::Exceeded {
-                window,
-                used,
                 limit,
+                used,
+                window,
                 ..
             } => {
                 assert_eq!(window, WindowKind::Hour);

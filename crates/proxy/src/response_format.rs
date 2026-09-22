@@ -33,13 +33,6 @@ pub struct JsonSchemaSpec {
 }
 
 impl ResponseFormat {
-    /// True when the reply must be JSON. `Text` returns false, and the
-    /// caller skips instruction injection and validation entirely.
-    #[must_use]
-    pub fn requires_json(&self) -> bool {
-        !matches!(self, Self::Text)
-    }
-
     /// Reject a malformed schema before any model call, so the client gets a
     /// 400 describing its own mistake rather than a wasted completion that
     /// can never validate. No-op for the non-schema variants.
@@ -87,6 +80,24 @@ impl ResponseFormat {
         }
     }
 
+    /// A correction message to feed back to the model after a failed
+    /// validation, naming the exact problem so the retry is targeted rather
+    /// than a blind re-roll.
+    #[must_use]
+    pub fn repair_instruction(&self, error: &ResponseFormatError) -> String {
+        format!(
+            "Your previous response did not satisfy the required response format: {error}. \
+             Respond again with only the corrected JSON value and nothing else."
+        )
+    }
+
+    /// True when the reply must be JSON. `Text` returns false, and the
+    /// caller skips instruction injection and validation entirely.
+    #[must_use]
+    pub fn requires_json(&self) -> bool {
+        !matches!(self, Self::Text)
+    }
+
     /// Validate `text` against this format and return the cleaned JSON string
     /// (re-serialized, so any surrounding prose or code fences the model
     /// added are stripped). `Text` passes through unchanged.
@@ -115,17 +126,6 @@ impl ResponseFormat {
             }
             Self::Text => Ok(text.to_string()),
         }
-    }
-
-    /// A correction message to feed back to the model after a failed
-    /// validation, naming the exact problem so the retry is targeted rather
-    /// than a blind re-roll.
-    #[must_use]
-    pub fn repair_instruction(&self, error: &ResponseFormatError) -> String {
-        format!(
-            "Your previous response did not satisfy the required response format: {error}. \
-             Respond again with only the corrected JSON value and nothing else."
-        )
     }
 }
 

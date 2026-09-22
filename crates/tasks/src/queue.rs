@@ -27,7 +27,7 @@ impl SchemaMigrator for Schema {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskState {
     Done,
     Errored,
@@ -36,16 +36,6 @@ pub enum TaskState {
 }
 
 impl TaskState {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Done => "done",
-            Self::Errored => "errored",
-            Self::Queued => "queued",
-            Self::Running => "running",
-        }
-    }
-
     fn parse(raw: &str, id: &str) -> Result<Self, TaskError> {
         match raw {
             "done" => Ok(Self::Done),
@@ -57,6 +47,16 @@ impl TaskState {
                 id: id.to_string(),
                 value: other.to_string(),
             }),
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Errored => "errored",
+            Self::Queued => "queued",
+            Self::Running => "running",
         }
     }
 }
@@ -123,6 +123,55 @@ impl Tasks {
         Ok(id)
     }
 
+    /// Look up a task by id. Returns `None` if no such task exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database read fails.
+    pub async fn get(&self, id: TaskId) -> Result<Option<Task>, TaskError> {
+        let row = sqlx::query_as::<_, TaskRow>(
+            "SELECT agent, created_at, error, finished_at, id, prompt, result, \
+                    started_at, state, user_id \
+             FROM tasks WHERE id = ?",
+        )
+        .bind(id.0.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(TaskRow::into_task).transpose()
+    }
+
+    /// Transition `id` to `done` with the agent's final reply as `result`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database write fails.
+    pub async fn mark_done(&self, id: TaskId, result: &str) -> Result<(), TaskError> {
+        let now = u64_to_i64(now_secs());
+        sqlx::query("UPDATE tasks SET state = 'done', finished_at = ?, result = ? WHERE id = ?")
+            .bind(now)
+            .bind(result)
+            .bind(id.0.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Transition `id` to `errored` with the displayed failure reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database write fails.
+    pub async fn mark_errored(&self, id: TaskId, error: &str) -> Result<(), TaskError> {
+        let now = u64_to_i64(now_secs());
+        sqlx::query("UPDATE tasks SET state = 'errored', finished_at = ?, error = ? WHERE id = ?")
+            .bind(now)
+            .bind(error)
+            .bind(id.0.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Atomically claim the oldest queued task and transition it to
     /// `running`. Returns `None` when no task is ready.
     ///
@@ -179,55 +228,6 @@ impl Tasks {
         .await?;
         rows.into_iter().map(TaskRow::into_task).collect()
     }
-
-    /// Look up a task by id. Returns `None` if no such task exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying database read fails.
-    pub async fn get(&self, id: TaskId) -> Result<Option<Task>, TaskError> {
-        let row = sqlx::query_as::<_, TaskRow>(
-            "SELECT agent, created_at, error, finished_at, id, prompt, result, \
-                    started_at, state, user_id \
-             FROM tasks WHERE id = ?",
-        )
-        .bind(id.0.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(TaskRow::into_task).transpose()
-    }
-
-    /// Transition `id` to `done` with the agent's final reply as `result`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying database write fails.
-    pub async fn mark_done(&self, id: TaskId, result: &str) -> Result<(), TaskError> {
-        let now = u64_to_i64(now_secs());
-        sqlx::query("UPDATE tasks SET state = 'done', finished_at = ?, result = ? WHERE id = ?")
-            .bind(now)
-            .bind(result)
-            .bind(id.0.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Transition `id` to `errored` with the displayed failure reason.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying database write fails.
-    pub async fn mark_errored(&self, id: TaskId, error: &str) -> Result<(), TaskError> {
-        let now = u64_to_i64(now_secs());
-        sqlx::query("UPDATE tasks SET state = 'errored', finished_at = ?, error = ? WHERE id = ?")
-            .bind(now)
-            .bind(error)
-            .bind(id.0.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
 }
 
 impl TaskQueue for Tasks {
@@ -246,19 +246,6 @@ impl TaskQueue for Tasks {
 }
 
 impl TaskStatus for Tasks {
-    fn recent<'a>(
-        &'a self,
-        limit: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>> {
-        Box::pin(async move {
-            let rows = self
-                .recent(limit)
-                .await
-                .map_err(|e| TaskStatusError::new(e.to_string()))?;
-            Ok(rows.into_iter().map(into_summary).collect())
-        })
-    }
-
     fn reap_stale_running<'a>(
         &'a self,
         started_before_secs: u64,
@@ -278,6 +265,19 @@ impl TaskStatus for Tasks {
             .await
             .map(|r| r.rows_affected())
             .map_err(|e| TaskStatusError::new(e.to_string()))
+        })
+    }
+
+    fn recent<'a>(
+        &'a self,
+        limit: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>> {
+        Box::pin(async move {
+            let rows = self
+                .recent(limit)
+                .await
+                .map_err(|e| TaskStatusError::new(e.to_string()))?;
+            Ok(rows.into_iter().map(into_summary).collect())
         })
     }
 }

@@ -72,13 +72,13 @@ impl ToolDyn for DispatchTaskTool {
     fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
         Box::pin(async move {
             ToolDefinition {
-                name: "dispatch_task".to_string(),
                 description: "Enqueue a fire-and-forget background task that runs the named \
                               agent with the given prompt. Returns immediately with a task_id. \
                               Use this when the request is genuinely async — research, long \
                               analyses, periodic narration — rather than for steps you need an \
                               answer to before you can continue."
                     .to_string(),
+                name: "dispatch_task".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {

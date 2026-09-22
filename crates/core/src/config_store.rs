@@ -20,14 +20,14 @@ use std::pin::Pin;
 /// writes. Use [`Self::write_all`] for the `PUT /admin/config` endpoint
 /// where the whole file is replaced atomically.
 pub trait ConfigPersister: Send + Sync {
-    fn write_section<'a>(
+    fn write_all<'a>(
         &'a self,
-        section: &'a str,
         value: serde_yaml::Value,
     ) -> Pin<Box<dyn Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>;
 
-    fn write_all<'a>(
+    fn write_section<'a>(
         &'a self,
+        section: &'a str,
         value: serde_yaml::Value,
     ) -> Pin<Box<dyn Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>;
 }

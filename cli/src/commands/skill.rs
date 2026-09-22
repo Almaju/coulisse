@@ -35,24 +35,24 @@ pub struct Options {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
-    #[error("$HOME is not set; cannot resolve the global skill directory")]
-    NoHomeDir,
-    #[error("unknown tool '{0}'; supported: claude-code, codex")]
-    UnknownTool(String),
     #[error("failed to create directory {path}: {source}")]
     CreateDir {
         path: String,
         #[source]
         source: io::Error,
     },
+    #[error("$HOME is not set; cannot resolve the global skill directory")]
+    NoHomeDir,
+    #[error("failed to read selection: {0}")]
+    Stdin(#[from] io::Error),
+    #[error("unknown tool '{0}'; supported: claude-code, codex")]
+    UnknownTool(String),
     #[error("failed to write skill file {path}: {source}")]
     Write {
         path: String,
         #[source]
         source: io::Error,
     },
-    #[error("failed to read selection: {0}")]
-    Stdin(#[from] io::Error),
 }
 
 /// # Errors

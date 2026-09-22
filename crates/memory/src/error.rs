@@ -7,7 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("embedder provider '{provider}' client init failed: {message}")]
-    ClientInit { provider: String, message: String },
+    ClientInit { message: String, provider: String },
     #[error("failed to create database directory {path}: {source}")]
     CreateDir {
         path: PathBuf,

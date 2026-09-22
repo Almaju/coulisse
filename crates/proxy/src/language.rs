@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer};
 /// A validated BCP 47 language tag (RFC 5646). Carries no domain-specific
 /// semantics beyond "this string is a well-formed language tag" — the model
 /// does the actual interpretation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LanguageTag(RawLanguageTag<String>);
 
 impl LanguageTag {

@@ -4,7 +4,7 @@ use coulisse_core::{Message, MessageId, Role, UserId, now_secs};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct MemoryId(pub Uuid);
 
@@ -21,7 +21,7 @@ impl Default for MemoryId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct TokenCount(pub u32);
 
@@ -76,12 +76,12 @@ impl StoredMessage {
     pub fn new_with_id(user_id: UserId, role: Role, content: String, id: MessageId) -> Self {
         let token_count = TokenCount::estimate(&content);
         Self {
+            content,
             created_at: now_secs(),
             id,
             role,
             token_count,
             user_id,
-            content,
         }
     }
 
@@ -94,7 +94,7 @@ impl StoredMessage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryKind {
     Fact,
@@ -141,12 +141,12 @@ impl Memory {
     #[must_use]
     pub fn new(user_id: UserId, kind: MemoryKind, content: String, embedding: Vec<f32>) -> Self {
         Self {
+            content,
             created_at: now_secs(),
             embedding,
             id: MemoryId::new(),
             kind,
             user_id,
-            content,
         }
     }
 }

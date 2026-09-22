@@ -65,7 +65,7 @@ pub struct TokensConfig {}
 /// Where the user identifier that partitions memory, recall, MCP sessions,
 /// and rate limits comes from.
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, schemars::JsonSchema, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityMode {
@@ -165,34 +165,34 @@ impl ScopeConfig {
         if let Some(oidc) = &self.oidc {
             if oidc.client_id.is_empty() {
                 return Err(ConfigError::BlankOidcField {
-                    scope,
                     field: "client_id",
+                    scope,
                 });
             }
             if oidc.issuer_url.is_empty() {
                 return Err(ConfigError::BlankOidcField {
-                    scope,
                     field: "issuer_url",
+                    scope,
                 });
             }
             if oidc.redirect_url.is_empty() {
                 return Err(ConfigError::BlankOidcField {
-                    scope,
                     field: "redirect_url",
+                    scope,
                 });
             }
         }
         if let Some(basic) = &self.basic {
             if basic.password.is_empty() {
                 return Err(ConfigError::BlankBasicField {
-                    scope,
                     field: "password",
+                    scope,
                 });
             }
             if basic.username.is_empty() {
                 return Err(ConfigError::BlankBasicField {
-                    scope,
                     field: "username",
+                    scope,
                 });
             }
         }

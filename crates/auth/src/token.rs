@@ -39,7 +39,7 @@ impl SchemaMigrator for Schema {
 /// Public, stable identity for a minted token. Distinct from the secret: the
 /// id is safe to log, surface in the studio, and pass around; the secret is
 /// shown once and never persisted.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct TokenId(pub Uuid);
 
@@ -74,7 +74,7 @@ impl std::fmt::Display for TokenId {
 /// Spend cap attached to a token. `Unlimited` never blocks; `Total` caps
 /// lifetime spend; `Monthly` caps spend within the current calendar month
 /// (UTC) and resets on the first of each month.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Budget {
     Monthly { limit_micro_usd: i64 },
     Total { limit_micro_usd: i64 },
@@ -82,6 +82,17 @@ pub enum Budget {
 }
 
 impl Budget {
+    fn from_db(kind: &str, limit_micro_usd: Option<i64>) -> Self {
+        match (kind, limit_micro_usd) {
+            ("monthly", Some(limit_micro_usd)) => Self::Monthly { limit_micro_usd },
+            ("total", Some(limit_micro_usd)) => Self::Total { limit_micro_usd },
+            // WHY: an unrecognised kind or a capped kind with a NULL limit is
+            // a corrupt row; fail open to `Unlimited` rather than blocking a
+            // user behind unreadable budget state.
+            _ => Self::Unlimited,
+        }
+    }
+
     /// Construct from an admin form: a kind string plus an optional dollar
     /// amount. `unlimited` ignores the amount; `total`/`monthly` require a
     /// positive amount.
@@ -103,25 +114,6 @@ impl Budget {
         }
     }
 
-    fn to_db(self) -> (&'static str, Option<i64>) {
-        match self {
-            Self::Monthly { limit_micro_usd } => ("monthly", Some(limit_micro_usd)),
-            Self::Total { limit_micro_usd } => ("total", Some(limit_micro_usd)),
-            Self::Unlimited => ("unlimited", None),
-        }
-    }
-
-    fn from_db(kind: &str, limit_micro_usd: Option<i64>) -> Self {
-        match (kind, limit_micro_usd) {
-            ("monthly", Some(limit_micro_usd)) => Self::Monthly { limit_micro_usd },
-            ("total", Some(limit_micro_usd)) => Self::Total { limit_micro_usd },
-            // WHY: an unrecognised kind or a capped kind with a NULL limit is
-            // a corrupt row; fail open to `Unlimited` rather than blocking a
-            // user behind unreadable budget state.
-            _ => Self::Unlimited,
-        }
-    }
-
     /// Human-readable summary for the studio (`"unlimited"`, `"$5.00 total"`,
     /// `"$20.00 / month"`).
     #[must_use]
@@ -134,6 +126,14 @@ impl Budget {
                 format!("${:.2} total", micro_to_usd(limit_micro_usd))
             }
             Self::Unlimited => "unlimited".to_string(),
+        }
+    }
+
+    fn to_db(self) -> (&'static str, Option<i64>) {
+        match self {
+            Self::Monthly { limit_micro_usd } => ("monthly", Some(limit_micro_usd)),
+            Self::Total { limit_micro_usd } => ("total", Some(limit_micro_usd)),
+            Self::Unlimited => ("unlimited", None),
         }
     }
 }
@@ -178,16 +178,16 @@ impl TokenRecord {
         self.revoked_at.is_some()
     }
 
-    /// Lifetime spend in dollars, for display.
-    #[must_use]
-    pub fn spend_usd(&self) -> f64 {
-        micro_to_usd(self.spend_micro_usd)
-    }
-
     /// Spend in dollars counted against the current budget window.
     #[must_use]
     pub fn period_spend_usd(&self) -> f64 {
         micro_to_usd(self.period_spend_micro_usd)
+    }
+
+    /// Lifetime spend in dollars, for display.
+    #[must_use]
+    pub fn spend_usd(&self) -> f64 {
+        micro_to_usd(self.spend_micro_usd)
     }
 }
 
@@ -207,6 +207,30 @@ impl TokenStore {
     pub async fn open(pool: SqlitePool) -> Result<Self, StoreError> {
         migrate::run(&pool, &Schema).await?;
         Ok(Self { pool })
+    }
+
+    /// Reject the request if the token has met or exceeded its budget. Returns
+    /// `Ok(())` for unlimited tokens and for capped tokens still under their
+    /// limit. Called before the LLM round-trip, alongside the rate-limit
+    /// check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BudgetError::Exceeded`] when the cap is reached, or
+    /// [`BudgetError::Store`] if the spend lookup fails.
+    pub async fn check_budget(&self, id: TokenId) -> Result<(), BudgetError> {
+        self.check_budget_at(id, now_secs()).await
+    }
+
+    /// Every token, newest first, with computed spend. Drives the studio
+    /// list. Reads two indexed sums per token — fine for the token counts a
+    /// single instance issues.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn list(&self) -> Result<Vec<TokenRecord>, StoreError> {
+        self.list_at(now_secs()).await
     }
 
     /// Mint a new token: generate a high-entropy secret, store its hash with
@@ -242,6 +266,35 @@ impl TokenStore {
         Ok(MintedToken { id, secret })
     }
 
+    /// Charge `micro_usd` to a token's spend ledger. No-op for non-positive
+    /// amounts (a free model, or a pricing miss). Called after each LLM
+    /// round-trip on the request-flow's finalize path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    pub async fn record_spend(&self, id: TokenId, micro_usd: i64) -> Result<(), StoreError> {
+        self.record_spend_at(id, micro_usd, now_secs()).await
+    }
+
+    /// Revoke a token by id. Returns `true` if a row was updated, `false` if
+    /// no such token exists. Idempotent: revoking an already-revoked token
+    /// leaves its original `revoked_at` untouched and returns `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn revoke(&self, id: TokenId) -> Result<bool, StoreError> {
+        let affected =
+            sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+                .bind(u64_to_i64(now_secs()))
+                .bind(id.0.to_string())
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
+        Ok(affected > 0)
+    }
+
     /// Resolve a presented bearer secret to its bound principal, or `None`
     /// when the secret is unknown or its token has been revoked. Updates
     /// `last_used_at` on a hit.
@@ -269,33 +322,33 @@ impl TokenStore {
         Ok(Some(VerifiedToken { id, principal }))
     }
 
-    /// Revoke a token by id. Returns `true` if a row was updated, `false` if
-    /// no such token exists. Idempotent: revoking an already-revoked token
-    /// leaves its original `revoked_at` untouched and returns `false`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the update fails.
-    pub async fn revoke(&self, id: TokenId) -> Result<bool, StoreError> {
-        let affected =
-            sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
-                .bind(u64_to_i64(now_secs()))
-                .bind(id.0.to_string())
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
-        Ok(affected > 0)
-    }
-
-    /// Every token, newest first, with computed spend. Drives the studio
-    /// list. Reads two indexed sums per token — fine for the token counts a
-    /// single instance issues.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the query fails.
-    pub async fn list(&self) -> Result<Vec<TokenRecord>, StoreError> {
-        self.list_at(now_secs()).await
+    async fn check_budget_at(&self, id: TokenId, now: u64) -> Result<(), BudgetError> {
+        let row: Option<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT budget_kind, budget_micro_usd FROM api_tokens \
+             WHERE id = ? AND revoked_at IS NULL",
+        )
+        .bind(id.0.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::Sqlx)?;
+        // No row (unknown or revoked) is not this check's job to reject — the
+        // verify step already gates that. Treat as no budget.
+        let Some((kind, limit)) = row else {
+            return Ok(());
+        };
+        let (since, limit_micro_usd) = match Budget::from_db(&kind, limit) {
+            Budget::Monthly { limit_micro_usd } => (month_start_secs(now), limit_micro_usd),
+            Budget::Total { limit_micro_usd } => (0, limit_micro_usd),
+            Budget::Unlimited => return Ok(()),
+        };
+        let spent = self.spend_since(id, since).await?;
+        if spent >= limit_micro_usd {
+            return Err(BudgetError::Exceeded {
+                limit_micro_usd,
+                spent_micro_usd: spent,
+            });
+        }
+        Ok(())
     }
 
     async fn list_at(&self, now: u64) -> Result<Vec<TokenRecord>, StoreError> {
@@ -333,17 +386,6 @@ impl TokenStore {
         Ok(records)
     }
 
-    /// Charge `micro_usd` to a token's spend ledger. No-op for non-positive
-    /// amounts (a free model, or a pricing miss). Called after each LLM
-    /// round-trip on the request-flow's finalize path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the insert fails.
-    pub async fn record_spend(&self, id: TokenId, micro_usd: i64) -> Result<(), StoreError> {
-        self.record_spend_at(id, micro_usd, now_secs()).await
-    }
-
     async fn record_spend_at(
         &self,
         id: TokenId,
@@ -363,48 +405,6 @@ impl TokenStore {
         .bind(id.0.to_string())
         .execute(&self.pool)
         .await?;
-        Ok(())
-    }
-
-    /// Reject the request if the token has met or exceeded its budget. Returns
-    /// `Ok(())` for unlimited tokens and for capped tokens still under their
-    /// limit. Called before the LLM round-trip, alongside the rate-limit
-    /// check.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BudgetError::Exceeded`] when the cap is reached, or
-    /// [`BudgetError::Store`] if the spend lookup fails.
-    pub async fn check_budget(&self, id: TokenId) -> Result<(), BudgetError> {
-        self.check_budget_at(id, now_secs()).await
-    }
-
-    async fn check_budget_at(&self, id: TokenId, now: u64) -> Result<(), BudgetError> {
-        let row: Option<(String, Option<i64>)> = sqlx::query_as(
-            "SELECT budget_kind, budget_micro_usd FROM api_tokens \
-             WHERE id = ? AND revoked_at IS NULL",
-        )
-        .bind(id.0.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::Sqlx)?;
-        // No row (unknown or revoked) is not this check's job to reject — the
-        // verify step already gates that. Treat as no budget.
-        let Some((kind, limit)) = row else {
-            return Ok(());
-        };
-        let (since, limit_micro_usd) = match Budget::from_db(&kind, limit) {
-            Budget::Monthly { limit_micro_usd } => (month_start_secs(now), limit_micro_usd),
-            Budget::Total { limit_micro_usd } => (0, limit_micro_usd),
-            Budget::Unlimited => return Ok(()),
-        };
-        let spent = self.spend_since(id, since).await?;
-        if spent >= limit_micro_usd {
-            return Err(BudgetError::Exceeded {
-                limit_micro_usd,
-                spent_micro_usd: spent,
-            });
-        }
         Ok(())
     }
 

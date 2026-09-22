@@ -75,7 +75,7 @@ fn default_service_name() -> String {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, schemars::JsonSchema, PartialEq, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum OtlpProtocol {

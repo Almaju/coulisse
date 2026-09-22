@@ -112,8 +112,8 @@ async fn fetch_authorization_server_metadata(issuer: &str) -> Result<AuthMetadat
     let response = reqwest::get(&url)
         .await
         .map_err(|source| McpError::Discovery {
-            url: url.clone(),
             source: Box::new(source),
+            url: url.clone(),
         })?;
     if !response.status().is_success() {
         return Err(McpError::DiscoveryStatus {
@@ -125,8 +125,8 @@ async fn fetch_authorization_server_metadata(issuer: &str) -> Result<AuthMetadat
         .json::<AuthMetadata>()
         .await
         .map_err(|source| McpError::Discovery {
-            url,
             source: Box::new(source),
+            url,
         })
 }
 

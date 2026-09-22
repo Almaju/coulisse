@@ -142,15 +142,6 @@ impl Auth {
         Ok(Self { admin, proxy })
     }
 
-    fn summary(scheme: Option<&Scheme>) -> &'static str {
-        match scheme {
-            None => "unauthenticated",
-            Some(Scheme::ApiKey(_)) => "API tokens enabled",
-            Some(Scheme::Basic(_)) => "basic auth enabled",
-            Some(Scheme::Oidc(_)) => "OIDC login enabled",
-        }
-    }
-
     /// One-line description of the admin-scope auth posture, for the
     /// startup banner.
     #[must_use]
@@ -180,6 +171,15 @@ impl Auth {
         match &self.proxy {
             None => router,
             Some(scheme) => apply(router, scheme),
+        }
+    }
+
+    fn summary(scheme: Option<&Scheme>) -> &'static str {
+        match scheme {
+            None => "unauthenticated",
+            Some(Scheme::ApiKey(_)) => "API tokens enabled",
+            Some(Scheme::Basic(_)) => "basic auth enabled",
+            Some(Scheme::Oidc(_)) => "OIDC login enabled",
         }
     }
 }

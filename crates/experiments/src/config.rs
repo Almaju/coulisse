@@ -60,7 +60,7 @@ fn default_sticky_by_user() -> bool {
 }
 
 /// How requests are dispatched across an experiment's variants.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, schemars::JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Strategy {
     /// Epsilon-greedy: read recent mean scores per arm, exploit the

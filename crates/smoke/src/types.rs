@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Stable identity for one synthetic-conversation run. Returned from
 /// `Smoke::start_run` and used to navigate to the run viewer in the
 /// admin UI.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct RunId(pub Uuid);
 
@@ -24,7 +24,7 @@ impl Default for RunId {
 
 /// Lifecycle state for a smoke run. Transitions are linear: `Running` →
 /// (`Completed` | `Failed`).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunStatus {
     Completed,
     Failed,
@@ -55,7 +55,7 @@ impl RunStatus {
 /// Which side of the synthetic conversation produced a message. The
 /// runner records both sides so the run viewer shows the exchange in
 /// full.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnRole {
     Assistant,
     Persona,

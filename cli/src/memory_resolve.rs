@@ -126,7 +126,7 @@ fn resolve_extractor<S: BuildHasher>(
 ) -> Result<ExtractorConfig, MemoryResolveError> {
     let (provider, model) = match overrides.and_then(|c| c.learn_from.as_ref()) {
         None => auto_pick_extractor(providers)?,
-        Some(ProviderModel { provider, model }) => {
+        Some(ProviderModel { model, provider }) => {
             let kind = ProviderKind::parse(provider).ok_or_else(|| {
                 MemoryResolveError::LearnFromUnknownProvider {
                     provider: provider.clone(),

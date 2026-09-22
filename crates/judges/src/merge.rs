@@ -4,7 +4,7 @@ use crate::JudgeConfig;
 use crate::store::DynamicJudgeRow;
 
 /// Where the resolved version of a judge came from.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Dynamic,
     Override,
@@ -81,7 +81,7 @@ pub fn merge(yaml: &[JudgeConfig], db: &[DynamicJudgeRow]) -> (Vec<MergedJudge>,
     (merged, report)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminSource {
     Dynamic,
     Override,

@@ -21,12 +21,12 @@ pub enum McpError {
     )]
     DcrUnsupported { server: String },
     #[error("failed to decrypt token for server '{server}': {err}")]
-    Decrypt { server: String, err: aes_gcm::Error },
+    Decrypt { err: aes_gcm::Error, server: String },
     #[error("failed to fetch OAuth metadata from {url}: {source}")]
     Discovery {
-        url: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
+        url: String,
     },
     #[error("malformed MCP server URL '{url}' (cannot derive origin for OAuth discovery)")]
     DiscoveryInvalidUrl { url: String },
@@ -38,6 +38,8 @@ pub enum McpError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    #[error("failed to encrypt token for server '{server}': {err}")]
+    Encrypt { err: aes_gcm::Error, server: String },
     #[error("failed to list tools for MCP server '{server}': {source}")]
     ListTools {
         server: String,
@@ -56,24 +58,22 @@ pub enum McpError {
     },
     #[error("database error for MCP vault: {0}")]
     Sqlx(#[from] sqlx::Error),
-    #[error("invalid HMAC state token")]
-    StateInvalid,
     #[error("state token has expired")]
     StateExpired,
-    #[error("MCP server '{server}' does not expose tool '{tool}' (agent '{agent}')")]
-    ToolNotFound {
-        agent: String,
-        server: String,
-        tool: String,
-    },
+    #[error("invalid HMAC state token")]
+    StateInvalid,
     #[error("token exchange failed for server '{server}': {source}")]
     TokenExchange {
         server: String,
         #[source]
         source: reqwest::Error,
     },
-    #[error("failed to encrypt token for server '{server}': {err}")]
-    Encrypt { server: String, err: aes_gcm::Error },
+    #[error("MCP server '{server}' does not expose tool '{tool}' (agent '{agent}')")]
+    ToolNotFound {
+        agent: String,
+        server: String,
+        tool: String,
+    },
     #[error("vault key is invalid base64 or wrong length (must be 32 bytes base64-encoded)")]
     VaultKeyInvalid,
 }

@@ -40,32 +40,30 @@ const ENDPOINT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SseClientError {
-    #[error("SSE transport closed")]
-    Closed,
-    #[error("worker join error: {0}")]
-    Join(#[from] tokio::task::JoinError),
-    #[error("failed to connect to SSE endpoint {url}: {source}")]
-    Connect {
-        url: String,
-        #[source]
-        source: reqwest::Error,
-    },
+    #[error("SSE endpoint URL {raw} is not absolute and not joinable against {base}")]
+    BadEndpointUrl { base: String, raw: String },
     #[error("SSE endpoint {url} returned HTTP {status}")]
     BadStatus { status: u16, url: String },
+    #[error("SSE transport closed")]
+    Closed,
+    #[error("failed to connect to SSE endpoint {url}: {source}")]
+    Connect {
+        #[source]
+        source: reqwest::Error,
+        url: String,
+    },
+    #[error("worker join error: {0}")]
+    Join(#[from] tokio::task::JoinError),
     #[error(
         "SSE stream from {url} ended before sending the initial `endpoint` event \
          (the server doesn't speak the MCP-over-SSE protocol)"
     )]
     MissingEndpointEvent { url: String },
-    #[error("SSE endpoint URL {raw} is not absolute and not joinable against {base}")]
-    BadEndpointUrl { base: String, raw: String },
-    #[error("SSE event stream error: {0}")]
-    Stream(String),
     #[error("failed to POST message to {url}: {source}")]
     Post {
-        url: String,
         #[source]
         source: reqwest::Error,
+        url: String,
     },
     #[error("POST to {url} returned HTTP {status}: {body}")]
     PostStatus {
@@ -75,6 +73,8 @@ pub(crate) enum SseClientError {
     },
     #[error("failed to serialize outgoing message: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("SSE event stream error: {0}")]
+    Stream(String),
 }
 
 /// Builder for an MCP-over-SSE client. Call `.connect()` to perform the
@@ -109,8 +109,8 @@ impl SseClientTransport {
             // below.
             .build()
             .map_err(|source| SseClientError::Connect {
-                url: url.to_string(),
                 source,
+                url: url.to_string(),
             })?;
         let mut req = client
             .get(url)
@@ -121,8 +121,8 @@ impl SseClientTransport {
             req = req.header("Authorization", h);
         }
         let response = req.send().await.map_err(|source| SseClientError::Connect {
-            url: url.to_string(),
             source,
+            url: url.to_string(),
         })?;
         let status = response.status();
         if !status.is_success() {
@@ -191,18 +191,18 @@ impl Worker for SseClientTransport {
     type Error = SseClientError;
     type Role = RoleClient;
 
+    fn config(&self) -> WorkerConfig {
+        let mut cfg = WorkerConfig::default();
+        cfg.name = Some(format!("sse-client:{}", self.base_url));
+        cfg
+    }
+
     fn err_closed() -> Self::Error {
         SseClientError::Closed
     }
 
     fn err_join(e: tokio::task::JoinError) -> Self::Error {
         SseClientError::Join(e)
-    }
-
-    fn config(&self) -> WorkerConfig {
-        let mut cfg = WorkerConfig::default();
-        cfg.name = Some(format!("sse-client:{}", self.base_url));
-        cfg
     }
 
     async fn run(
@@ -285,8 +285,8 @@ async fn post_message(
         req = req.header("Authorization", h);
     }
     let response = req.send().await.map_err(|source| SseClientError::Post {
-        url: url.to_string(),
         source,
+        url: url.to_string(),
     })?;
     let status = response.status();
     if !status.is_success() {

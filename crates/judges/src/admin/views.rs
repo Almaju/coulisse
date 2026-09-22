@@ -163,9 +163,9 @@ impl JudgeListRow {
 }
 
 pub(super) struct MatrixCell {
-    pub tone: &'static str,
     pub mean: String,
     pub samples: u32,
+    pub tone: &'static str,
 }
 
 pub(super) struct MatrixRow {
@@ -212,9 +212,9 @@ pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix
                 .iter()
                 .map(|crit| match cell_map.get(crit.as_str()) {
                     None => MatrixCell {
-                        tone: "none",
                         mean: "—".into(),
                         samples: 0,
+                        tone: "none",
                     },
                     Some(c) => {
                         let tone = if c.mean >= 7.0 {
@@ -225,9 +225,9 @@ pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix
                             "bad"
                         };
                         MatrixCell {
-                            tone,
                             mean: format!("{:.1}", c.mean),
                             samples: c.samples,
+                            tone,
                         }
                     }
                 })

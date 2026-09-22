@@ -35,7 +35,7 @@ pub fn redirect_to(to: &str) -> Response {
 /// [`Self::Json`]; otherwise [`Self::Html`]. The cli admin shell
 /// middleware wraps `Html` responses in the page chrome and lets `Htmx`
 /// fragments through unwrapped.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseFormat {
     Html,
     Htmx,

@@ -160,6 +160,12 @@ impl<'de> Deserialize<'de> for McpServerConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Raw {
+            #[serde(default)]
+            args: Vec<String>,
+            #[serde(default)]
+            command: Option<String>,
+            #[serde(default)]
+            env: HashMap<String, String>,
             /// Kept as raw JSON so the same field can carry a map
             /// (`oauth: { mode: ... }`) or the boolean `oauth: false`
             /// opt-out from the URL-auto-discover default.
@@ -169,12 +175,6 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             transport: Option<String>,
             #[serde(default)]
             url: Option<String>,
-            #[serde(default)]
-            command: Option<String>,
-            #[serde(default)]
-            args: Vec<String>,
-            #[serde(default)]
-            env: HashMap<String, String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         use serde::de::Error;
@@ -387,7 +387,7 @@ oauth:
         let yaml = "command: uvx\nargs: [hello-mcp-server]\n";
         let cfg: McpServerConfig = serde_yaml::from_str(yaml).unwrap();
         match cfg.transport {
-            McpTransport::Stdio { command, args, .. } => {
+            McpTransport::Stdio { args, command, .. } => {
                 assert_eq!(command, "uvx");
                 assert_eq!(args, vec!["hello-mcp-server".to_string()]);
             }

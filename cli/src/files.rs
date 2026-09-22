@@ -132,7 +132,7 @@ impl IntoResponse for FilesError {
             Self::Storage(StorageError::NotFound(id)) => {
                 (StatusCode::NOT_FOUND, format!("file '{id}' not found")).into_response()
             }
-            Self::Storage(StorageError::FileTooLarge { size, limit }) => (
+            Self::Storage(StorageError::FileTooLarge { limit, size }) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("file is {size} bytes; limit is {limit} bytes"),
             )

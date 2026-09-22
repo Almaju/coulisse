@@ -25,19 +25,19 @@ pub trait SchemaMigrator {
     /// Stable forever — renaming this strands prior versions.
     const NAME: &'static str;
 
-    /// Crate versions in which the schema changed, ascending. The last entry
-    /// is the version this code targets. Versions whose releases didn't
-    /// touch the schema are absent.
-    ///
-    /// Must be non-empty, valid `SemVer`, and strictly ascending.
-    const VERSIONS: &'static [&'static str];
-
     /// Full current schema. Applied verbatim on a fresh database; the runner
     /// splits it into individual statements on `;`. Use `CREATE TABLE IF NOT
     /// EXISTS` so callers can no-op apply against pre-existing schemas
     /// during local dev (the version table prevents duplicate runs in
     /// production).
     const SCHEMA: &'static str;
+
+    /// Crate versions in which the schema changed, ascending. The last entry
+    /// is the version this code targets. Versions whose releases didn't
+    /// touch the schema are absent.
+    ///
+    /// Must be non-empty, valid `SemVer`, and strictly ascending.
+    const VERSIONS: &'static [&'static str];
 
     /// Upgrade the database from `from_version` to the next entry in
     /// `VERSIONS`. Called once per gap between the stored version and the

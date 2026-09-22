@@ -309,8 +309,8 @@ where
                 })),
                 Ok(MultiTurnStreamItem::StreamAssistantItem(
                     StreamedAssistantContent::ToolCall {
-                        tool_call,
                         internal_call_id,
+                        tool_call,
                     },
                 )) => {
                     let tool_name = tool_call.function.name.clone();
@@ -331,8 +331,8 @@ where
                     Some(Ok(StreamEvent::Delta(t.text)))
                 }
                 Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
-                    tool_result,
                     internal_call_id,
+                    tool_result,
                 })) => {
                     let result = flatten_tool_result(&tool_result);
                     Some(Ok(StreamEvent::ToolResult {

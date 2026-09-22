@@ -17,7 +17,7 @@ pub enum LimitError {
     Migrate(#[from] coulisse_core::migrate::MigrateError),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowKind {
     Day,
     Hour,

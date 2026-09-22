@@ -44,21 +44,19 @@ mod inner {
     }
 
     impl Backend for S3Backend {
-        fn put<'a>(
+        fn delete<'a>(
             &'a self,
             key: &'a str,
-            data: &'a [u8],
         ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
         {
             Box::pin(async move {
                 self.client
-                    .put_object()
+                    .delete_object()
                     .bucket(&self.bucket)
                     .key(key)
-                    .body(data.to_vec().into())
                     .send()
                     .await
-                    .map_err(|e| StorageError::backend(format!("s3 put {key}: {e}")))?;
+                    .map_err(|e| StorageError::backend(format!("s3 delete {key}: {e}")))?;
                 Ok(())
             })
         }
@@ -97,29 +95,31 @@ mod inner {
             })
         }
 
-        fn delete<'a>(
-            &'a self,
-            key: &'a str,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
-        {
-            Box::pin(async move {
-                self.client
-                    .delete_object()
-                    .bucket(&self.bucket)
-                    .key(key)
-                    .send()
-                    .await
-                    .map_err(|e| StorageError::backend(format!("s3 delete {key}: {e}")))?;
-                Ok(())
-            })
-        }
-
         fn list_keys<'a>(
             &'a self,
         ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>>
         {
             // S3 uses lazy reconciliation via get_content; no boot scan.
             Box::pin(async move { Ok(vec![]) })
+        }
+
+        fn put<'a>(
+            &'a self,
+            key: &'a str,
+            data: &'a [u8],
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.client
+                    .put_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .body(data.to_vec().into())
+                    .send()
+                    .await
+                    .map_err(|e| StorageError::backend(format!("s3 put {key}: {e}")))?;
+                Ok(())
+            })
         }
     }
 }

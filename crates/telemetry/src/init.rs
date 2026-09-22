@@ -80,8 +80,8 @@ pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGua
             .with(otlp_layer)
             .init();
         Ok(TelemetryGuard {
-            sqlite: sqlite_guard,
             otlp: Some(OtlpGuard { provider }),
+            sqlite: sqlite_guard,
         })
     } else {
         tracing_subscriber::registry()
@@ -90,8 +90,8 @@ pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGua
             .with(sqlite_layer)
             .init();
         Ok(TelemetryGuard {
-            sqlite: sqlite_guard,
             otlp: None,
+            sqlite: sqlite_guard,
         })
     }
 }

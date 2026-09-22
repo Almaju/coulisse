@@ -91,86 +91,6 @@ impl TokenVault {
         Ok(Self { cipher, pool })
     }
 
-    fn encrypt(&self, server: &str, plaintext: &str) -> Result<Vec<u8>, McpError> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let ciphertext = self
-            .cipher
-            .encrypt(&nonce, plaintext.as_bytes())
-            .map_err(|err| McpError::Encrypt {
-                server: server.to_string(),
-                err,
-            })?;
-        let mut out = nonce.to_vec();
-        out.extend_from_slice(&ciphertext);
-        Ok(out)
-    }
-
-    #[allow(deprecated)]
-    fn decrypt(&self, server: &str, blob: &[u8]) -> Result<String, McpError> {
-        let nonce_arr: [u8; 12] =
-            blob.get(..12)
-                .and_then(|b| b.try_into().ok())
-                .ok_or_else(|| McpError::Decrypt {
-                    server: server.to_string(),
-                    err: aes_gcm::Error,
-                })?;
-        let ciphertext = &blob[12..];
-        let nonce = aes_gcm::aead::generic_array::GenericArray::from(nonce_arr);
-        let plaintext =
-            self.cipher
-                .decrypt(&nonce, ciphertext)
-                .map_err(|err| McpError::Decrypt {
-                    server: server.to_string(),
-                    err,
-                })?;
-        String::from_utf8(plaintext).map_err(|_| McpError::Decrypt {
-            server: server.to_string(),
-            err: aes_gcm::Error,
-        })
-    }
-
-    /// Upsert a token pair for `(server_name, user_id)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if encryption or the database write fails.
-    pub async fn upsert_token(
-        &self,
-        server_name: &str,
-        user_id: &str,
-        access_token: &str,
-        expires_at: Option<i64>,
-        refresh_token: Option<&str>,
-    ) -> Result<(), McpError> {
-        let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
-        let access_enc = self.encrypt(server_name, access_token)?;
-        let refresh_enc = refresh_token
-            .map(|rt| self.encrypt(server_name, rt))
-            .transpose()?;
-
-        sqlx::query(
-            "INSERT INTO mcp_oauth_tokens \
-             (access_token_enc, created_at, expires_at, refresh_token_enc, server_name, updated_at, user_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(server_name, user_id) DO UPDATE SET \
-               access_token_enc = excluded.access_token_enc, \
-               expires_at = excluded.expires_at, \
-               refresh_token_enc = excluded.refresh_token_enc, \
-               updated_at = excluded.updated_at",
-        )
-        .bind(access_enc)
-        .bind(now)
-        .bind(expires_at)
-        .bind(refresh_enc)
-        .bind(server_name)
-        .bind(now)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
     /// Drop the stored token for `(server_name, user_id)`. Called when the
     /// MCP endpoint rejects the token (401/403) so the next chat turn
     /// surfaces a fresh `connect_<server>` URL instead of looping on a
@@ -185,50 +105,6 @@ impl TokenVault {
             .bind(user_id)
             .execute(&self.pool)
             .await?;
-        Ok(())
-    }
-
-    /// Store the cached OAuth client registration for `server_name`. The
-    /// `client_secret` is encrypted with the vault key; everything else is
-    /// stored plaintext (the metadata document and `redirect_uri` are not
-    /// secrets — they are publicly discoverable from the provider).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if encryption or the database write fails.
-    pub async fn upsert_client(
-        &self,
-        server_name: &str,
-        client_id: &str,
-        client_secret: Option<&str>,
-        metadata_json: &str,
-        redirect_uri: &str,
-    ) -> Result<(), McpError> {
-        let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
-        let secret_enc = client_secret
-            .map(|s| self.encrypt(server_name, s))
-            .transpose()?;
-
-        sqlx::query(
-            "INSERT INTO mcp_oauth_clients \
-             (client_id, client_secret_enc, metadata_json, redirect_uri, registered_at, server_name) \
-             VALUES (?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(server_name) DO UPDATE SET \
-               client_id = excluded.client_id, \
-               client_secret_enc = excluded.client_secret_enc, \
-               metadata_json = excluded.metadata_json, \
-               redirect_uri = excluded.redirect_uri, \
-               registered_at = excluded.registered_at",
-        )
-        .bind(client_id)
-        .bind(secret_enc)
-        .bind(metadata_json)
-        .bind(redirect_uri)
-        .bind(now)
-        .bind(server_name)
-        .execute(&self.pool)
-        .await?;
-
         Ok(())
     }
 
@@ -303,6 +179,130 @@ impl TokenVault {
             expires_at,
             refresh_token,
         }))
+    }
+
+    /// Store the cached OAuth client registration for `server_name`. The
+    /// `client_secret` is encrypted with the vault key; everything else is
+    /// stored plaintext (the metadata document and `redirect_uri` are not
+    /// secrets — they are publicly discoverable from the provider).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if encryption or the database write fails.
+    pub async fn upsert_client(
+        &self,
+        server_name: &str,
+        client_id: &str,
+        client_secret: Option<&str>,
+        metadata_json: &str,
+        redirect_uri: &str,
+    ) -> Result<(), McpError> {
+        let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
+        let secret_enc = client_secret
+            .map(|s| self.encrypt(server_name, s))
+            .transpose()?;
+
+        sqlx::query(
+            "INSERT INTO mcp_oauth_clients \
+             (client_id, client_secret_enc, metadata_json, redirect_uri, registered_at, server_name) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(server_name) DO UPDATE SET \
+               client_id = excluded.client_id, \
+               client_secret_enc = excluded.client_secret_enc, \
+               metadata_json = excluded.metadata_json, \
+               redirect_uri = excluded.redirect_uri, \
+               registered_at = excluded.registered_at",
+        )
+        .bind(client_id)
+        .bind(secret_enc)
+        .bind(metadata_json)
+        .bind(redirect_uri)
+        .bind(now)
+        .bind(server_name)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Upsert a token pair for `(server_name, user_id)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if encryption or the database write fails.
+    pub async fn upsert_token(
+        &self,
+        server_name: &str,
+        user_id: &str,
+        access_token: &str,
+        expires_at: Option<i64>,
+        refresh_token: Option<&str>,
+    ) -> Result<(), McpError> {
+        let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
+        let access_enc = self.encrypt(server_name, access_token)?;
+        let refresh_enc = refresh_token
+            .map(|rt| self.encrypt(server_name, rt))
+            .transpose()?;
+
+        sqlx::query(
+            "INSERT INTO mcp_oauth_tokens \
+             (access_token_enc, created_at, expires_at, refresh_token_enc, server_name, updated_at, user_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(server_name, user_id) DO UPDATE SET \
+               access_token_enc = excluded.access_token_enc, \
+               expires_at = excluded.expires_at, \
+               refresh_token_enc = excluded.refresh_token_enc, \
+               updated_at = excluded.updated_at",
+        )
+        .bind(access_enc)
+        .bind(now)
+        .bind(expires_at)
+        .bind(refresh_enc)
+        .bind(server_name)
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    #[allow(deprecated)]
+    fn decrypt(&self, server: &str, blob: &[u8]) -> Result<String, McpError> {
+        let nonce_arr: [u8; 12] =
+            blob.get(..12)
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| McpError::Decrypt {
+                    err: aes_gcm::Error,
+                    server: server.to_string(),
+                })?;
+        let ciphertext = &blob[12..];
+        let nonce = aes_gcm::aead::generic_array::GenericArray::from(nonce_arr);
+        let plaintext =
+            self.cipher
+                .decrypt(&nonce, ciphertext)
+                .map_err(|err| McpError::Decrypt {
+                    err,
+                    server: server.to_string(),
+                })?;
+        String::from_utf8(plaintext).map_err(|_| McpError::Decrypt {
+            err: aes_gcm::Error,
+            server: server.to_string(),
+        })
+    }
+
+    fn encrypt(&self, server: &str, plaintext: &str) -> Result<Vec<u8>, McpError> {
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ciphertext = self
+            .cipher
+            .encrypt(&nonce, plaintext.as_bytes())
+            .map_err(|err| McpError::Encrypt {
+                err,
+                server: server.to_string(),
+            })?;
+        let mut out = nonce.to_vec();
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
     }
 }
 

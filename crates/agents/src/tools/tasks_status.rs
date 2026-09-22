@@ -82,13 +82,13 @@ impl ToolDyn for TasksStatusTool {
     fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
         Box::pin(async move {
             ToolDefinition {
-                name: "tasks_status".to_string(),
                 description: "Report recent background tasks across every agent — queued, \
                               running, done, or errored. Use this to answer \"what's going on \
                               right now?\" without needing the studio /admin/live page. \
                               Returns a JSON object with a `tasks` array; each entry has \
                               agent, state, prompt (truncated), and timestamps."
                     .to_string(),
+                name: "tasks_status".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {

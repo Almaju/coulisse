@@ -12,10 +12,10 @@ pub enum StorageError {
     NotFound(String),
     #[error("quota exceeded: stored {stored} bytes, limit {limit} bytes")]
     QuotaExceeded { limit: u64, stored: u64 },
-    #[error("content type not allowed: {0}")]
-    UnsupportedContentType(String),
     #[error("sqlx: {0}")]
     Sqlx(#[from] sqlx::Error),
+    #[error("content type not allowed: {0}")]
+    UnsupportedContentType(String),
 }
 
 impl StorageError {

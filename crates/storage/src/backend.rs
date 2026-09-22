@@ -9,10 +9,9 @@ use crate::error::StorageError;
 /// Blob storage backend abstraction. Object-safe so backends can be
 /// tested independently without the full `Store`.
 pub trait Backend: Send + Sync {
-    fn put<'a>(
+    fn delete<'a>(
         &'a self,
         key: &'a str,
-        data: &'a [u8],
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>;
 
     fn get<'a>(
@@ -20,17 +19,18 @@ pub trait Backend: Send + Sync {
         key: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, StorageError>> + Send + 'a>>;
 
-    fn delete<'a>(
-        &'a self,
-        key: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>;
-
     /// List all blob keys present in physical storage. Used at boot to
     /// reconcile the `SQLite` index against the filesystem. Implementations
     /// that can't enumerate (S3) return `Ok(vec![])`.
     fn list_keys<'a>(
         &'a self,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>>;
+
+    fn put<'a>(
+        &'a self,
+        key: &'a str,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>;
 }
 
 /// Concrete enum over the supported blob backends. Avoids boxing futures
@@ -44,12 +44,13 @@ pub enum BlobBackend {
 impl BlobBackend {
     /// # Errors
     ///
-    /// Returns an error if the backend write fails.
-    pub async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+    /// Returns an error if the backend delete fails (missing keys are not
+    /// an error).
+    pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
         match self {
-            Self::Fs(b) => b.put(key, bytes).await,
+            Self::Fs(b) => b.delete(key).await,
             #[cfg(feature = "s3")]
-            Self::S3(b) => b.put(key, bytes).await,
+            Self::S3(b) => b.delete(key).await,
         }
     }
 
@@ -64,18 +65,6 @@ impl BlobBackend {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the backend delete fails (missing keys are not
-    /// an error).
-    pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        match self {
-            Self::Fs(b) => b.delete(key).await,
-            #[cfg(feature = "s3")]
-            Self::S3(b) => b.delete(key).await,
-        }
-    }
-
     /// Returns physical keys for fs backends (used at boot to reconcile the
     /// `SQLite` index). Returns an empty vec for S3 (lazy reconciliation).
     ///
@@ -87,6 +76,17 @@ impl BlobBackend {
             Self::Fs(b) => b.list_keys().await,
             #[cfg(feature = "s3")]
             Self::S3(_) => Ok(vec![]),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the backend write fails.
+    pub async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        match self {
+            Self::Fs(b) => b.put(key, bytes).await,
+            #[cfg(feature = "s3")]
+            Self::S3(b) => b.put(key, bytes).await,
         }
     }
 }
@@ -118,23 +118,20 @@ impl FsBackend {
 }
 
 impl Backend for FsBackend {
-    fn put<'a>(
+    fn delete<'a>(
         &'a self,
         key: &'a str,
-        data: &'a [u8],
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>> {
         Box::pin(async move {
             let path = self.path_for(key);
-            let mut file = fs::File::create(&path)
-                .await
-                .map_err(|e| StorageError::backend(format!("create {}: {e}", path.display())))?;
-            file.write_all(data)
-                .await
-                .map_err(|e| StorageError::backend(format!("write {}: {e}", path.display())))?;
-            file.flush()
-                .await
-                .map_err(|e| StorageError::backend(format!("flush {}: {e}", path.display())))?;
-            Ok(())
+            match fs::remove_file(&path).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StorageError::backend(format!(
+                    "delete {}: {e}",
+                    path.display()
+                ))),
+            }
         })
     }
 
@@ -151,23 +148,6 @@ impl Backend for FsBackend {
                     StorageError::backend(format!("read {}: {e}", path.display()))
                 }
             })
-        })
-    }
-
-    fn delete<'a>(
-        &'a self,
-        key: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>> {
-        Box::pin(async move {
-            let path = self.path_for(key);
-            match fs::remove_file(&path).await {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(StorageError::backend(format!(
-                    "delete {}: {e}",
-                    path.display()
-                ))),
-            }
         })
     }
 
@@ -188,6 +168,26 @@ impl Backend for FsBackend {
                 }
             }
             Ok(keys)
+        })
+    }
+
+    fn put<'a>(
+        &'a self,
+        key: &'a str,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>> {
+        Box::pin(async move {
+            let path = self.path_for(key);
+            let mut file = fs::File::create(&path)
+                .await
+                .map_err(|e| StorageError::backend(format!("create {}: {e}", path.display())))?;
+            file.write_all(data)
+                .await
+                .map_err(|e| StorageError::backend(format!("write {}: {e}", path.display())))?;
+            file.flush()
+                .await
+                .map_err(|e| StorageError::backend(format!("flush {}: {e}", path.display())))?;
+            Ok(())
         })
     }
 }

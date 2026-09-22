@@ -58,7 +58,7 @@ pub fn i64_to_u32(value: i64) -> u32 {
 /// Stable identity for a turn — the public-visible correlation id shared by
 /// every event emitted while processing one user-facing request, including
 /// nested subagent calls.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct TurnId(pub Uuid);
 
@@ -75,7 +75,7 @@ impl Default for TurnId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct MessageId(pub Uuid);
 
@@ -95,7 +95,7 @@ impl Default for MessageId {
 /// Stable identity for a background task. Returned by `TaskQueue::submit`,
 /// surfaced to whichever agent dispatched the work so it can refer back to
 /// the task in subsequent narration.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct TaskId(pub Uuid);
 
@@ -112,7 +112,7 @@ impl Default for TaskId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct UserId(pub Uuid);
 
@@ -145,7 +145,7 @@ impl From<Uuid> for UserId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Assistant,
@@ -188,7 +188,7 @@ pub struct UnknownRole(pub String);
 /// invocation). Lives in core because it's emitted on the streaming
 /// path (`providers`) and persisted on the observability path
 /// (`telemetry`).
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolCallKind {
     Mcp,
@@ -354,12 +354,6 @@ pub struct TaskSummary {
 /// consumed by `agents` so the `tasks_status` tool can report what's in
 /// flight without taking a hard dep on `tasks`.
 pub trait TaskStatus: Send + Sync {
-    /// Most recent tasks, newest first.
-    fn recent<'a>(
-        &'a self,
-        limit: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>>;
-
     /// Mark every `running` task whose `started_at` is older than
     /// `started_before_secs` as `errored` with `reason`. Returns the
     /// number of rows touched. The cli calls this on startup to reap
@@ -370,6 +364,12 @@ pub trait TaskStatus: Send + Sync {
         started_before_secs: u64,
         reason: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<u64, TaskStatusError>> + Send + 'a>>;
+
+    /// Most recent tasks, newest first.
+    fn recent<'a>(
+        &'a self,
+        limit: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -434,14 +434,14 @@ impl SkillReadError {
 /// without taking a hard dep on `experiments`. For non-experiment names,
 /// `resolve` returns the input unchanged.
 pub trait AgentResolver: Send + Sync {
+    /// Tool description for an addressable name when used as a subagent.
+    /// `None` means the name isn't a known experiment — agents falls
+    /// back to its own per-agent purpose lookup.
+    fn purpose(&self, name: &str) -> Option<String>;
+
     fn resolve<'a>(
         &'a self,
         name: &'a str,
         user_id: UserId,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
-
-    /// Tool description for an addressable name when used as a subagent.
-    /// `None` means the name isn't a known experiment — agents falls
-    /// back to its own per-agent purpose lookup.
-    fn purpose(&self, name: &str) -> Option<String>;
 }

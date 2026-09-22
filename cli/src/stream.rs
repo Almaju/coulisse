@@ -322,20 +322,6 @@ impl StreamMeta {
         )
     }
 
-    /// Emitted when a subagent handoff begins. Non-standard extension;
-    /// clients that don't understand it safely ignore the event type.
-    fn handoff_event(agent: &str) -> Event {
-        Event::default()
-            .event("handoff_started")
-            .json_data(serde_json::json!({ "agent": agent }))
-            .expect("handoff event serializes")
-    }
-
-    /// SSE comment — invisible to most clients, but keeps TCP alive.
-    fn heartbeat_event() -> Event {
-        Event::default().comment("heartbeat")
-    }
-
     /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
     /// field, but clients commonly expect one when the upstream provider
     /// fails mid-stream. Built as raw JSON so the schema doesn't have to
@@ -357,20 +343,18 @@ impl StreamMeta {
             .expect("error chunk serializes")
     }
 
-    /// An error event when `text` doesn't satisfy a JSON `response_format`,
-    /// or `None` when it's valid (or no JSON format was requested). The
-    /// injected instruction already steered the model toward valid JSON;
-    /// this is the safety net for the cases where it didn't.
-    fn structured_output_error(
-        &self,
-        format: Option<&ResponseFormat>,
-        text: &str,
-    ) -> Option<Event> {
-        let format = format.filter(|f| f.requires_json())?;
-        format
-            .validate(text)
-            .err()
-            .map(|err| self.error_event(&err.to_string()))
+    /// Emitted when a subagent handoff begins. Non-standard extension;
+    /// clients that don't understand it safely ignore the event type.
+    fn handoff_event(agent: &str) -> Event {
+        Event::default()
+            .event("handoff_started")
+            .json_data(serde_json::json!({ "agent": agent }))
+            .expect("handoff event serializes")
+    }
+
+    /// SSE comment — invisible to most clients, but keeps TCP alive.
+    fn heartbeat_event() -> Event {
+        Event::default().comment("heartbeat")
     }
 
     fn role_event(&self) -> Event {
@@ -386,6 +370,22 @@ impl StreamMeta {
 
     fn stop_event(&self, usage: Option<Usage>) -> Event {
         self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
+    }
+
+    /// An error event when `text` doesn't satisfy a JSON `response_format`,
+    /// or `None` when it's valid (or no JSON format was requested). The
+    /// injected instruction already steered the model toward valid JSON;
+    /// this is the safety net for the cases where it didn't.
+    fn structured_output_error(
+        &self,
+        format: Option<&ResponseFormat>,
+        text: &str,
+    ) -> Option<Event> {
+        let format = format.filter(|f| f.requires_json())?;
+        format
+            .validate(text)
+            .err()
+            .map(|err| self.error_event(&err.to_string()))
     }
 }
 

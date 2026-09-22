@@ -22,7 +22,7 @@ pub use conversation::{
 };
 pub use pricing::{Cost, cost_for, warm as warm_pricing};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, schemars::JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, schemars::JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Anthropic,

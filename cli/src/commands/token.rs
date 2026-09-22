@@ -13,12 +13,12 @@ use crate::config::Config;
 pub enum Action {
     /// Mint a token and print its secret to stdout (shown only once).
     Create {
-        /// Human-readable label shown in the studio and `token list`.
-        label: String,
         /// Budget kind: `unlimited`, `total` (lifetime cap), or `monthly`
         /// (per-calendar-month cap).
         #[arg(default_value = "unlimited", long)]
         budget: String,
+        /// Human-readable label shown in the studio and `token list`.
+        label: String,
         /// Spend limit in USD. Required for `total`/`monthly`, ignored for
         /// `unlimited`.
         #[arg(long)]
