@@ -1286,6 +1286,7 @@ name = "coulisse-core"
 version = "0.3.0"
 dependencies = [
  "axum",
+ "futures",
  "semver",
  "serde",
  "serde_yaml",

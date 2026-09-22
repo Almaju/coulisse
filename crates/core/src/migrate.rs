@@ -45,21 +45,46 @@ pub trait SchemaMigrator {
     /// on success and rolls back on error.
     ///
     /// `from_version` is always one of `VERSIONS[..len()-1]`. Match-arm on
-    /// it; an unknown value indicates a stranded older release and should
-    /// `unreachable!()`.
+    /// it and return [`UpgradeError::UnknownStep`] for anything else: that
+    /// is a stranded older release, which the runner reports at boot.
+    /// The default is exactly that error, so a crate with a single schema
+    /// version never has to write the method.
     fn upgrade_from(
         &self,
         from_version: &str,
         conn: &mut SqliteConnection,
-    ) -> impl Future<Output = sqlx::Result<()>> + Send;
+    ) -> impl Future<Output = Result<(), UpgradeError>> + Send {
+        let _ = conn;
+        let from = from_version.to_string();
+        async move {
+            Err(UpgradeError::UnknownStep {
+                from,
+                name: Self::NAME,
+            })
+        }
+    }
+}
+
+/// A single `upgrade_from` step failed.
+#[derive(Debug, thiserror::Error)]
+pub enum UpgradeError {
+    #[error("sqlx: {0}")]
+    Sqlx(#[from] sqlx::Error),
+    #[error("schema migrator '{name}' has no upgrade step from version '{from}'")]
+    UnknownStep { from: String, name: &'static str },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrateError {
     #[error("schema migrator '{0}' declares an empty VERSIONS list")]
     EmptyVersions(&'static str),
-    #[error("schema migrator '{0}' has invalid SemVer in VERSIONS: '{1}'")]
-    InvalidVersion(&'static str, String),
+    #[error("schema migrator '{name}' has invalid SemVer in VERSIONS: '{version}'")]
+    InvalidVersion {
+        name: &'static str,
+        #[source]
+        source: semver::Error,
+        version: String,
+    },
     #[error("sqlx: {0}")]
     Sqlx(#[from] sqlx::Error),
     #[error(
@@ -68,6 +93,8 @@ pub enum MigrateError {
     UnknownStoredVersion { name: &'static str, stored: String },
     #[error("schema migrator '{0}' has unsorted or duplicate VERSIONS")]
     UnsortedVersions(&'static str),
+    #[error("upgrade: {0}")]
+    Upgrade(#[from] UpgradeError),
 }
 
 /// Bring the slice of `pool` owned by `M` up to its latest version.
@@ -76,16 +103,11 @@ pub enum MigrateError {
 ///
 /// Returns an error if the underlying operation fails.
 ///
-/// # Panics
-///
-/// Panics if invariants documented above are violated.
-///
 /// Idempotent: a process restart with an unchanged `M::VERSIONS` does
 /// nothing. Each upgrade step is its own transaction, so a crash mid-walk
 /// resumes from the last committed step on next startup.
 pub async fn run<M: SchemaMigrator>(pool: &SqlitePool, migrator: &M) -> Result<(), MigrateError> {
-    validate::<M>()?;
-    let target = *M::VERSIONS.last().expect("validate enforces non-empty");
+    let target = validate::<M>()?;
 
     pool.execute(
         "CREATE TABLE IF NOT EXISTS coulisse_schema_versions (\
@@ -148,20 +170,26 @@ async fn initialize<M: SchemaMigrator>(pool: &SqlitePool, target: &str) -> Resul
     tx.commit().await
 }
 
-fn validate<M: SchemaMigrator>() -> Result<(), MigrateError> {
-    if M::VERSIONS.is_empty() {
+/// Check `M::VERSIONS` and return the version this code targets (its
+/// last entry).
+fn validate<M: SchemaMigrator>() -> Result<&'static str, MigrateError> {
+    let Some(target) = M::VERSIONS.last() else {
         return Err(MigrateError::EmptyVersions(M::NAME));
-    }
+    };
     let mut parsed: Vec<semver::Version> = Vec::with_capacity(M::VERSIONS.len());
     for v in M::VERSIONS {
-        let parsed_v = semver::Version::parse(v)
-            .map_err(|_| MigrateError::InvalidVersion(M::NAME, (*v).to_string()))?;
+        let parsed_v =
+            semver::Version::parse(v).map_err(|source| MigrateError::InvalidVersion {
+                name: M::NAME,
+                source,
+                version: (*v).to_string(),
+            })?;
         parsed.push(parsed_v);
     }
     if parsed.windows(2).any(|w| w[0] >= w[1]) {
         return Err(MigrateError::UnsortedVersions(M::NAME));
     }
-    Ok(())
+    Ok(target)
 }
 
 fn split_sql(sql: &str) -> Vec<String> {
@@ -200,14 +228,6 @@ mod tests {
         const SCHEMA: &'static str =
             "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL)";
         const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-        async fn upgrade_from(
-            &self,
-            _from: &str,
-            _conn: &mut SqliteConnection,
-        ) -> sqlx::Result<()> {
-            unreachable!("only one version exists")
-        }
     }
 
     #[tokio::test]
@@ -251,7 +271,11 @@ mod tests {
             "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT)";
         const VERSIONS: &'static [&'static str] = &["0.1.0", "0.3.0"];
 
-        async fn upgrade_from(&self, from: &str, conn: &mut SqliteConnection) -> sqlx::Result<()> {
+        async fn upgrade_from(
+            &self,
+            from: &str,
+            conn: &mut SqliteConnection,
+        ) -> Result<(), UpgradeError> {
             match from {
                 "0.1.0" => {
                     sqlx::query("ALTER TABLE widgets ADD COLUMN color TEXT")
@@ -259,7 +283,10 @@ mod tests {
                         .await?;
                     Ok(())
                 }
-                _ => unreachable!(),
+                other => Err(UpgradeError::UnknownStep {
+                    from: other.to_string(),
+                    name: Self::NAME,
+                }),
             }
         }
     }
@@ -314,7 +341,7 @@ mod tests {
             &self,
             _from: &str,
             _conn: &mut SqliteConnection,
-        ) -> sqlx::Result<()> {
+        ) -> Result<(), UpgradeError> {
             Ok(())
         }
     }
@@ -337,7 +364,7 @@ mod tests {
             &self,
             _from: &str,
             _conn: &mut SqliteConnection,
-        ) -> sqlx::Result<()> {
+        ) -> Result<(), UpgradeError> {
             Ok(())
         }
     }
@@ -360,7 +387,7 @@ mod tests {
             &self,
             _from: &str,
             _conn: &mut SqliteConnection,
-        ) -> sqlx::Result<()> {
+        ) -> Result<(), UpgradeError> {
             Ok(())
         }
     }
@@ -369,6 +396,12 @@ mod tests {
     async fn invalid_semver_is_rejected() {
         let pool = pool().await;
         let err = run(&pool, &InvalidSemver).await.unwrap_err();
-        assert!(matches!(err, MigrateError::InvalidVersion("invalid", _)));
+        assert!(matches!(
+            err,
+            MigrateError::InvalidVersion {
+                name: "invalid",
+                ..
+            }
+        ));
     }
 }

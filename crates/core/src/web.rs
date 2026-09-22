@@ -16,17 +16,19 @@ use serde::de::DeserializeOwned;
 /// Build a response that redirects browser navigations (`303 See Other`)
 /// and htmx requests (`HX-Redirect` header) to the same target. Every
 /// admin handler that mutates state and falls back to HTML uses this.
-///
-/// # Panics
-///
-/// Panics if invariants documented above are violated.
+/// A target that is not a valid header value (a control character in
+/// the path) yields a 500 naming the target instead of a redirect.
 #[must_use]
 pub fn redirect_to(to: &str) -> Response {
+    let Ok(target) = HeaderValue::from_str(to) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("redirect target is not a valid header value: {to:?}"),
+        )
+            .into_response();
+    };
     let mut resp = (StatusCode::SEE_OTHER, [("location", to)]).into_response();
-    resp.headers_mut().insert(
-        "hx-redirect",
-        HeaderValue::from_str(to).expect("valid header value"),
-    );
+    resp.headers_mut().insert("hx-redirect", target);
     resp
 }
 

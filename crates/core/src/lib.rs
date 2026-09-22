@@ -12,19 +12,26 @@ mod config_store;
 pub mod migrate;
 mod web;
 
-pub use config_store::{ConfigPersistError, ConfigPersister};
-use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
+use std::path::Path;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub use config_store::{ConfigPersistError, ConfigPersister};
+pub use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 pub use web::{BodyRejection, EitherFormOrJson, ResponseFormat, redirect_to};
 
 /// Seconds since the Unix epoch. Saturates to 0 if the system clock is
 /// before 1970 (impossible in normal operation, but the call is
 /// infallible to keep call sites readable).
+///
+/// This is the one place Coulisse reads the wall clock; every timestamp
+/// in the workspace flows through here so a test can substitute the
+/// value at the call site instead of freezing the system clock.
 #[must_use]
 pub fn now_secs() -> u64 {
+    // rabot: allow(ambient-time) the single wall-clock seam every crate shares; callers take the value, never the clock
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -66,6 +73,14 @@ impl TurnId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+}
+
+impl FromStr for TurnId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s).map(Self)
     }
 }
 
@@ -142,6 +157,16 @@ impl Default for UserId {
 impl From<Uuid> for UserId {
     fn from(id: Uuid) -> Self {
         Self(id)
+    }
+}
+
+/// Strict parse: only a well-formed UUID is accepted. Use
+/// [`UserId::from_string`] to accept arbitrary caller-supplied names.
+impl FromStr for UserId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s).map(Self)
     }
 }
 
@@ -263,6 +288,16 @@ pub struct AgentScoreSummary {
     pub samples: u32,
 }
 
+/// One judge/criterion pair over a time window: the key a score
+/// aggregate is looked up by.
+#[derive(Clone, Copy, Debug)]
+pub struct ScoreQuery<'a> {
+    pub criterion: &'a str,
+    pub judge: &'a str,
+    /// Unix seconds; only scores recorded at or after this instant count.
+    pub since: u64,
+}
+
 /// Read-only view onto judge score aggregates. Implemented by whichever
 /// crate owns the score storage (currently `judges`); consumed by feature
 /// crates that need to read scores at runtime — e.g. `agents` for
@@ -271,10 +306,8 @@ pub struct AgentScoreSummary {
 pub trait ScoreLookup: Send + Sync {
     fn mean_scores_by_agent<'a>(
         &'a self,
-        judge: &'a str,
-        criterion: &'a str,
-        since: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<AgentScoreSummary>, ScoreLookupError>> + Send + 'a>>;
+        query: ScoreQuery<'a>,
+    ) -> BoxFuture<'a, Result<Vec<AgentScoreSummary>, ScoreLookupError>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -287,6 +320,16 @@ impl ScoreLookupError {
     }
 }
 
+/// Everything one out-of-band LLM call needs: where to send it and what
+/// to say.
+#[derive(Clone, Copy, Debug)]
+pub struct OneShotRequest<'a> {
+    pub model: &'a str,
+    pub preamble: &'a str,
+    pub provider: &'a str,
+    pub user_text: &'a str,
+}
+
 /// Single-shot prompt against a named provider/model. Used by features that
 /// need to call an LLM out-of-band from the main agent flow — e.g. memory
 /// fact extraction, judge scoring. Implemented by whatever crate owns the
@@ -295,11 +338,8 @@ impl ScoreLookupError {
 pub trait OneShotPrompt: Send + Sync {
     fn one_shot<'a>(
         &'a self,
-        provider: &'a str,
-        model: &'a str,
-        preamble: &'a str,
-        user_text: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, OneShotError>> + Send + 'a>>;
+        request: OneShotRequest<'a>,
+    ) -> BoxFuture<'a, Result<String, OneShotError>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -312,16 +352,23 @@ impl OneShotError {
     }
 }
 
+/// One unit of background work: which agent runs, what it is told, and on
+/// whose behalf.
+#[derive(Clone, Copy, Debug)]
+pub struct TaskSubmission<'a> {
+    pub agent: &'a str,
+    pub prompt: &'a str,
+    pub user_id: UserId,
+}
+
 /// Enqueue background agent work. Implemented by the `tasks` crate;
 /// consumed by `agents` so the dispatch-task tool can submit fire-and-forget
 /// work to a worker pool without taking a hard dep on `tasks`.
 pub trait TaskQueue: Send + Sync {
     fn submit<'a>(
         &'a self,
-        agent: &'a str,
-        prompt: &'a str,
-        user_id: UserId,
-    ) -> Pin<Box<dyn Future<Output = Result<TaskId, TaskQueueError>> + Send + 'a>>;
+        submission: TaskSubmission<'a>,
+    ) -> BoxFuture<'a, Result<TaskId, TaskQueueError>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -333,6 +380,48 @@ impl TaskQueueError {
         Self(msg.into())
     }
 }
+
+/// Lifecycle of a background task. Lives in core because [`TaskSummary`]
+/// crosses the `TaskStatus` boundary; the `tasks` crate owns the queue
+/// that moves a task through these states.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    Done,
+    Errored,
+    Queued,
+    Running,
+}
+
+impl TaskState {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Errored => "errored",
+            Self::Queued => "queued",
+            Self::Running => "running",
+        }
+    }
+}
+
+impl FromStr for TaskState {
+    type Err = UnknownTaskState;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "done" => Ok(Self::Done),
+            "errored" => Ok(Self::Errored),
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            other => Err(UnknownTaskState(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown task state '{0}'")]
+pub struct UnknownTaskState(pub String);
 
 /// Snapshot of one queued/running/finished task. Carries just the fields the
 /// `tasks_status` tool surfaces to an agent — the full `Task` row stays
@@ -347,7 +436,7 @@ pub struct TaskSummary {
     pub prompt: String,
     pub result: Option<String>,
     pub started_at: Option<u64>,
-    pub state: String,
+    pub state: TaskState,
 }
 
 /// Read-only view onto the task queue. Implemented by the `tasks` crate;
@@ -363,13 +452,11 @@ pub trait TaskStatus: Send + Sync {
         &'a self,
         started_before_secs: u64,
         reason: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, TaskStatusError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<u64, TaskStatusError>>;
 
     /// Most recent tasks, newest first.
-    fn recent<'a>(
-        &'a self,
-        limit: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>>;
+    fn recent<'a>(&'a self, limit: u32)
+    -> BoxFuture<'a, Result<Vec<TaskSummary>, TaskStatusError>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -415,7 +502,7 @@ pub trait SkillCatalog: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if `skill` is unknown or has no such file.
-    fn read_file(&self, skill: &str, path: &str) -> Result<String, SkillReadError>;
+    fn read_file(&self, skill: &str, path: &Path) -> Result<String, SkillReadError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -439,9 +526,5 @@ pub trait AgentResolver: Send + Sync {
     /// back to its own per-agent purpose lookup.
     fn purpose(&self, name: &str) -> Option<String>;
 
-    fn resolve<'a>(
-        &'a self,
-        name: &'a str,
-        user_id: UserId,
-    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+    fn resolve<'a>(&'a self, name: &'a str, user_id: UserId) -> BoxFuture<'a, String>;
 }
