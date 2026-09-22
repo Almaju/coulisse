@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use agents::{Agents, CompletionStream, StreamEvent, Usage as ProviderUsage};
@@ -8,30 +8,25 @@ use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use coulisse_core::{OneShotPrompt, now_secs};
 use futures::StreamExt;
-use judges::spawn_score;
-use memory::{MessageId, Role as MemRole, UserId};
+use memory::{Exchange, MessageId, Role as MemRole, UserId};
 use tracing::{Instrument, Span};
 
 use proxy::{
-    ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, ResponseFormat, Role, Usage,
-    response_id,
+    ChatCompletionChunk, ChunkChoice, ChunkDelta, CompletionId, FinishReason, ResponseFormat, Role,
+    TokenCounts, Usage,
 };
 
-use crate::server::{AppState, judges_for_agent, record_llm_call, record_token_spend};
+use crate::server::AppState;
 
 /// Interval between SSE heartbeat events during subagent handoff.
 /// 20 s gives comfortable margin against the common 60 s proxy idle timeout.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
-/// Build an SSE response from a stream of `StreamEvent`s. The handler keeps
-/// the rest of the per-request state (user id, tracker key, user message)
-/// alive through `MemoryFlush`, which writes back to memory and the rate
-/// tracker on drop — so a client disconnect mid-stream still records the
-/// partial assistant reply rather than losing both messages.
-/// Parameters for `sse_response`. Bundled so the function's argument list
-/// stays under clippy's `too_many_arguments` lint, and so new per-request
-/// fields (telemetry turn id, future flags) can be added without breaking
-/// callers.
+/// Everything one streaming response needs: the inner event stream plus
+/// the per-request state (user id, tracker key, user message) that must
+/// stay alive through `MemoryFlush`, which writes back to memory and the
+/// rate tracker on drop — so a client disconnect mid-stream still records
+/// the partial assistant reply rather than losing both messages.
 pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     /// Resolved agent name — what judges score and what `judges_for_agent`
     /// looks up. Differs from `model` when the request hit an experiment:
@@ -58,136 +53,135 @@ pub struct StreamContext<P: Agents + OneShotPrompt + 'static> {
     pub user_message: String,
 }
 
-/// # Panics
-///
-/// Panics if invariants documented above are violated.
-#[allow(clippy::too_many_lines)] // one linear SSE state machine; splitting hurts readability
-pub fn sse_response<P: Agents + OneShotPrompt + 'static>(
-    cx: StreamContext<P>,
-) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
-    let StreamContext {
-        agent_name,
-        assistant_message_id,
-        include_usage,
-        inner,
-        model,
-        response_format,
-        state,
-        token_id,
-        tracker_key,
-        turn_span,
-        user_id,
-        user_message,
-    } = cx;
-    let created = now_secs();
-    let meta = StreamMeta {
-        created,
-        id: response_id(created),
-        model,
-    };
-    let accumulated: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let final_usage: Arc<Mutex<ProviderUsage>> = Arc::new(Mutex::new(ProviderUsage::default()));
+impl<P: Agents + OneShotPrompt + 'static> StreamContext<P> {
+    /// Build the SSE response. Tool-call observability is owned by the
+    /// agents-side wrappers (which emit `tool_call` spans the `SqliteLayer`
+    /// mirrors into `events` / `tool_calls`); this path only forwards SSE
+    /// deltas and the terminal stop chunk to the client. Each `inner.next()`
+    /// poll runs inside the turn span so any `tool_call` spans rig drives
+    /// during that poll nest under it.
+    #[allow(clippy::too_many_lines)] // one linear SSE state machine; splitting hurts readability
+    pub fn into_sse(self) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        let Self {
+            agent_name,
+            assistant_message_id,
+            include_usage,
+            inner,
+            model,
+            response_format,
+            state,
+            token_id,
+            tracker_key,
+            turn_span,
+            user_id,
+            user_message,
+        } = self;
+        let created = now_secs();
+        let meta = StreamMeta {
+            created,
+            id: CompletionId::from_created(created),
+            model,
+        };
+        let accumulated: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let final_usage: Arc<Mutex<ProviderUsage>> = Arc::new(Mutex::new(ProviderUsage::default()));
 
-    let flush = MemoryFlush {
-        accumulated: Arc::clone(&accumulated),
-        agent_name,
-        assistant_message_id,
-        final_usage: Arc::clone(&final_usage),
-        state,
-        token_id,
-        tracker_key,
-        turn_span: turn_span.clone(),
-        user_id,
-        user_message,
-    };
+        let flush = MemoryFlush {
+            accumulated: Arc::clone(&accumulated),
+            agent_name,
+            assistant_message_id,
+            final_usage: Arc::clone(&final_usage),
+            state,
+            token_id,
+            tracker_key,
+            turn_span: turn_span.clone(),
+            user_id,
+            user_message,
+        };
 
-    let stream_span = turn_span.clone();
-    let body = stream! {
-        // WHY: hold the flush guard inside the stream so Drop fires on
-        // either normal completion or client disconnect.
-        let _flush = flush;
+        let stream_span = turn_span.clone();
+        let body = stream! {
+            // WHY: hold the flush guard inside the stream so Drop fires on
+            // either normal completion or client disconnect.
+            let _flush = flush;
 
-        yield Ok::<_, Infallible>(meta.role_event());
+            yield Ok::<_, Infallible>(meta.role_event());
 
-        let mut inner = inner;
-        let mut errored = false;
-        // Heartbeat ticker: when a subagent blocks the inner stream for
-        // more than HEARTBEAT_INTERVAL, we emit a comment to prevent
-        // proxy / load-balancer idle-timeout disconnects. The ticker is
-        // reset on each real event so it fires only during silence.
-        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
-        heartbeat.reset();
-        // NOTE: tool-call observability is owned by the agents-side
-        // wrappers (which emit `tool_call` spans the SqliteLayer mirrors
-        // into events / tool_calls). The streaming path only needs to
-        // forward SSE deltas and the terminal stop chunk to the client.
-        // Each `inner.next()` poll runs inside `stream_span` so any
-        // `tool_call` spans rig drives during that poll nest under it.
-        loop {
-            let event = tokio::select! {
-                biased;
-                ev = inner.next().instrument(stream_span.clone()) => {
-                    match ev {
-                        None => break,
-                        Some(e) => {
-                            heartbeat.reset();
-                            Some(e)
+            let mut inner = inner;
+            let mut errored = false;
+            let mut heartbeat = StreamMeta::heartbeat_ticker();
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    ev = inner.next().instrument(stream_span.clone()) => {
+                        match ev {
+                            None => break,
+                            Some(e) => {
+                                heartbeat.reset();
+                                Some(e)
+                            }
                         }
                     }
-                }
-                _ = heartbeat.tick() => None,
-            };
-            let Some(event) = event else {
-                // Tick fired — emit a heartbeat comment.
-                yield Ok(StreamMeta::heartbeat_event());
-                continue;
-            };
-            match event {
-                Err(err) => {
-                    yield Ok(meta.error_event(&err.to_string()));
-                    errored = true;
-                    break;
-                }
-                Ok(StreamEvent::Delta(text)) => {
-                    if !text.is_empty() {
-                        accumulated.lock().unwrap().push_str(&text);
-                        yield Ok(meta.content_event(&text));
-                    }
-                }
-                Ok(StreamEvent::Done { usage }) => {
-                    *final_usage.lock().unwrap() = usage;
-                }
-                Ok(StreamEvent::HandoffStarted { agent }) => {
-                    yield Ok(StreamMeta::handoff_event(&agent));
-                }
-                Ok(StreamEvent::Heartbeat) => {
+                    _ = heartbeat.tick() => None,
+                };
+                let Some(event) = event else {
                     yield Ok(StreamMeta::heartbeat_event());
+                    continue;
+                };
+                match event {
+                    Err(err) => {
+                        yield Ok(meta.error_event(&err.to_string()));
+                        errored = true;
+                        break;
+                    }
+                    Ok(StreamEvent::Delta(text)) => {
+                        if !text.is_empty() {
+                            accumulated
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push_str(&text);
+                            yield Ok(meta.content_event(&text));
+                        }
+                    }
+                    Ok(StreamEvent::Done { usage }) => {
+                        *final_usage.lock().unwrap_or_else(PoisonError::into_inner) = usage;
+                    }
+                    Ok(StreamEvent::HandoffStarted { agent }) => {
+                        yield Ok(StreamMeta::handoff_event(&agent));
+                    }
+                    Ok(StreamEvent::Heartbeat) => {
+                        yield Ok(StreamMeta::heartbeat_event());
+                    }
+                    Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
                 }
-                Ok(StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }) => {}
             }
-        }
 
-        // Structured output can't be repaired mid-stream — a reply that fails
-        // validation becomes an error event instead of a retry.
-        let final_text = accumulated.lock().unwrap().clone();
-        if !errored
-            && let Some(event) = meta.structured_output_error(response_format.as_ref(), &final_text)
-        {
-            yield Ok(event);
-            errored = true;
-        }
+            let final_text = accumulated
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if !errored
+                && let Some(event) = meta.structured_output_error(response_format.as_ref(), &final_text)
+            {
+                yield Ok(event);
+                errored = true;
+            }
 
-        if !errored {
-            let usage = include_usage.then(|| {
-                let u = *final_usage.lock().unwrap();
-                Usage::new(u.input_tokens, u.output_tokens, u.total_tokens)
-            });
-            yield Ok(meta.stop_event(usage));
-        }
-        yield Ok(Event::default().data("[DONE]"));
-    };
+            if !errored {
+                let usage = include_usage.then(|| {
+                    let u = *final_usage.lock().unwrap_or_else(PoisonError::into_inner);
+                    Usage::from(TokenCounts {
+                        completion: u.output_tokens,
+                        prompt: u.input_tokens,
+                        total: u.total_tokens,
+                    })
+                });
+                yield Ok(meta.stop_event(usage));
+            }
+            yield Ok(Event::default().data("[DONE]"));
+        };
 
-    Sse::new(body).keep_alive(KeepAlive::default())
+        Sse::new(body).keep_alive(KeepAlive::default())
+    }
 }
 
 /// Drop guard: persists the conversation to memory and records token usage
@@ -212,10 +206,18 @@ struct MemoryFlush<P: Agents + OneShotPrompt + 'static> {
 
 impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
     fn drop(&mut self) {
-        let accumulated = std::mem::take(&mut *self.accumulated.lock().unwrap());
+        let accumulated = std::mem::take(
+            &mut *self
+                .accumulated
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         let agent_name = std::mem::take(&mut self.agent_name);
         let assistant_message_id = self.assistant_message_id;
-        let usage = *self.final_usage.lock().unwrap();
+        let usage = *self
+            .final_usage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let state = Arc::clone(&self.state);
         let token_id = self.token_id;
         let tracker_key = std::mem::take(&mut self.tracker_key);
@@ -228,11 +230,11 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                 if let Err(err) = state.tracker.record(&tracker_key, usage.total_tokens).await {
                     tracing::warn!(error = %err, "rate limit record failed after streaming response");
                 }
-                record_llm_call(&state, &agent_name, usage, &llm_call_span);
-                record_token_spend(&state, token_id, &agent_name, usage).await;
+                state.record_llm_call(&agent_name, usage, &llm_call_span);
+                state.record_token_spend(token_id, &agent_name, usage).await;
                 let um = state.memory.for_user(user_id);
                 if let Err(err) = um.append_message(MemRole::User, user_message.clone()).await {
-                    warn_memory_append_failed("user", &err);
+                    tracing::warn!(role = "user", error = %err, "memory append failed after streaming response");
                 }
                 if accumulated.is_empty() {
                     return;
@@ -245,21 +247,21 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                     )
                     .await;
                 if let Err(err) = assistant_append {
-                    warn_memory_append_failed("assistant", &err);
+                    tracing::warn!(role = "assistant", error = %err, "memory append failed after streaming response");
                     return;
                 }
                 if let Some(extractor) = state.extractor.as_ref() {
                     extractor.spawn(
                         Arc::clone(&state.memory),
                         user_id,
-                        user_message.clone(),
-                        accumulated.clone(),
+                        Exchange {
+                            assistant_message: accumulated.clone(),
+                            user_message: user_message.clone(),
+                        },
                     );
                 }
-                let judges = judges_for_agent(&state, &agent_name);
-                spawn_score(
-                    judges,
-                    Arc::clone(&state.judge_store),
+                let judges = state.judges_for_agent(&agent_name);
+                state.judge_store.spawn_score(
                     Arc::clone(&state.agents),
                     judges::ScoredExchange {
                         agent_name: agent_name.clone(),
@@ -268,6 +270,7 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
                         user_id,
                         user_message,
                     },
+                    judges,
                 );
             }
             .instrument(turn_span),
@@ -275,16 +278,12 @@ impl<P: Agents + OneShotPrompt + 'static> Drop for MemoryFlush<P> {
     }
 }
 
-fn warn_memory_append_failed(role: &str, err: &memory::MemoryError) {
-    tracing::warn!(role, error = %err, "memory append failed after streaming response");
-}
-
 /// Per-response SSE metadata. `id`, `model`, and `created` are fixed across
 /// every chunk we emit for one streaming response, so they ride on the
 /// builder rather than every chunk-fn signature.
 struct StreamMeta {
     created: u64,
-    id: String,
+    id: CompletionId,
     model: String,
 }
 
@@ -295,8 +294,9 @@ impl StreamMeta {
         finish_reason: Option<FinishReason>,
         usage: Option<Usage>,
     ) -> Event {
-        Event::default()
-            .json_data(&ChatCompletionChunk {
+        Self::json_event(
+            Event::default(),
+            &ChatCompletionChunk {
                 choices: vec![ChunkChoice {
                     delta,
                     finish_reason,
@@ -307,8 +307,8 @@ impl StreamMeta {
                 model: self.model.clone(),
                 object: "chat.completion.chunk".into(),
                 usage,
-            })
-            .expect("chunk serializes")
+            },
+        )
     }
 
     fn content_event(&self, text: &str) -> Event {
@@ -322,27 +322,14 @@ impl StreamMeta {
         )
     }
 
-    /// Emitted when a subagent handoff begins. Non-standard extension;
-    /// clients that don't understand it safely ignore the event type.
-    fn handoff_event(agent: &str) -> Event {
-        Event::default()
-            .event("handoff_started")
-            .json_data(serde_json::json!({ "agent": agent }))
-            .expect("handoff event serializes")
-    }
-
-    /// SSE comment — invisible to most clients, but keeps TCP alive.
-    fn heartbeat_event() -> Event {
-        Event::default().comment("heartbeat")
-    }
-
     /// Non-standard error envelope: `OpenAI`'s stream chunks have no `error`
     /// field, but clients commonly expect one when the upstream provider
     /// fails mid-stream. Built as raw JSON so the schema doesn't have to
     /// carry a field that's absent on success.
     fn error_event(&self, message: &str) -> Event {
-        Event::default()
-            .json_data(serde_json::json!({
+        Self::json_event(
+            Event::default(),
+            &serde_json::json!({
                 "choices": [{
                     "delta": {},
                     "finish_reason": "stop",
@@ -353,8 +340,61 @@ impl StreamMeta {
                 "id": self.id,
                 "model": self.model,
                 "object": "chat.completion.chunk",
-            }))
-            .expect("error chunk serializes")
+            }),
+        )
+    }
+
+    /// Emitted when a subagent handoff begins. Non-standard extension;
+    /// clients that don't understand it safely ignore the event type.
+    fn handoff_event(agent: &str) -> Event {
+        Self::json_event(
+            Event::default().event("handoff_started"),
+            &serde_json::json!({ "agent": agent }),
+        )
+    }
+
+    /// SSE comment — invisible to most clients, but keeps TCP alive.
+    fn heartbeat_event() -> Event {
+        Event::default().comment("heartbeat")
+    }
+
+    /// When a subagent blocks the inner stream for more than
+    /// `HEARTBEAT_INTERVAL`, a comment goes out to prevent proxy /
+    /// load-balancer idle-timeout disconnects. The ticker is reset on each
+    /// real event so it fires only during silence.
+    fn heartbeat_ticker() -> tokio::time::Interval {
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        heartbeat.reset();
+        heartbeat
+    }
+
+    /// `event` with `payload` as its JSON data. Serialization of the chunk
+    /// shapes cannot fail on well-formed data; should it ever, the client
+    /// receives an SSE comment naming the failure instead of a truncated
+    /// stream, and the cause is logged.
+    fn json_event<T: serde::Serialize>(event: Event, payload: &T) -> Event {
+        match event.json_data(payload) {
+            Ok(event) => event,
+            Err(err) => {
+                tracing::error!(error = %err, "SSE chunk serialization failed");
+                Event::default().comment(format!("chunk serialization failed: {err}"))
+            }
+        }
+    }
+
+    fn role_event(&self) -> Event {
+        self.chunk(
+            ChunkDelta {
+                content: None,
+                role: Some(Role::Assistant),
+            },
+            None,
+            None,
+        )
+    }
+
+    fn stop_event(&self, usage: Option<Usage>) -> Event {
+        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
     }
 
     /// An error event when `text` doesn't satisfy a JSON `response_format`,
@@ -371,21 +411,6 @@ impl StreamMeta {
             .validate(text)
             .err()
             .map(|err| self.error_event(&err.to_string()))
-    }
-
-    fn role_event(&self) -> Event {
-        self.chunk(
-            ChunkDelta {
-                content: None,
-                role: Some(Role::Assistant),
-            },
-            None,
-            None,
-        )
-    }
-
-    fn stop_event(&self, usage: Option<Usage>) -> Event {
-        self.chunk(ChunkDelta::default(), Some(FinishReason::Stop), usage)
     }
 }
 
@@ -405,7 +430,7 @@ mod tests {
                 index: 0,
             }],
             created: 42,
-            id: "chatcmpl-coulisse-42".into(),
+            id: CompletionId::from_created(42),
             model: "agent".into(),
             object: "chat.completion.chunk".into(),
             usage: None,
@@ -430,7 +455,7 @@ mod tests {
                 index: 0,
             }],
             created: 42,
-            id: "x".into(),
+            id: CompletionId::from_created(0),
             model: "m".into(),
             object: "chat.completion.chunk".into(),
             usage: None,
@@ -449,7 +474,7 @@ mod tests {
                 index: 0,
             }],
             created: 42,
-            id: "x".into(),
+            id: CompletionId::from_created(0),
             model: "m".into(),
             object: "chat.completion.chunk".into(),
             usage: Some(Usage {

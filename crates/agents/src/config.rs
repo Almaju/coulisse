@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, Guard};
 use mcp::McpToolAccess;
 use providers::ProviderKind;
 use serde::{Deserialize, Serialize};
@@ -50,9 +50,29 @@ pub struct AgentConfig {
 /// reload callback — all three see the same atomic swap when the YAML
 /// changes. `load_full` returns a cheap `Arc` clone; readers never block
 /// writers, writers never block readers.
-pub type AgentList = Arc<ArcSwap<Vec<AgentConfig>>>;
+#[derive(Clone, Debug)]
+pub struct AgentList(Arc<ArcSwap<Vec<AgentConfig>>>);
 
-#[must_use]
-pub fn agent_list(initial: Vec<AgentConfig>) -> AgentList {
-    Arc::new(ArcSwap::from_pointee(initial))
+impl AgentList {
+    #[must_use]
+    pub fn new(initial: Vec<AgentConfig>) -> Self {
+        Self(Arc::new(ArcSwap::from_pointee(initial)))
+    }
+
+    /// Lock-free snapshot of the current list. Cheap; hold it briefly.
+    #[must_use]
+    pub fn load(&self) -> Guard<Arc<Vec<AgentConfig>>> {
+        self.0.load()
+    }
+
+    #[must_use]
+    pub fn load_full(&self) -> Arc<Vec<AgentConfig>> {
+        self.0.load_full()
+    }
+
+    /// Atomically replace the list; readers holding a snapshot keep the
+    /// old one.
+    pub fn store(&self, configs: Arc<Vec<AgentConfig>>) {
+        self.0.store(configs);
+    }
 }

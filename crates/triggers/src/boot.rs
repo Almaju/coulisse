@@ -7,34 +7,49 @@
 //! decide whether a standup is warranted, without forcing a ritual on
 //! every restart.
 
-use std::sync::Arc;
-
-use coulisse_core::{TaskQueue, UserId};
+use coulisse_core::{TaskQueue, TaskSubmission, UserId};
 use tracing::{error, info};
 
 use crate::config::{TriggerConfig, TriggerKind};
 
-/// Submit one task per `boot` trigger to the queue. Returns immediately;
-/// workers pick the tasks up like any other.
-///
-/// Non-boot variants are ignored — they're handled by `spawn_cron` or
-/// `webhook_router`.
-pub async fn fire_boot(triggers: &[TriggerConfig], queue: Arc<dyn TaskQueue>, user_id: UserId) {
-    for trigger in triggers {
-        let TriggerKind::Boot {} = &trigger.kind else {
-            continue;
+pub(crate) struct BootTrigger {
+    agent: String,
+    name: String,
+    prompt: String,
+    user_id: UserId,
+}
+
+impl BootTrigger {
+    /// `None` when `config` is not a `boot` trigger.
+    pub(crate) fn from_config(config: &TriggerConfig, user_id: UserId) -> Option<Self> {
+        let TriggerKind::Boot {} = &config.kind else {
+            return None;
         };
-        match queue.submit(&trigger.agent, &trigger.prompt, user_id).await {
+        Some(Self {
+            agent: config.agent.clone(),
+            name: config.name.clone(),
+            prompt: config.prompt.clone(),
+            user_id,
+        })
+    }
+
+    pub(crate) async fn fire(&self, queue: &dyn TaskQueue) {
+        let submission = TaskSubmission {
+            agent: &self.agent,
+            prompt: &self.prompt,
+            user_id: self.user_id,
+        };
+        match queue.submit(submission).await {
             Ok(task_id) => {
                 info!(
-                    trigger = %trigger.name,
-                    agent = %trigger.agent,
+                    trigger = %self.name,
+                    agent = %self.agent,
                     task_id = %task_id.0,
                     "boot trigger fired",
                 );
             }
             Err(e) => {
-                error!(trigger = %trigger.name, %e, "boot trigger failed to enqueue");
+                error!(trigger = %self.name, %e, "boot trigger failed to enqueue");
             }
         }
     }
@@ -43,10 +58,9 @@ pub async fn fire_boot(triggers: &[TriggerConfig], queue: Arc<dyn TaskQueue>, us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coulisse_core::{TaskId, TaskQueueError};
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Mutex;
+    use crate::Triggers;
+    use coulisse_core::{BoxFuture, TaskId, TaskQueueError};
+    use std::sync::{Arc, Mutex};
 
     struct CapturingQueue {
         calls: Mutex<Vec<(String, String)>>,
@@ -55,14 +69,12 @@ mod tests {
     impl TaskQueue for CapturingQueue {
         fn submit<'a>(
             &'a self,
-            agent: &'a str,
-            prompt: &'a str,
-            _user_id: UserId,
-        ) -> Pin<Box<dyn Future<Output = Result<TaskId, TaskQueueError>> + Send + 'a>> {
+            submission: TaskSubmission<'a>,
+        ) -> BoxFuture<'a, Result<TaskId, TaskQueueError>> {
             self.calls
                 .lock()
                 .unwrap()
-                .push((agent.to_string(), prompt.to_string()));
+                .push((submission.agent.to_string(), submission.prompt.to_string()));
             Box::pin(async { Ok(TaskId::new()) })
         }
     }
@@ -88,7 +100,9 @@ mod tests {
         let queue = Arc::new(CapturingQueue {
             calls: Mutex::new(Vec::new()),
         });
-        fire_boot(&triggers, queue.clone(), UserId::new()).await;
+        Triggers::new(&triggers, queue.clone(), UserId::new())
+            .fire_boot()
+            .await;
         let calls = queue.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "pm");

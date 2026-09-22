@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, Guard};
 use serde::{Deserialize, Serialize};
 
 /// Runtime config for one LLM-as-judge evaluator. A judge runs in a
@@ -34,10 +34,31 @@ fn default_sampling_rate() -> f32 {
 
 /// Hot-reloadable list of judge configs. Same `ArcSwap` shape as
 /// `agents::AgentList` — held by the admin router and updated by the
-/// cli's reload pipeline whenever the YAML changes.
-pub type JudgeList = Arc<ArcSwap<Vec<JudgeConfig>>>;
+/// cli's reload pipeline whenever the YAML changes. Clones share the
+/// same list.
+#[derive(Clone, Debug)]
+pub struct JudgeList(Arc<ArcSwap<Vec<JudgeConfig>>>);
 
-#[must_use]
-pub fn judge_list(initial: Vec<JudgeConfig>) -> JudgeList {
-    Arc::new(ArcSwap::from_pointee(initial))
+impl JudgeList {
+    #[must_use]
+    pub fn new(initial: Vec<JudgeConfig>) -> Self {
+        Self(Arc::new(ArcSwap::from_pointee(initial)))
+    }
+
+    /// Lock-free snapshot of the current list. Cheap; hold it briefly.
+    #[must_use]
+    pub fn load(&self) -> Guard<Arc<Vec<JudgeConfig>>> {
+        self.0.load()
+    }
+
+    #[must_use]
+    pub fn load_full(&self) -> Arc<Vec<JudgeConfig>> {
+        self.0.load_full()
+    }
+
+    /// Atomically replace the list; readers holding a snapshot keep the
+    /// old one.
+    pub fn store(&self, configs: Vec<JudgeConfig>) {
+        self.0.store(Arc::new(configs));
+    }
 }

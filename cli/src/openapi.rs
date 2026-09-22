@@ -20,10 +20,13 @@ use serde_json::{Value, json};
 
 use crate::config_store::ConfigStore;
 
-pub fn router(store: Arc<ConfigStore>) -> Router {
-    Router::new()
-        .route("/openapi.json", get(openapi_json))
-        .with_state(store)
+impl ConfigStore {
+    /// `GET /admin/openapi.json`: the description of the config API.
+    pub fn openapi_router(self: Arc<Self>) -> Router {
+        Router::new()
+            .route("/openapi.json", get(openapi_json))
+            .with_state(self)
+    }
 }
 
 async fn openapi_json(State(_store): State<Arc<ConfigStore>>) -> Response {
@@ -53,14 +56,14 @@ pub fn spec() -> Value {
         "paths": {
             "/agents": agents_collection(),
             "/agents/{name}": agents_item(),
-            "/judges": judges_collection(),
-            "/judges/{name}": judges_item(),
-            "/experiments": experiments_collection(),
-            "/experiments/{name}": experiments_item(),
+            "/judges": JUDGES.list_and_create(),
+            "/judges/{name}": JUDGES.item(),
+            "/experiments": EXPERIMENTS.list_and_create(),
+            "/experiments/{name}": EXPERIMENTS.item(),
             "/providers": providers_collection(),
             "/providers/{kind}": providers_item(),
             "/mcp": mcp_collection(),
-            "/mcp/{name}": mcp_item(),
+            "/mcp/{name}": MCP.item(),
             "/config": config_endpoint(),
         },
         "components": {
@@ -156,18 +159,27 @@ fn agents_item() -> Value {
     })
 }
 
-fn judges_collection() -> Value {
-    item_collection("judges", "JudgeConfig", "Judge")
-}
-fn judges_item() -> Value {
-    item_resource("judges", "JudgeConfig", "Judge name")
-}
-fn experiments_collection() -> Value {
-    item_collection("experiments", "ExperimentConfig", "Experiment")
-}
-fn experiments_item() -> Value {
-    item_resource("experiments", "ExperimentConfig", "Experiment name")
-}
+const JUDGES: Collection = Collection {
+    label: "Judge",
+    name_desc: "Judge name",
+    schema_name: "JudgeConfig",
+    tag: "judges",
+};
+
+const EXPERIMENTS: Collection = Collection {
+    label: "Experiment",
+    name_desc: "Experiment name",
+    schema_name: "ExperimentConfig",
+    tag: "experiments",
+};
+
+const MCP: Collection = Collection {
+    label: "MCP server",
+    name_desc: "MCP server name",
+    schema_name: "McpServerConfig",
+    tag: "mcp",
+};
+
 fn providers_collection() -> Value {
     json!({
         "get": {
@@ -268,9 +280,6 @@ fn mcp_collection() -> Value {
         },
     })
 }
-fn mcp_item() -> Value {
-    item_resource("mcp", "McpServerConfig", "MCP server name")
-}
 
 fn config_endpoint() -> Value {
     json!({
@@ -306,77 +315,107 @@ fn config_endpoint() -> Value {
     })
 }
 
-fn item_collection(tag: &str, schema_name: &str, label: &str) -> Value {
-    json!({
-        "get": {
-            "tags": [tag],
-            "summary": format!("List {tag}"),
-            "responses": {
-                "200": {
-                    "description": format!("Configured {tag} (JSON list or HTML page)."),
-                    "content": {
-                        "application/json": {
-                            "schema": { "type": "array", "items": { "$ref": format!("#/components/schemas/{schema_name}") } },
-                        },
-                        "text/html": { "schema": { "type": "string" } },
-                    },
-                },
-            },
-        },
-        "post": {
-            "tags": [tag],
-            "summary": format!("Create a {}", label.to_lowercase()),
-            "requestBody": body_of(schema_name),
-            "responses": {
-                "201": { "description": "Created.", "content": { "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema_name}") } } } },
-                "303": { "description": "HTML clients are redirected." },
-                "409": { "$ref": "#/components/responses/Conflict" },
-                "422": { "$ref": "#/components/responses/Validation" },
-            },
-        },
-    })
+/// One named-item collection of the config API (`/agents`, `/judges`, …):
+/// the tag it is filed under, the component schema its items use, and how
+/// a single item is called in prose.
+struct Collection {
+    /// Singular label for a created item: "Agent", "Judge", …
+    label: &'static str,
+    /// Description of the `{name}` path parameter.
+    name_desc: &'static str,
+    /// Component schema name: "Agent", "Judge", …
+    schema_name: &'static str,
+    /// `OpenAPI` tag, also the plural path segment: "agents", "judges", …
+    tag: &'static str,
 }
 
-fn item_resource(tag: &str, schema_name: &str, name_desc: &str) -> Value {
-    json!({
-        "parameters": [name_param(name_desc)],
-        "get": {
-            "tags": [tag],
-            "summary": format!("Get one {}", tag.trim_end_matches('s')),
-            "responses": {
-                "200": {
-                    "description": "Resource (JSON or HTML).",
-                    "content": {
-                        "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema_name}") } },
-                        "text/html": { "schema": { "type": "string" } },
+impl Collection {
+    /// The get + replace + delete operations at `/<tag>/{name}`.
+    fn item(&self) -> Value {
+        let Self {
+            name_desc,
+            schema_name,
+            tag,
+            ..
+        } = self;
+        json!({
+            "parameters": [name_param(name_desc)],
+            "get": {
+                "tags": [tag],
+                "summary": format!("Get one {}", tag.trim_end_matches('s')),
+                "responses": {
+                    "200": {
+                        "description": "Resource (JSON or HTML).",
+                        "content": {
+                            "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema_name}") } },
+                            "text/html": { "schema": { "type": "string" } },
+                        },
+                    },
+                    "404": { "$ref": "#/components/responses/NotFound" },
+                },
+            },
+            "put": {
+                "tags": [tag],
+                "summary": format!("Replace one {}", tag.trim_end_matches('s')),
+                "requestBody": body_of(schema_name),
+                "responses": {
+                    "200": { "description": "Updated.", "content": { "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema_name}") } } } },
+                    "303": { "description": "HTML clients are redirected." },
+                    "400": { "description": "URL identifier and body identifier disagree." },
+                    "404": { "$ref": "#/components/responses/NotFound" },
+                    "422": { "$ref": "#/components/responses/Validation" },
+                },
+            },
+            "delete": {
+                "tags": [tag],
+                "summary": format!("Delete one {}", tag.trim_end_matches('s')),
+                "responses": {
+                    "204": { "description": "Deleted." },
+                    "303": { "description": "HTML clients are redirected." },
+                    "404": { "$ref": "#/components/responses/NotFound" },
+                    "422": { "$ref": "#/components/responses/Validation" },
+                },
+            },
+        })
+    }
+
+    /// The list + create operations at `/<tag>`.
+    fn list_and_create(&self) -> Value {
+        let Self {
+            label,
+            schema_name,
+            tag,
+            ..
+        } = self;
+        json!({
+            "get": {
+                "tags": [tag],
+                "summary": format!("List {tag}"),
+                "responses": {
+                    "200": {
+                        "description": format!("Configured {tag} (JSON list or HTML page)."),
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "array", "items": { "$ref": format!("#/components/schemas/{schema_name}") } },
+                            },
+                            "text/html": { "schema": { "type": "string" } },
+                        },
                     },
                 },
-                "404": { "$ref": "#/components/responses/NotFound" },
             },
-        },
-        "put": {
-            "tags": [tag],
-            "summary": format!("Replace one {}", tag.trim_end_matches('s')),
-            "requestBody": body_of(schema_name),
-            "responses": {
-                "200": { "description": "Updated.", "content": { "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema_name}") } } } },
-                "303": { "description": "HTML clients are redirected." },
-                "400": { "description": "URL identifier and body identifier disagree." },
-                "404": { "$ref": "#/components/responses/NotFound" },
-                "422": { "$ref": "#/components/responses/Validation" },
+            "post": {
+                "tags": [tag],
+                "summary": format!("Create a {}", label.to_lowercase()),
+                "requestBody": body_of(schema_name),
+                "responses": {
+                    "201": { "description": "Created.", "content": { "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema_name}") } } } },
+                    "303": { "description": "HTML clients are redirected." },
+                    "409": { "$ref": "#/components/responses/Conflict" },
+                    "422": { "$ref": "#/components/responses/Validation" },
+                },
             },
-        },
-        "delete": {
-            "tags": [tag],
-            "summary": format!("Delete one {}", tag.trim_end_matches('s')),
-            "responses": {
-                "204": { "description": "Deleted." },
-                "303": { "description": "HTML clients are redirected." },
-                "404": { "$ref": "#/components/responses/NotFound" },
-                "422": { "$ref": "#/components/responses/Validation" },
-            },
-        },
-    })
+        })
+    }
 }
 
 fn name_param(description: &str) -> Value {

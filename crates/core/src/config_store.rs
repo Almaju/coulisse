@@ -7,8 +7,7 @@
 //! `Arc<dyn ConfigPersister>` and calls it. On success the file watcher
 //! fires and broadcasts the new config to subscribers.
 
-use std::future::Future;
-use std::pin::Pin;
+use futures::future::BoxFuture;
 
 /// Persists edits to the on-disk YAML config. Implementations are
 /// responsible for: serializing concurrent writes, deserialize-merging
@@ -20,16 +19,13 @@ use std::pin::Pin;
 /// writes. Use [`Self::write_all`] for the `PUT /admin/config` endpoint
 /// where the whole file is replaced atomically.
 pub trait ConfigPersister: Send + Sync {
+    fn write_all(&self, value: serde_yaml::Value) -> BoxFuture<'_, Result<(), ConfigPersistError>>;
+
     fn write_section<'a>(
         &'a self,
         section: &'a str,
         value: serde_yaml::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>;
-
-    fn write_all<'a>(
-        &'a self,
-        value: serde_yaml::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<(), ConfigPersistError>>;
 }
 
 #[derive(Debug, thiserror::Error)]

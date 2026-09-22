@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use coulisse_core::OneShotPrompt;
+use coulisse_core::{MessageId, OneShotError, OneShotPrompt, OneShotRequest, now_secs};
 use serde::Deserialize;
 
 use crate::JudgeConfig;
 use crate::store::Judges;
-use crate::types::{Score, ScoredExchange};
+use crate::types::{Score, ScoreId, ScoredExchange};
 
 /// Runtime judge built from YAML and validated at startup. Holds the
 /// prebuilt preamble so the hot path does zero string construction before
@@ -46,104 +47,130 @@ impl Judge {
         }
         let criteria: Vec<String> = config.rubrics.keys().cloned().collect();
         Ok(Self {
-            preamble: build_preamble(&config.rubrics),
             criteria,
             model: config.model.clone(),
             name: config.name.clone(),
+            preamble: build_preamble(&config.rubrics),
             provider: config.provider.clone(),
             sampling_rate: config.sampling_rate,
         })
     }
 
-    /// Draw once against the configured sampling rate. Called per scored
-    /// turn so that across many turns the scored fraction converges on
+    /// Whether this judge scores the turn that produced `message_id`. The
+    /// draw is a hash of the message id and the judge name, so replaying a
+    /// turn reproduces the decision, distinct judges decide independently,
+    /// and across many turns the scored fraction converges on
     /// `sampling_rate`.
     #[must_use]
-    pub fn should_sample(&self) -> bool {
+    pub fn should_sample(&self, message_id: MessageId) -> bool {
         if self.sampling_rate >= 1.0 {
             return true;
         }
         if self.sampling_rate <= 0.0 {
             return false;
         }
-        rand::random::<f32>() < self.sampling_rate
+        let mut hasher = DefaultHasher::new();
+        message_id.hash(&mut hasher);
+        self.name.hash(&mut hasher);
+        unit_f32(hasher.finish()) < self.sampling_rate
     }
-}
 
-/// Spawn a background task that runs each supplied judge against the last
-/// exchange and persists scores. Sampling decisions happen per-judge inside
-/// the task. Failures are logged and swallowed so the response path is
-/// never affected.
-pub fn spawn_score<C: OneShotPrompt + 'static>(
-    judges: Vec<Arc<Judge>>,
-    store: Arc<Judges>,
-    completer: Arc<C>,
-    exchange: ScoredExchange,
-) {
-    if judges.is_empty() {
-        return;
-    }
-    tokio::spawn(async move {
-        for judge in judges {
-            if !judge.should_sample() {
+    async fn score(
+        &self,
+        completer: &dyn OneShotPrompt,
+        exchange: &ScoredExchange,
+        store: &Judges,
+    ) -> Result<(), JudgeRunError> {
+        let user_text = format!(
+            "User message:\n{}\n\nAssistant reply:\n{}\n\nReturn the JSON object now.",
+            exchange.user_message, exchange.assistant_message,
+        );
+        let raw_text = completer
+            .one_shot(OneShotRequest {
+                model: &self.model,
+                preamble: &self.preamble,
+                provider: &self.provider,
+                user_text: &user_text,
+            })
+            .await?;
+        let raw = parse_scores(&raw_text)?;
+        for criterion in &self.criteria {
+            let Some(raw_score) = raw.get(criterion) else {
+                tracing::debug!(
+                    judge = %self.name,
+                    %criterion,
+                    "judge response omitted criterion — skipping",
+                );
                 continue;
-            }
-            if let Err(err) = run_score(&judge, &store, completer.as_ref(), &exchange).await {
+            };
+            let record = Score {
+                agent_name: exchange.agent_name.clone(),
+                created_at: now_secs(),
+                criterion: criterion.clone(),
+                id: ScoreId::new(),
+                judge_model: self.model.clone(),
+                judge_name: self.name.clone(),
+                message_id: exchange.message_id,
+                reasoning: raw_score.reasoning.clone(),
+                score: clamp_score(raw_score.score),
+                user_id: exchange.user_id,
+            };
+            if let Err(err) = store.append_score(record).await {
                 tracing::warn!(
-                    user = %exchange.user_id.0,
-                    judge = %judge.name,
+                    judge = %self.name,
+                    %criterion,
                     error = %err,
-                    "judge scoring failed",
+                    "failed to persist score",
                 );
             }
         }
-    });
+        Ok(())
+    }
 }
 
-async fn run_score(
-    judge: &Judge,
-    store: &Judges,
-    completer: &dyn OneShotPrompt,
-    exchange: &ScoredExchange,
-) -> Result<(), JudgeRunError> {
-    let user_text = format!(
-        "User message:\n{}\n\nAssistant reply:\n{}\n\nReturn the JSON object now.",
-        exchange.user_message, exchange.assistant_message,
-    );
-    let raw_text = completer
-        .one_shot(&judge.provider, &judge.model, &judge.preamble, &user_text)
-        .await
-        .map_err(|e| JudgeRunError::Prompt(e.to_string()))?;
-    let raw = parse_scores(&raw_text).map_err(JudgeRunError::Parse)?;
-    for criterion in &judge.criteria {
-        let Some(raw_score) = raw.get(criterion) else {
-            tracing::debug!(
-                judge = %judge.name,
-                %criterion,
-                "judge response omitted criterion — skipping",
-            );
-            continue;
-        };
-        let record = Score::new(
-            exchange.user_id,
-            exchange.message_id,
-            exchange.agent_name.clone(),
-            judge.name.clone(),
-            judge.model.clone(),
-            criterion.clone(),
-            clamp_score(raw_score.score),
-            raw_score.reasoning.clone(),
-        );
-        if let Err(err) = store.append_score(record).await {
-            tracing::warn!(
-                judge = %judge.name,
-                %criterion,
-                error = %err,
-                "failed to persist score",
-            );
+impl Judges {
+    /// Spawn a background task that runs each supplied judge against the
+    /// last exchange and persists scores into this store. Sampling
+    /// decisions happen per-judge inside the task. Failures are logged and
+    /// swallowed so the response path is never affected.
+    pub fn spawn_score<C: OneShotPrompt + 'static>(
+        &self,
+        completer: Arc<C>,
+        exchange: ScoredExchange,
+        judges: Vec<Arc<Judge>>,
+    ) {
+        if judges.is_empty() {
+            return;
         }
+        let store = self.clone();
+        tokio::spawn(async move {
+            for judge in judges {
+                if !judge.should_sample(exchange.message_id) {
+                    continue;
+                }
+                if let Err(err) = judge.score(completer.as_ref(), &exchange, &store).await {
+                    tracing::warn!(
+                        user = %exchange.user_id.0,
+                        judge = %judge.name,
+                        error = %err,
+                        "judge scoring failed",
+                    );
+                }
+            }
+        });
     }
-    Ok(())
+}
+
+/// Map a hash to a uniform f32 in [0, 1) from its top 24 bits, which an
+/// f32 mantissa represents exactly.
+fn unit_f32(seed: u64) -> f32 {
+    const BITS: u32 = 24;
+    // WHY: `seed >> 40` fits in 24 bits, so neither cast loses precision.
+    #[allow(clippy::cast_precision_loss)]
+    let numerator = (seed >> (u64::BITS - BITS)) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let denominator = (1u64 << BITS) as f32;
+    numerator / denominator
 }
 
 fn build_preamble(rubrics: &BTreeMap<String, String>) -> String {
@@ -165,13 +192,15 @@ fn build_preamble(rubrics: &BTreeMap<String, String>) -> String {
     out
 }
 
-fn parse_scores(text: &str) -> Result<HashMap<String, RawScore>, String> {
+fn parse_scores(text: &str) -> Result<HashMap<String, RawScore>, ParseScoresError> {
     let trimmed = strip_code_fence(text.trim()).trim();
     if trimmed.is_empty() {
-        return Err("judge returned empty output".into());
+        return Err(ParseScoresError::Empty);
     }
-    serde_json::from_str(trimmed)
-        .map_err(|e| format!("judge returned non-JSON output ({e}): {trimmed:?}"))
+    serde_json::from_str(trimmed).map_err(|source| ParseScoresError::NonJson {
+        source,
+        text: trimmed.to_string(),
+    })
 }
 
 fn strip_code_fence(s: &str) -> &str {
@@ -207,9 +236,21 @@ pub enum JudgeBuildError {
 #[derive(Debug, thiserror::Error)]
 enum JudgeRunError {
     #[error("parse: {0}")]
-    Parse(String),
+    Parse(#[from] ParseScoresError),
     #[error("prompt: {0}")]
-    Prompt(String),
+    Prompt(#[from] OneShotError),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ParseScoresError {
+    #[error("judge returned empty output")]
+    Empty,
+    #[error("judge returned non-JSON output ({source}): {text:?}")]
+    NonJson {
+        #[source]
+        source: serde_json::Error,
+        text: String,
+    },
 }
 
 #[cfg(test)]
@@ -253,7 +294,7 @@ mod tests {
         let cfg = config(&[("a", "b")], 1.0, "openai");
         let judge = Judge::from_config(&cfg).unwrap();
         for _ in 0..50 {
-            assert!(judge.should_sample());
+            assert!(judge.should_sample(MessageId::new()));
         }
     }
 
@@ -262,8 +303,29 @@ mod tests {
         let cfg = config(&[("a", "b")], 0.0, "openai");
         let judge = Judge::from_config(&cfg).unwrap();
         for _ in 0..50 {
-            assert!(!judge.should_sample());
+            assert!(!judge.should_sample(MessageId::new()));
         }
+    }
+
+    #[test]
+    fn sampling_is_replayable_per_message() {
+        let cfg = config(&[("a", "b")], 0.5, "openai");
+        let judge = Judge::from_config(&cfg).unwrap();
+        for _ in 0..50 {
+            let message_id = MessageId::new();
+            let first = judge.should_sample(message_id);
+            assert_eq!(judge.should_sample(message_id), first);
+        }
+    }
+
+    #[test]
+    fn sampling_fraction_converges_on_rate() {
+        let cfg = config(&[("a", "b")], 0.3, "openai");
+        let judge = Judge::from_config(&cfg).unwrap();
+        let sampled = (0..4000)
+            .filter(|_| judge.should_sample(MessageId::new()))
+            .count();
+        assert!((900..=1500).contains(&sampled), "sampled {sampled} of 4000");
     }
 
     #[test]
@@ -293,13 +355,16 @@ mod tests {
 
     #[test]
     fn parse_scores_errors_on_empty() {
-        assert!(parse_scores("").is_err());
-        assert!(parse_scores("   ").is_err());
+        assert!(matches!(parse_scores(""), Err(ParseScoresError::Empty)));
+        assert!(matches!(parse_scores("   "), Err(ParseScoresError::Empty)));
     }
 
     #[test]
     fn parse_scores_errors_on_non_json() {
-        assert!(parse_scores("not json").is_err());
+        assert!(matches!(
+            parse_scores("not json"),
+            Err(ParseScoresError::NonJson { .. })
+        ));
     }
 
     #[test]

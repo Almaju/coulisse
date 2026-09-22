@@ -13,21 +13,18 @@
 //! sticky-by-user routing samples experiment variants naturally across
 //! repetitions.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use agents::{Agents, Message as AgentMessage, Role as AgentRole};
-use coulisse_core::{MessageId, OneShotPrompt, UserId};
-use judges::spawn_score;
+use agents::{Agents, AgentsError, Message as AgentMessage, PromptRequest, Role as AgentRole};
+use coulisse_core::{BoxFuture, MessageId, OneShotPrompt, UserId};
 use providers::ProviderKind;
 use smoke::{
     DispatchError, PersonaConfig, RunDispatcher, RunId, RunStatus, SmokeList, SmokeStore,
-    SmokeTestConfig,
+    SmokeStoreError, SmokeTestConfig,
 };
 use tracing::{Instrument, info_span};
 
-use crate::server::{AppState, judges_for_agent};
+use crate::server::AppState;
 
 /// Wires the smoke admin router to the live agent + judge runtime in
 /// `AppState`. One instance per process; cli builds it once and clones
@@ -42,7 +39,7 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
     fn dispatch<'a>(
         &'a self,
         test_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<RunId>, DispatchError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<Vec<RunId>, DispatchError>> {
         Box::pin(async move {
             let config = self
                 .configs
@@ -54,21 +51,18 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
 
             let mut ids = Vec::with_capacity(config.repetitions as usize);
             for _ in 0..config.repetitions.max(1) {
-                let id = self
-                    .store
-                    .start_run(&config.name)
-                    .await
-                    .map_err(|e| DispatchError::other(e.to_string()))?;
+                let id = self.store.start_run(&config.name).await?;
                 ids.push(id);
-                let state = Arc::clone(&self.state);
-                let store = Arc::clone(&self.store);
+                let runner = self.share();
                 let cfg = config.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = run_once(state, store.clone(), cfg, id).await {
+                    if let Err(err) = runner.run_once(cfg, id).await {
                         let msg = err.to_string();
                         tracing::warn!(run = %id.0, error = %msg, "smoke run failed");
-                        if let Err(store_err) =
-                            store.finish_run(id, RunStatus::Failed, Some(&msg)).await
+                        if let Err(store_err) = runner
+                            .store
+                            .finish_run(id, RunStatus::Failed, Some(&msg))
+                            .await
                         {
                             tracing::warn!(error = %store_err, "failed to persist smoke failure");
                         }
@@ -80,163 +74,167 @@ impl<P: Agents + OneShotPrompt + 'static> RunDispatcher for SmokeRunner<P> {
     }
 }
 
-/// One synthetic conversation. Errors bubble up so the spawn wrapper
-/// can mark the run failed; success paths mark it completed inline.
-async fn run_once<P: Agents + OneShotPrompt + 'static>(
-    state: Arc<AppState<P>>,
-    store: Arc<SmokeStore>,
-    config: SmokeTestConfig,
-    run_id: RunId,
-) -> Result<(), RunError> {
-    let synthetic_user = UserId::new();
-    let mut messages: Vec<AgentMessage> = Vec::new();
-    let mut resolved_recorded = false;
-
-    for turn_index in 0..config.max_turns {
-        let persona_text = if turn_index == 0
-            && let Some(initial) = config.initial_message.as_ref()
-        {
-            initial.clone()
+impl<P: Agents + OneShotPrompt + 'static> SmokeRunner<P> {
+    /// Persona turn: ask the persona's model to produce the next user
+    /// utterance given the conversation so far. Conversation roles are
+    /// flipped (assistant turns become "user" inputs, persona's previous
+    /// outputs become "assistant" inputs) so the model speaks *as* the
+    /// user. Uses the unconfigured `prompt_with` path so the persona has
+    /// no MCP tools, no subagents, no preamble merging — just its own
+    /// system prompt.
+    async fn persona_turn(
+        &self,
+        persona: &PersonaConfig,
+        history: &[AgentMessage],
+    ) -> Result<String, RunError> {
+        let provider = ProviderKind::parse(&persona.provider)
+            .ok_or_else(|| RunError::UnknownPersonaProvider(persona.provider.clone()))?;
+        let flipped: Vec<AgentMessage> = history
+            .iter()
+            .map(|m| AgentMessage {
+                content: m.content.clone(),
+                role: match m.role {
+                    AgentRole::Assistant => AgentRole::User,
+                    AgentRole::System => AgentRole::System,
+                    AgentRole::User => AgentRole::Assistant,
+                },
+            })
+            .collect();
+        let messages = if flipped.is_empty() {
+            vec![AgentMessage {
+                content: "Begin the conversation. Send your first message to the assistant."
+                    .to_string(),
+                role: AgentRole::User,
+            }]
         } else {
-            persona_turn(&state, &config.persona, &messages).await?
+            flipped
         };
-        store
-            .record_persona_turn(run_id, turn_index, &persona_text)
-            .await
-            .map_err(|e| RunError::Store(e.to_string()))?;
-        messages.push(AgentMessage {
-            content: persona_text.clone(),
-            role: AgentRole::User,
-        });
-        if matches_marker(&persona_text, config.stop_marker.as_deref()) {
-            break;
-        }
-
-        let assistant_message_id = MessageId::new();
-        let resolved = resolve_target(&state, &config.target, synthetic_user).await;
-        if !resolved_recorded {
-            store
-                .set_resolution(run_id, &resolved.agent, resolved.experiment.as_deref())
-                .await
-                .map_err(|e| RunError::Store(e.to_string()))?;
-            resolved_recorded = true;
-        }
-        let span = info_span!(
-            "smoke_turn",
-            agent = %resolved.agent,
-            run_id = %run_id.0,
-            turn_id = %assistant_message_id.0,
-            user_id = %synthetic_user.0,
-        );
-        let completion = state
+        let completion = self
+            .state
             .agents
-            .complete(&resolved.agent, messages.clone(), synthetic_user)
-            .instrument(span)
+            .prompt_with(PromptRequest {
+                messages,
+                model: &persona.model,
+                preamble: &persona.preamble,
+                provider,
+            })
             .await
-            .map_err(|e| RunError::Agent(e.to_string()))?;
-        store
-            .record_assistant_turn(run_id, turn_index, assistant_message_id, &completion.text)
-            .await
-            .map_err(|e| RunError::Store(e.to_string()))?;
-        messages.push(AgentMessage {
-            content: completion.text.clone(),
-            role: AgentRole::Assistant,
-        });
+            .map_err(RunError::Persona)?;
+        Ok(completion.text)
+    }
 
-        let judges = judges_for_agent(&state, &resolved.agent);
-        spawn_score(
-            judges,
-            Arc::clone(&state.judge_store),
-            Arc::clone(&state.agents),
-            judges::ScoredExchange {
-                agent_name: resolved.agent.clone(),
-                assistant_message: completion.text.clone(),
-                message_id: assistant_message_id,
-                user_id: synthetic_user,
-                user_message: persona_text.clone(),
-            },
-        );
-
-        if matches_marker(&completion.text, config.stop_marker.as_deref()) {
-            break;
+    async fn resolve_target(&self, target: &str, user_id: UserId) -> ResolvedTarget {
+        let bandit_scores = match self.state.experiments.bandit_query(target) {
+            None => Vec::new(),
+            Some(query) => self
+                .state
+                .judge_store
+                .mean_scores_by_agent(query)
+                .await
+                .unwrap_or_default(),
+        };
+        let resolved = self
+            .state
+            .experiments
+            .resolve_with_scores(target, user_id, &bandit_scores);
+        ResolvedTarget {
+            agent: resolved.agent.into_owned(),
+            experiment: resolved.experiment.map(std::borrow::ToOwned::to_owned),
         }
     }
 
-    store
-        .finish_run(run_id, RunStatus::Completed, None)
-        .await
-        .map_err(|e| RunError::Store(e.to_string()))?;
-    Ok(())
+    /// One synthetic conversation. Errors bubble up so the spawn wrapper
+    /// can mark the run failed; success paths mark it completed inline.
+    async fn run_once(&self, config: SmokeTestConfig, run_id: RunId) -> Result<(), RunError> {
+        let synthetic_user = UserId::new();
+        let mut messages: Vec<AgentMessage> = Vec::new();
+        let mut resolved_recorded = false;
+
+        for turn_index in 0..config.max_turns {
+            let persona_text = if turn_index == 0
+                && let Some(initial) = config.initial_message.as_ref()
+            {
+                initial.clone()
+            } else {
+                self.persona_turn(&config.persona, &messages).await?
+            };
+            self.store
+                .record_persona_turn(run_id, turn_index, &persona_text)
+                .await?;
+            messages.push(AgentMessage {
+                content: persona_text.clone(),
+                role: AgentRole::User,
+            });
+            if matches_marker(&persona_text, config.stop_marker.as_deref()) {
+                break;
+            }
+
+            let assistant_message_id = MessageId::new();
+            let resolved = self.resolve_target(&config.target, synthetic_user).await;
+            if !resolved_recorded {
+                self.store
+                    .set_resolution(run_id, &resolved.agent, resolved.experiment.as_deref())
+                    .await?;
+                resolved_recorded = true;
+            }
+            let span = info_span!(
+                "smoke_turn",
+                agent = %resolved.agent,
+                run_id = %run_id.0,
+                turn_id = %assistant_message_id.0,
+                user_id = %synthetic_user.0,
+            );
+            let completion = self
+                .state
+                .agents
+                .complete(&resolved.agent, messages.clone(), synthetic_user)
+                .instrument(span)
+                .await?;
+            self.store
+                .record_assistant_turn(run_id, turn_index, assistant_message_id, &completion.text)
+                .await?;
+            messages.push(AgentMessage {
+                content: completion.text.clone(),
+                role: AgentRole::Assistant,
+            });
+
+            let judges = self.state.judges_for_agent(&resolved.agent);
+            self.state.judge_store.spawn_score(
+                Arc::clone(&self.state.agents),
+                judges::ScoredExchange {
+                    agent_name: resolved.agent.clone(),
+                    assistant_message: completion.text.clone(),
+                    message_id: assistant_message_id,
+                    user_id: synthetic_user,
+                    user_message: persona_text.clone(),
+                },
+                judges,
+            );
+
+            if matches_marker(&completion.text, config.stop_marker.as_deref()) {
+                break;
+            }
+        }
+
+        self.store
+            .finish_run(run_id, RunStatus::Completed, None)
+            .await?;
+        Ok(())
+    }
+
+    /// A handle a spawned run can own.
+    fn share(&self) -> Self {
+        Self {
+            configs: self.configs.clone(),
+            state: Arc::clone(&self.state),
+            store: Arc::clone(&self.store),
+        }
+    }
 }
 
 struct ResolvedTarget {
     agent: String,
     experiment: Option<String>,
-}
-
-async fn resolve_target<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    target: &str,
-    user_id: UserId,
-) -> ResolvedTarget {
-    let bandit_scores = match state.experiments.bandit_query(target) {
-        None => Vec::new(),
-        Some((judge, criterion, since)) => state
-            .judge_store
-            .mean_scores_by_agent(&judge, &criterion, since)
-            .await
-            .unwrap_or_default(),
-    };
-    let resolved = state
-        .experiments
-        .resolve_with_scores(target, user_id, &bandit_scores);
-    ResolvedTarget {
-        agent: resolved.agent.into_owned(),
-        experiment: resolved.experiment.map(std::borrow::ToOwned::to_owned),
-    }
-}
-
-/// Persona turn: ask the persona's model to produce the next user
-/// utterance given the conversation so far. Conversation roles are
-/// flipped (assistant turns become "user" inputs, persona's previous
-/// outputs become "assistant" inputs) so the model speaks *as* the
-/// user. Uses the unconfigured `prompt_with` path so the persona has
-/// no MCP tools, no subagents, no preamble merging — just its own
-/// system prompt.
-async fn persona_turn<P: Agents + OneShotPrompt>(
-    state: &AppState<P>,
-    persona: &PersonaConfig,
-    history: &[AgentMessage],
-) -> Result<String, RunError> {
-    let provider = ProviderKind::parse(&persona.provider).ok_or_else(|| {
-        RunError::Persona(format!("unknown persona provider '{}'", persona.provider))
-    })?;
-    let flipped: Vec<AgentMessage> = history
-        .iter()
-        .map(|m| AgentMessage {
-            content: m.content.clone(),
-            role: match m.role {
-                AgentRole::Assistant => AgentRole::User,
-                AgentRole::System => AgentRole::System,
-                AgentRole::User => AgentRole::Assistant,
-            },
-        })
-        .collect();
-    let messages = if flipped.is_empty() {
-        vec![AgentMessage {
-            content: "Begin the conversation. Send your first message to the assistant."
-                .to_string(),
-            role: AgentRole::User,
-        }]
-    } else {
-        flipped
-    };
-    let completion = state
-        .agents
-        .prompt_with(provider, &persona.model, &persona.preamble, messages)
-        .await
-        .map_err(|e| RunError::Persona(e.to_string()))?;
-    Ok(completion.text)
 }
 
 fn matches_marker(text: &str, marker: Option<&str>) -> bool {
@@ -249,9 +247,11 @@ fn matches_marker(text: &str, marker: Option<&str>) -> bool {
 #[derive(Debug, thiserror::Error)]
 enum RunError {
     #[error("agent: {0}")]
-    Agent(String),
+    Agent(#[from] AgentsError),
     #[error("persona: {0}")]
-    Persona(String),
+    Persona(#[source] AgentsError),
     #[error("store: {0}")]
-    Store(String),
+    Store(#[from] SmokeStoreError),
+    #[error("persona: unknown persona provider '{0}'")]
+    UnknownPersonaProvider(String),
 }

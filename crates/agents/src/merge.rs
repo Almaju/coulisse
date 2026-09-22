@@ -4,7 +4,7 @@ use crate::AgentConfig;
 use crate::store::DynamicRow;
 
 /// Where the resolved version of an agent came from.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// Created via admin/HTTP, no YAML entry of this name.
     Dynamic,
@@ -90,7 +90,7 @@ pub fn merge(yaml: &[AgentConfig], db: &[DynamicRow]) -> (Vec<MergedAgent>, Merg
 
 /// Source label for the admin UI. Wider than [`Source`] because the admin
 /// also surfaces tombstoned rows so operators can re-enable them.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminSource {
     /// DB row, active, no YAML entry of the same name.
     Dynamic,

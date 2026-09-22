@@ -1,11 +1,7 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-
-use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::migrate::{self, MigrateError, SchemaMigrator, UpgradeError};
 use coulisse_core::{
-    AgentScoreSummary, MessageId, ScoreLookup, ScoreLookupError, UserId, i64_to_u32, i64_to_u64,
-    now_secs, u64_to_i64,
+    AgentScoreSummary, BoxFuture, MessageId, ScoreLookup, ScoreLookupError, ScoreQuery, UserId,
+    i64_to_u32, i64_to_u64, now_secs, u64_to_i64,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -28,7 +24,7 @@ impl SchemaMigrator for Schema {
         &self,
         from_version: &str,
         conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
+    ) -> Result<(), UpgradeError> {
         match from_version {
             "0.1.0" => {
                 conn.execute(
@@ -43,7 +39,10 @@ impl SchemaMigrator for Schema {
                 .await?;
                 Ok(())
             }
-            _ => unreachable!("unknown judges schema version: {from_version}"),
+            other => Err(UpgradeError::UnknownStep {
+                from: other.to_string(),
+                name: Self::NAME,
+            }),
         }
     }
 }
@@ -58,6 +57,33 @@ pub struct DynamicJudgeRow {
     pub disabled: bool,
     pub name: String,
     pub updated_at: i64,
+}
+
+impl DynamicJudgeRow {
+    fn from_row(row: &SqliteRow) -> Result<Self, JudgeStoreError> {
+        let config_json: Option<String> = row.try_get("config_json")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let disabled: i64 = row.try_get("disabled")?;
+        let name: String = row.try_get("name")?;
+        let updated_at: i64 = row.try_get("updated_at")?;
+        let config =
+            match config_json {
+                None => None,
+                Some(json) => Some(serde_json::from_str::<JudgeConfig>(&json).map_err(
+                    |source| JudgeStoreError::ConfigJson {
+                        name: name.clone(),
+                        source,
+                    },
+                )?),
+            };
+        Ok(Self {
+            config,
+            created_at,
+            disabled: disabled != 0,
+            name,
+            updated_at,
+        })
+    }
 }
 
 pub struct AgentCriterionCell {
@@ -77,7 +103,8 @@ pub struct JudgeVolume {
 /// `mean_scores_by_agent`) and via the `ScoreLookup` trait so feature
 /// crates that need to consume scores (e.g. `agents` for bandit
 /// experiments) can depend on the trait in `coulisse-core` rather than
-/// on `judges` itself.
+/// on `judges` itself. Clones share the pool.
+#[derive(Clone)]
 pub struct Judges {
     pool: SqlitePool,
 }
@@ -148,7 +175,7 @@ impl Judges {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_score).collect()
+        rows.iter().map(Score::from_row).collect()
     }
 
     /// Persist one judge score row. Called from background tasks spawned
@@ -178,22 +205,18 @@ impl Judges {
         Ok(score.id)
     }
 
-    /// All judge scores recorded for `user_id`, chronological.
-    ///
     /// Mean and sample count of scores grouped by `agent_name`, scoped to
-    /// `(judge, criterion)` and to scores recorded after `since`. Used by
-    /// the bandit strategy. Aggregates across all users (the experiment
-    /// is global, not per-user). Empty when no scores match — callers
-    /// fall back to exploration.
+    /// the query's `(judge, criterion)` and to scores recorded after its
+    /// `since`. Used by the bandit strategy. Aggregates across all users
+    /// (the experiment is global, not per-user). Empty when no scores
+    /// match — callers fall back to exploration.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
     pub async fn mean_scores_by_agent(
         &self,
-        judge: &str,
-        criterion: &str,
-        since: u64,
+        query: ScoreQuery<'_>,
     ) -> Result<Vec<AgentScoreSummary>, JudgeStoreError> {
         let rows = sqlx::query(
             "SELECT agent_name, AVG(score) AS mean, COUNT(*) AS samples \
@@ -201,9 +224,9 @@ impl Judges {
              WHERE judge_name = ? AND criterion = ? AND created_at >= ? AND agent_name <> '' \
              GROUP BY agent_name",
         )
-        .bind(judge)
-        .bind(criterion)
-        .bind(u64_to_i64(since))
+        .bind(query.judge)
+        .bind(query.criterion)
+        .bind(u64_to_i64(query.since))
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -271,7 +294,7 @@ impl Judges {
         .bind(user_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_score).collect()
+        rows.iter().map(Score::from_row).collect()
     }
 
     /// # Errors
@@ -286,7 +309,7 @@ impl Judges {
         .bind(agent_name)
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_score).collect()
+        rows.iter().map(Score::from_row).collect()
     }
 
     /// # Errors
@@ -309,7 +332,7 @@ impl Judges {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_score).collect()
+        rows.iter().map(Score::from_row).collect()
     }
 }
 
@@ -339,7 +362,7 @@ impl Judges {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_dynamic_judge).collect()
+        rows.iter().map(DynamicJudgeRow::from_row).collect()
     }
 
     /// # Errors
@@ -351,8 +374,7 @@ impl Judges {
         config: &JudgeConfig,
     ) -> Result<(), JudgeStoreError> {
         let now = u64_to_i64(now_secs());
-        let json = serde_json::to_string(config)
-            .map_err(|e| JudgeStoreError::RowDecode(format!("serialize: {e}")))?;
+        let json = serde_json::to_string(config).map_err(JudgeStoreError::Serialize)?;
         sqlx::query(
             "INSERT INTO dynamic_judges (config_json, created_at, disabled, name, updated_at) \
              VALUES (?, ?, 0, ?, ?) \
@@ -409,7 +431,7 @@ impl Judges {
         let db = self.list_dynamic().await?;
         let (merged, report) = merge(yaml_judges, &db);
         let configs: Vec<JudgeConfig> = merged.into_iter().map(|m| m.config).collect();
-        list.store(Arc::new(configs));
+        list.store(configs);
         Ok(report)
     }
 }
@@ -417,76 +439,63 @@ impl Judges {
 impl ScoreLookup for Judges {
     fn mean_scores_by_agent<'a>(
         &'a self,
-        judge: &'a str,
-        criterion: &'a str,
-        since: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<AgentScoreSummary>, ScoreLookupError>> + Send + 'a>>
-    {
+        query: ScoreQuery<'a>,
+    ) -> BoxFuture<'a, Result<Vec<AgentScoreSummary>, ScoreLookupError>> {
         Box::pin(async move {
-            Judges::mean_scores_by_agent(self, judge, criterion, since)
+            Judges::mean_scores_by_agent(self, query)
                 .await
                 .map_err(|e| ScoreLookupError(e.to_string()))
         })
     }
 }
 
-fn row_to_score(row: &SqliteRow) -> Result<Score, JudgeStoreError> {
-    let agent_name: String = row.try_get("agent_name")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let criterion: String = row.try_get("criterion")?;
-    let id: String = row.try_get("id")?;
-    let judge_model: String = row.try_get("judge_model")?;
-    let judge_name: String = row.try_get("judge_name")?;
-    let message_id: String = row.try_get("message_id")?;
-    let reasoning: String = row.try_get("reasoning")?;
-    let score: f32 = row.try_get("score")?;
-    let user_id: String = row.try_get("user_id")?;
-    Ok(Score {
-        agent_name,
-        created_at: i64_to_u64(created_at),
-        criterion,
-        id: ScoreId(parse_uuid(&id, "score id")?),
-        judge_model,
-        judge_name,
-        message_id: MessageId(parse_uuid(&message_id, "message id")?),
-        reasoning,
-        score,
-        user_id: UserId(parse_uuid(&user_id, "user id")?),
-    })
+impl Score {
+    fn from_row(row: &SqliteRow) -> Result<Self, JudgeStoreError> {
+        let agent_name: String = row.try_get("agent_name")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let criterion: String = row.try_get("criterion")?;
+        let judge_model: String = row.try_get("judge_model")?;
+        let judge_name: String = row.try_get("judge_name")?;
+        let reasoning: String = row.try_get("reasoning")?;
+        let score: f32 = row.try_get("score")?;
+        Ok(Self {
+            agent_name,
+            created_at: i64_to_u64(created_at),
+            criterion,
+            id: ScoreId(uuid_column(row, "id")?),
+            judge_model,
+            judge_name,
+            message_id: MessageId(uuid_column(row, "message_id")?),
+            reasoning,
+            score,
+            user_id: UserId(uuid_column(row, "user_id")?),
+        })
+    }
 }
 
-fn parse_uuid(s: &str, label: &str) -> Result<Uuid, JudgeStoreError> {
-    Uuid::parse_str(s).map_err(|e| JudgeStoreError::RowDecode(format!("invalid {label}: {e}")))
-}
-
-fn row_to_dynamic_judge(row: &SqliteRow) -> Result<DynamicJudgeRow, JudgeStoreError> {
-    let config_json: Option<String> = row.try_get("config_json")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let disabled: i64 = row.try_get("disabled")?;
-    let name: String = row.try_get("name")?;
-    let updated_at: i64 = row.try_get("updated_at")?;
-    let config = match config_json {
-        None => None,
-        Some(s) => Some(
-            serde_json::from_str::<JudgeConfig>(&s)
-                .map_err(|e| JudgeStoreError::RowDecode(format!("config_json: {e}")))?,
-        ),
-    };
-    Ok(DynamicJudgeRow {
-        config,
-        created_at,
-        disabled: disabled != 0,
-        name,
-        updated_at,
-    })
+fn uuid_column(row: &SqliteRow, column: &'static str) -> Result<Uuid, JudgeStoreError> {
+    let raw: String = row.try_get(column)?;
+    Uuid::parse_str(&raw).map_err(|source| JudgeStoreError::InvalidUuid { column, source })
 }
 
 #[derive(Debug, Error)]
 pub enum JudgeStoreError {
+    #[error("dynamic judge '{name}' has unreadable config_json: {source}")]
+    ConfigJson {
+        name: String,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("column '{column}' is not a valid UUID: {source}")]
+    InvalidUuid {
+        column: &'static str,
+        #[source]
+        source: uuid::Error,
+    },
     #[error("schema migration failed: {0}")]
-    Migrate(#[from] coulisse_core::migrate::MigrateError),
-    #[error("failed to decode row: {0}")]
-    RowDecode(String),
+    Migrate(#[from] MigrateError),
+    #[error("failed to serialize judge config: {0}")]
+    Serialize(#[source] serde_json::Error),
 }

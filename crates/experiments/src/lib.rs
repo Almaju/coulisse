@@ -14,7 +14,7 @@ mod resolver;
 mod router;
 mod store;
 
-pub use config::{ExperimentConfig, ExperimentList, Strategy, Variant, experiment_list};
+pub use config::{ExperimentConfig, ExperimentList, Strategy, Variant};
 pub use merge::{
     AdminExperiment, AdminSource, MergeReport, MergedExperiment, Source, admin_view, merge,
 };

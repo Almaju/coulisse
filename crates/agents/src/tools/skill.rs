@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use coulisse_core::SkillCatalog;
@@ -55,8 +56,8 @@ impl ToolDyn for SkillTool {
         let name = self.name.clone();
         Box::pin(async move {
             ToolDefinition {
-                name,
                 description,
+                name,
                 parameters: json!({
                     "type": "object",
                     "properties": {},
@@ -94,7 +95,7 @@ impl ToolDyn for SkillFileTool {
                 let parsed: Value = serde_json::from_str(&args).map_err(ToolError::JsonError)?;
                 let skill = required_str(&parsed, "skill")?;
                 let path = required_str(&parsed, "path")?;
-                match catalog.read_file(&skill, &path) {
+                match catalog.read_file(&skill, Path::new(&path)) {
                     Ok(contents) => {
                         tracing::Span::current().record("result", contents.as_str());
                         Ok(contents)
@@ -112,12 +113,12 @@ impl ToolDyn for SkillFileTool {
     fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
         Box::pin(async move {
             ToolDefinition {
-                name: "skill_file".to_string(),
                 description: "Read a bundled resource file from a skill's directory — use this \
                               when a skill's instructions point you at one of its files (a \
                               template, reference doc, or checklist). `skill` is the skill name; \
                               `path` is relative to that skill's directory."
                     .to_string(),
+                name: "skill_file".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {

@@ -142,8 +142,8 @@ mod tests {
     }
 
     struct FakeTool {
-        name: String,
         last_called_with: Arc<Mutex<Option<String>>>,
+        name: String,
     }
 
     impl ToolDyn for FakeTool {
@@ -173,8 +173,8 @@ mod tests {
     async fn wrapper_renames_but_forwards_call() {
         let probe = Arc::new(Mutex::new(None));
         let tool = Box::new(FakeTool {
-            name: "service.v1.messages.send_text".to_string(),
             last_called_with: probe.clone(),
+            name: "service.v1.messages.send_text".to_string(),
         });
         let sanitized = apply(vec![tool]);
         assert_eq!(sanitized.len(), 1);
@@ -194,16 +194,16 @@ mod tests {
     async fn collision_resolves_with_numeric_suffix() {
         let probe = Arc::new(Mutex::new(None));
         let a = Box::new(FakeTool {
-            name: "service.send".to_string(),
             last_called_with: probe.clone(),
+            name: "service.send".to_string(),
         });
         let b = Box::new(FakeTool {
-            name: "service_send".to_string(),
             last_called_with: probe.clone(),
+            name: "service_send".to_string(),
         });
         let c = Box::new(FakeTool {
-            name: "service-send".to_string(),
             last_called_with: probe,
+            name: "service-send".to_string(),
         });
         let out = apply(vec![a, b, c]);
         let names: Vec<String> = out.iter().map(|t| t.name()).collect();

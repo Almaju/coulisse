@@ -19,5 +19,6 @@
 mod error;
 mod queue;
 
+pub use coulisse_core::TaskState;
 pub use error::TaskError;
-pub use queue::{Task, TaskState, Tasks};
+pub use queue::{Task, Tasks};

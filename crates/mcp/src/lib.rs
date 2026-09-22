@@ -24,7 +24,11 @@ pub mod vault;
 
 pub use config::{McpOAuthConfig, McpServerConfig, McpToolAccess, McpTransport};
 pub use error::McpError;
+pub use oauth::{
+    AccessToken, ClientId, ClientSecret, CodeChallenge, CodeVerifier, PkcePair, RedirectUri,
+    RefreshToken, StateKey, StateToken,
+};
 pub use pool::UserMcpPool;
-pub use routes::{ConnectLinkSigner, OAuthRouterState, router as oauth_router};
-pub use server::McpServers;
+pub use routes::{ConnectLinkSigner, ConsumerSecret, OAuthRouterState, PublicBaseUrl};
+pub use server::{McpServers, McpToolSet};
 pub use vault::{McpMigrator, StoredClient, StoredToken, TokenVault, VaultMigrator};

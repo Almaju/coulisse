@@ -41,7 +41,7 @@ pub(super) struct ConversationRow {
 impl From<ConversationSummary> for ConversationRow {
     fn from(s: ConversationSummary) -> Self {
         Self {
-            duration: format_duration(s.first_message_at, s.last_message_at),
+            duration: format_duration(s.last_message_at.saturating_sub(s.first_message_at)),
             last_activity_at: relative_time(s.last_message_at),
             message_count: s.message_count,
             total_tokens: format_tokens(s.total_tokens),
@@ -50,12 +50,11 @@ impl From<ConversationSummary> for ConversationRow {
     }
 }
 
-fn format_duration(first: u64, last: u64) -> String {
-    let diff = last.saturating_sub(first);
-    if diff < 60 {
+fn format_duration(seconds: u64) -> String {
+    if seconds < 60 {
         return "< 1m".into();
     }
-    let minutes = diff / 60;
+    let minutes = seconds / 60;
     let hours = minutes / 60;
     let days = hours / 24;
     if days > 0 {

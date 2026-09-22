@@ -21,10 +21,12 @@ impl RequestLimits {
             metadata
                 .get(key)
                 .map(|v| {
-                    v.parse::<u64>().map_err(|_| LimitError::InvalidMetadata {
-                        key: key.into(),
-                        value: v.clone(),
-                    })
+                    v.parse::<u64>()
+                        .map_err(|source| LimitError::InvalidMetadata {
+                            key: key.into(),
+                            source,
+                            value: v.clone(),
+                        })
                 })
                 .transpose()
         };

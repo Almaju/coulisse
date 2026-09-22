@@ -25,7 +25,7 @@ pub struct SidecarConfig {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, schemars::JsonSchema, Serialize,
+    Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum RestartPolicy {

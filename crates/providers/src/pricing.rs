@@ -7,17 +7,36 @@
 //!
 //! Pricing belongs here because it's intrinsic to a model — the same place
 //! that already owns `ProviderKind` and the model-string callers pass to
-//! `Provider::send`. cli computes cost at the moment it has the matching
+//! `Provider::send`. cli builds one [`PricingTable`] at boot (parsing ~9k
+//! JSON entries is measurably slow in debug builds, so it stays off the
+//! request path) and computes cost at the moment it has the matching
 //! `Usage`, so siblings (telemetry, limits) never depend on this module.
 
-use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{ProviderKind, Usage};
 
 const RAW_PRICES: &str = include_str!("../data/model_prices.json");
+
+/// Price of one token, in USD. Mirrors `LiteLLM`'s per-token fields
+/// (`input_cost_per_token`, `cache_read_input_token_cost`, ...).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(transparent)]
+struct CostPerToken(f64);
+
+impl CostPerToken {
+    /// Cost of `tokens` tokens at this rate, in USD.
+    fn for_tokens(self, tokens: u64) -> f64 {
+        // WHY: token counts in practice are well under 2^53 — f64
+        // representation is exact for any value any provider would return.
+        #[allow(clippy::cast_precision_loss)]
+        let count = tokens as f64;
+        count * self.0
+    }
+}
 
 /// One model's per-token pricing (USD). All fields are optional because the
 /// `LiteLLM` table is sparse — Groq entries have no cache pricing, older
@@ -26,15 +45,66 @@ const RAW_PRICES: &str = include_str!("../data/model_prices.json");
 #[derive(Clone, Debug, Default, Deserialize)]
 struct ModelPricing {
     #[serde(default)]
-    cache_creation_input_token_cost: Option<f64>,
+    cache_creation_input_token_cost: Option<CostPerToken>,
     #[serde(default)]
-    cache_read_input_token_cost: Option<f64>,
+    cache_read_input_token_cost: Option<CostPerToken>,
     #[serde(default)]
-    input_cost_per_token: Option<f64>,
+    input_cost_per_token: Option<CostPerToken>,
     #[serde(default)]
     litellm_provider: Option<String>,
     #[serde(default)]
-    output_cost_per_token: Option<f64>,
+    output_cost_per_token: Option<CostPerToken>,
+}
+
+impl ModelPricing {
+    fn cost_of(&self, usage: &Usage) -> Cost {
+        // WHY: LiteLLM's `input_cost_per_token` is the price for *uncached*
+        // input tokens. Anthropic's `Usage::input_tokens` already excludes
+        // cached reads and cache writes, so summing them here doesn't
+        // double-count.
+        let usd = self
+            .input_cost_per_token
+            .unwrap_or_default()
+            .for_tokens(usage.input_tokens)
+            + self
+                .output_cost_per_token
+                .unwrap_or_default()
+                .for_tokens(usage.output_tokens)
+            + self
+                .cache_creation_input_token_cost
+                .unwrap_or_default()
+                .for_tokens(usage.cache_creation_input_tokens)
+            + self
+                .cache_read_input_token_cost
+                .unwrap_or_default()
+                .for_tokens(usage.cached_input_tokens);
+        Cost::new(usd)
+    }
+
+    /// `LiteLLM` uses `litellm_provider` strings that mostly match our `ProviderKind`
+    /// names but don't always — e.g. `vertex_ai-...` for some Gemini variants.
+    /// We accept a prefix match on the provider's own name to avoid pulling the
+    /// wrong row when two providers ship a same-named model.
+    fn matches_provider(&self, provider: ProviderKind) -> bool {
+        match self.litellm_provider.as_deref() {
+            None => true,
+            Some(name) => {
+                name.starts_with(provider.as_str())
+                    || provider.alternate_pricing_names().contains(name)
+            }
+        }
+    }
+}
+
+impl ProviderKind {
+    fn alternate_pricing_names(self) -> HashSet<&'static str> {
+        match self {
+            Self::Gemini => ["vertex_ai-language-models", "vertex_ai"]
+                .into_iter()
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
 }
 
 /// Computed cost for one LLM call. Stored as USD (f64) — sub-cent precision
@@ -51,88 +121,34 @@ impl Cost {
     }
 }
 
-/// Compute cost from token usage. Returns `None` when the model isn't in
-/// the pricing table — caller decides whether to log, default to zero, or
-/// surface the gap.
-#[must_use]
-pub fn cost_for(provider: ProviderKind, model: &str, usage: &Usage) -> Option<Cost> {
-    let pricing = lookup(provider, model)?;
-    let cache_create = pricing.cache_creation_input_token_cost.unwrap_or(0.0);
-    let cache_read = pricing.cache_read_input_token_cost.unwrap_or(0.0);
-    let input = pricing.input_cost_per_token.unwrap_or(0.0);
-    let output = pricing.output_cost_per_token.unwrap_or(0.0);
-
-    // WHY: LiteLLM's `input_cost_per_token` is the price for *uncached*
-    // input tokens. Anthropic's `Usage::input_tokens` already excludes
-    // cached reads and cache writes, so summing them here doesn't
-    // double-count. Token counts in practice are well under 2^53 — f64
-    // representation is exact for any value any provider would return.
-    #[allow(clippy::cast_precision_loss)]
-    let usd = (usage.input_tokens as f64) * input
-        + (usage.output_tokens as f64) * output
-        + (usage.cache_creation_input_tokens as f64) * cache_create
-        + (usage.cached_input_tokens as f64) * cache_read;
-    Some(Cost::new(usd))
+/// The parsed pricing table, keyed by `LiteLLM` model name. Build it once
+/// with [`PricingTable::vendored`] and share it with whoever computes cost.
+#[derive(Clone, Debug)]
+pub struct PricingTable {
+    by_model: HashMap<String, ModelPricing>,
 }
 
-/// Look up a model's pricing entry. `LiteLLM` keys some models bare
-/// (`gpt-4o-mini`, `claude-sonnet-4-5-20250929`) and some prefixed
-/// (`groq/llama-3.3-70b-versatile`). Try the bare key first, then prefixed.
-fn lookup(provider: ProviderKind, model: &str) -> Option<&'static ModelPricing> {
-    let table = table();
-    if let Some(p) = table.get(model)
-        && pricing_matches_provider(p, provider)
-    {
-        return Some(p);
-    }
-    let prefixed = format!("{}/{}", provider.as_str(), model);
-    table.get(prefixed.as_str())
-}
-
-/// `LiteLLM` uses `litellm_provider` strings that mostly match our `ProviderKind`
-/// names but don't always — e.g. `vertex_ai-...` for some Gemini variants.
-/// We accept a prefix match on the provider's own name to avoid pulling the
-/// wrong row when two providers ship a same-named model.
-fn pricing_matches_provider(p: &ModelPricing, provider: ProviderKind) -> bool {
-    match p.litellm_provider.as_deref() {
-        None => true,
-        Some(name) => {
-            name.starts_with(provider.as_str()) || alternate_provider_names(provider).contains(name)
-        }
-    }
-}
-
-fn alternate_provider_names(provider: ProviderKind) -> HashSet<&'static str> {
-    match provider {
-        ProviderKind::Gemini => ["vertex_ai-language-models", "vertex_ai"]
-            .into_iter()
-            .collect(),
-        _ => HashSet::new(),
-    }
-}
-
-/// Force-load the vendored pricing table. Cheap on hit (just touches
-/// the `OnceLock`), expensive on miss (~9k JSON entries to deserialize
-/// — measurably slow in debug builds). Cli calls this during boot so
-/// the first chat completion doesn't pay for it on the request path.
-pub fn warm() {
-    let _ = table();
-}
-
-fn table() -> &'static std::collections::HashMap<String, ModelPricing> {
-    static TABLE: OnceLock<std::collections::HashMap<String, ModelPricing>> = OnceLock::new();
-    TABLE.get_or_init(|| {
+impl PricingTable {
+    /// Parse the vendored `LiteLLM` snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vendored `model_prices.json` is not valid JSON.
+    pub fn vendored() -> Result<Self, PricingParseError> {
         // WHY: the vendored file has one non-pricing entry (`sample_spec`)
         // used by LiteLLM as schema documentation; deserializing it as
         // `ModelPricing` fails because its fields are descriptive strings,
         // not numbers. Parse to `serde_json::Value` first and skip rows
         // that don't deserialize cleanly.
         let raw: serde_json::Value =
-            serde_json::from_str(RAW_PRICES).expect("vendored model_prices.json is valid JSON");
+            serde_json::from_str(RAW_PRICES).map_err(|source| PricingParseError { source })?;
         let serde_json::Value::Object(map) = raw else {
-            return std::collections::HashMap::default();
+            return Ok(Self {
+                by_model: HashMap::default(),
+            });
         };
-        map.into_iter()
+        let by_model = map
+            .into_iter()
             .filter_map(|(k, v)| {
                 if k == "sample_spec" {
                     return None;
@@ -141,13 +157,46 @@ fn table() -> &'static std::collections::HashMap<String, ModelPricing> {
                     .ok()
                     .map(|p| (k, p))
             })
-            .collect()
-    })
+            .collect();
+        Ok(Self { by_model })
+    }
+
+    /// Compute cost from token usage. Returns `None` when the model isn't in
+    /// the pricing table — caller decides whether to log, default to zero, or
+    /// surface the gap.
+    #[must_use]
+    pub fn cost_for(&self, provider: ProviderKind, model: &str, usage: &Usage) -> Option<Cost> {
+        self.lookup(provider, model).map(|p| p.cost_of(usage))
+    }
+
+    /// Look up a model's pricing entry. `LiteLLM` keys some models bare
+    /// (`gpt-4o-mini`, `claude-sonnet-4-5-20250929`) and some prefixed
+    /// (`groq/llama-3.3-70b-versatile`). Try the bare key first, then prefixed.
+    fn lookup(&self, provider: ProviderKind, model: &str) -> Option<&ModelPricing> {
+        if let Some(p) = self.by_model.get(model)
+            && p.matches_provider(provider)
+        {
+            return Some(p);
+        }
+        let prefixed = format!("{}/{}", provider.as_str(), model);
+        self.by_model.get(prefixed.as_str())
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("vendored model_prices.json is not valid JSON: {source}")]
+pub struct PricingParseError {
+    #[source]
+    source: serde_json::Error,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn table() -> PricingTable {
+        PricingTable::vendored().expect("vendored table parses")
+    }
 
     #[test]
     fn known_anthropic_model_returns_nonzero_cost() {
@@ -157,12 +206,13 @@ mod tests {
             total_tokens: 1_500,
             ..Default::default()
         };
-        let cost = cost_for(
-            ProviderKind::Anthropic,
-            "claude-sonnet-4-5-20250929",
-            &usage,
-        )
-        .expect("known model");
+        let cost = table()
+            .cost_for(
+                ProviderKind::Anthropic,
+                "claude-sonnet-4-5-20250929",
+                &usage,
+            )
+            .expect("known model");
         assert!(cost.usd > 0.0, "cost should be positive: {}", cost.usd);
     }
 
@@ -174,7 +224,11 @@ mod tests {
             total_tokens: 2,
             ..Default::default()
         };
-        assert!(cost_for(ProviderKind::Openai, "totally-made-up-model", &usage).is_none());
+        assert!(
+            table()
+                .cost_for(ProviderKind::Openai, "totally-made-up-model", &usage)
+                .is_none()
+        );
     }
 
     #[test]
@@ -185,8 +239,9 @@ mod tests {
             total_tokens: 2_000,
             ..Default::default()
         };
-        let cost =
-            cost_for(ProviderKind::Groq, "llama-3.3-70b-versatile", &usage).expect("prefixed key");
+        let cost = table()
+            .cost_for(ProviderKind::Groq, "llama-3.3-70b-versatile", &usage)
+            .expect("prefixed key");
         assert!(cost.usd > 0.0);
     }
 
@@ -204,18 +259,21 @@ mod tests {
             total_tokens: 1_000,
             ..Default::default()
         };
-        let with_c = cost_for(
-            ProviderKind::Anthropic,
-            "claude-sonnet-4-5-20250929",
-            &with_cache,
-        )
-        .expect("known model");
-        let without_c = cost_for(
-            ProviderKind::Anthropic,
-            "claude-sonnet-4-5-20250929",
-            &without_cache,
-        )
-        .expect("known model");
+        let table = table();
+        let with_c = table
+            .cost_for(
+                ProviderKind::Anthropic,
+                "claude-sonnet-4-5-20250929",
+                &with_cache,
+            )
+            .expect("known model");
+        let without_c = table
+            .cost_for(
+                ProviderKind::Anthropic,
+                "claude-sonnet-4-5-20250929",
+                &without_cache,
+            )
+            .expect("known model");
         assert!(with_c.usd > without_c.usd);
     }
 }

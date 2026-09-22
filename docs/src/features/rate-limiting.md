@@ -57,7 +57,7 @@ If a metadata value isn't a valid non-negative integer, the server returns `400 
 {
   "error": {
     "type": "invalid_request",
-    "message": "metadata key 'tokens_per_hour' must be a non-negative integer, got 'abc'"
+    "message": "metadata key 'tokens_per_hour' must be a non-negative integer, got 'abc': invalid digit found in string"
   }
 }
 ```

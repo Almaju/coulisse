@@ -48,17 +48,14 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    /// Resolve the configured bind address and port into a [`SocketAddr`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BindError`] if `bind` is not a valid IP address.
-    pub fn socket_addr(&self) -> Result<SocketAddr, BindError> {
-        let ip: IpAddr = self.bind.parse().map_err(|source| BindError {
-            source,
-            value: self.bind.clone(),
-        })?;
-        Ok(SocketAddr::new(ip, self.port))
+    /// Apply transport-level layers (currently just the request body cap) to
+    /// the fully composed application router. A no-op when `max_body_bytes`
+    /// is unset, leaving axum's default limit untouched.
+    pub fn apply_layers(&self, router: Router) -> Router {
+        match self.max_body_bytes {
+            None => router,
+            Some(bytes) => router.layer(DefaultBodyLimit::max(bytes)),
+        }
     }
 
     /// Build the multi-threaded tokio runtime this config describes. Honors
@@ -79,14 +76,17 @@ impl ServerConfig {
         builder.build()
     }
 
-    /// Apply transport-level layers (currently just the request body cap) to
-    /// the fully composed application router. A no-op when `max_body_bytes`
-    /// is unset, leaving axum's default limit untouched.
-    pub fn apply_layers(&self, router: Router) -> Router {
-        match self.max_body_bytes {
-            None => router,
-            Some(bytes) => router.layer(DefaultBodyLimit::max(bytes)),
-        }
+    /// Resolve the configured bind address and port into a [`SocketAddr`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindError`] if `bind` is not a valid IP address.
+    pub fn socket_addr(&self) -> Result<SocketAddr, BindError> {
+        let ip: IpAddr = self.bind.parse().map_err(|source| BindError {
+            source,
+            value: self.bind.clone(),
+        })?;
+        Ok(SocketAddr::new(ip, self.port))
     }
 }
 

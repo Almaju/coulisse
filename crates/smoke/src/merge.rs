@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::SmokeTestConfig;
 use crate::store::DynamicSmokeRow;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Dynamic,
     Override,
@@ -78,7 +78,7 @@ pub fn merge(yaml: &[SmokeTestConfig], db: &[DynamicSmokeRow]) -> (Vec<MergedSmo
     (merged, report)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminSource {
     Dynamic,
     Override,

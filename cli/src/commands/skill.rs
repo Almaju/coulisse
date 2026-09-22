@@ -19,6 +19,45 @@ pub enum Tool {
     Codex,
 }
 
+impl Tool {
+    /// Ask on stdin which tool to install for; an empty answer picks the
+    /// first choice.
+    fn prompt() -> Result<Self, SkillError> {
+        let choices: &[(&str, Self, &str)] = &[
+            (
+                "1",
+                Self::ClaudeCode,
+                "Claude Code  — /coulisse slash command",
+            ),
+            ("2", Self::Codex, "Codex        — AGENTS.md instructions"),
+        ];
+
+        println!("Which AI coding tool do you use?");
+        for (n, _, label) in choices {
+            println!("  {n}. {label}");
+        }
+        print!("Choice [1]: ");
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        let input = line.trim();
+
+        match if input.is_empty() { "1" } else { input } {
+            "1" | "claude-code" | "claude" => Ok(Self::ClaudeCode),
+            "2" | "codex" => Ok(Self::Codex),
+            other => Err(SkillError::UnknownTool(other.to_string())),
+        }
+    }
+
+    fn install(&self, global: bool) -> Result<(), SkillError> {
+        match self {
+            Self::ClaudeCode => install_claude_code(global),
+            Self::Codex => install_codex(global),
+        }
+    }
+}
+
 impl fmt::Display for Tool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -33,77 +72,45 @@ pub struct Options {
     pub tool: Option<Tool>,
 }
 
+impl Options {
+    /// # Errors
+    ///
+    /// Returns an error if the selection cannot be read or the skill file
+    /// cannot be written.
+    pub fn run(&self) -> Result<(), SkillError> {
+        let tool = match &self.tool {
+            Some(t) => t.clone(),
+            None => Tool::prompt()?,
+        };
+        tool.install(self.global)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
-    #[error("$HOME is not set; cannot resolve the global skill directory")]
-    NoHomeDir,
-    #[error("unknown tool '{0}'; supported: claude-code, codex")]
-    UnknownTool(String),
     #[error("failed to create directory {path}: {source}")]
     CreateDir {
         path: String,
         #[source]
         source: io::Error,
     },
+    #[error("$HOME is not set; cannot resolve the global skill directory")]
+    NoHomeDir(#[source] std::env::VarError),
+    #[error("failed to read selection: {0}")]
+    Stdin(#[from] io::Error),
+    #[error("unknown tool '{0}'; supported: claude-code, codex")]
+    UnknownTool(String),
     #[error("failed to write skill file {path}: {source}")]
     Write {
         path: String,
         #[source]
         source: io::Error,
     },
-    #[error("failed to read selection: {0}")]
-    Stdin(#[from] io::Error),
-}
-
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-pub fn run(opts: &Options) -> Result<(), SkillError> {
-    let tool = match &opts.tool {
-        Some(t) => t.clone(),
-        None => prompt_tool()?,
-    };
-    install(&tool, opts.global)
-}
-
-fn prompt_tool() -> Result<Tool, SkillError> {
-    let choices: &[(&str, Tool, &str)] = &[
-        (
-            "1",
-            Tool::ClaudeCode,
-            "Claude Code  — /coulisse slash command",
-        ),
-        ("2", Tool::Codex, "Codex        — AGENTS.md instructions"),
-    ];
-
-    println!("Which AI coding tool do you use?");
-    for (n, _, label) in choices {
-        println!("  {n}. {label}");
-    }
-    print!("Choice [1]: ");
-    io::stdout().flush()?;
-
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    let input = line.trim();
-
-    match if input.is_empty() { "1" } else { input } {
-        "1" | "claude-code" | "claude" => Ok(Tool::ClaudeCode),
-        "2" | "codex" => Ok(Tool::Codex),
-        other => Err(SkillError::UnknownTool(other.to_string())),
-    }
-}
-
-fn install(tool: &Tool, global: bool) -> Result<(), SkillError> {
-    match tool {
-        Tool::ClaudeCode => install_claude_code(global),
-        Tool::Codex => install_codex(global),
-    }
 }
 
 fn install_claude_code(global: bool) -> Result<(), SkillError> {
     let dir = if global {
-        home()?.join(".claude").join("commands")
+        home_from_env()?.join(".claude").join("commands")
     } else {
         PathBuf::from(".claude").join("commands")
     };
@@ -114,7 +121,7 @@ fn install_claude_code(global: bool) -> Result<(), SkillError> {
 
 fn install_codex(global: bool) -> Result<(), SkillError> {
     let path = if global {
-        home()?.join(".codex").join("instructions.md")
+        home_from_env()?.join(".codex").join("instructions.md")
     } else {
         PathBuf::from("AGENTS.md")
     };
@@ -139,8 +146,10 @@ fn write_file(path: &std::path::Path, content: &str) -> Result<(), SkillError> {
     Ok(())
 }
 
-fn home() -> Result<PathBuf, SkillError> {
+/// The user's home directory as `$HOME` reports it; the one environment
+/// read this command makes.
+fn home_from_env() -> Result<PathBuf, SkillError> {
     std::env::var("HOME")
         .map(PathBuf::from)
-        .map_err(|_| SkillError::NoHomeDir)
+        .map_err(SkillError::NoHomeDir)
 }

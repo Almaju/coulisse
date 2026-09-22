@@ -12,13 +12,13 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 use nix::unistd::setsid;
 
-use crate::commands::serve;
+use crate::commands::serve::{self, ServeError};
 use crate::commands::status::pid_alive;
 use crate::paths::StatePaths;
 
@@ -28,6 +28,9 @@ const READY_FILENAME: &str = "ready";
 // before the listener binds; pick a deadline that comfortably covers a
 // cold start so we don't false-timeout a legitimate boot.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often the ready wait re-checks the child. The timeout is expressed
+/// as a number of these polls so the wait never reads the clock.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
@@ -46,7 +49,7 @@ pub enum StartError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error(transparent)]
-    Serve(Box<dyn std::error::Error>),
+    Serve(#[from] ServeError),
     #[error(
         "server failed to come up within {duration:?}\n  log: {log_path}\n--- recent server output ---\n{tail}"
     )]
@@ -62,132 +65,168 @@ pub struct Options {
     pub foreground: bool,
 }
 
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-pub fn run(config_path: &Path, opts: &Options) -> Result<(), StartError> {
-    if !config_path.exists() {
-        return Err(StartError::ConfigMissing(config_path.display().to_string()));
-    }
-    let paths = StatePaths::for_config(config_path);
-
-    if opts.detached_child {
-        return run_as_detached_child(config_path, &paths);
-    }
-    if opts.foreground {
-        return run_foreground(config_path, &paths);
-    }
-    spawn_detached(config_path, &paths)
-}
-
-fn run_foreground(config_path: &Path, paths: &StatePaths) -> Result<(), StartError> {
-    if let Some(pid) = read_pid(&paths.pid)
-        && pid_alive(pid)
-    {
-        return Err(StartError::AlreadyRunning(pid));
-    }
-    fs::create_dir_all(&paths.dir)?;
-    write_pid(&paths.pid, current_pid())?;
-    let result = serve_blocking(config_path, || {});
-    let _ = fs::remove_file(&paths.pid);
-    result
-}
-
-/// Variant of foreground that runs after self-respawn: the parent has
-/// already redirected stdio and we just need to write the pid and serve.
-/// The `on_ready` callback (a touch on the `ready` marker file) is how
-/// the launching parent knows the server has actually bound its port.
-fn run_as_detached_child(config_path: &Path, paths: &StatePaths) -> Result<(), StartError> {
-    write_pid(&paths.pid, current_pid())?;
-    let ready = paths.dir.join(READY_FILENAME);
-    let ready_signal = ready.clone();
-    let result = serve_blocking(config_path, move || {
-        let _ = File::create(&ready_signal);
-    });
-    let _ = fs::remove_file(&paths.pid);
-    let _ = fs::remove_file(&ready);
-    result
-}
-
-fn serve_blocking(config_path: &Path, on_ready: impl FnOnce() + Send) -> Result<(), StartError> {
-    serve::run_blocking(config_path, on_ready).map_err(StartError::Serve)
-}
-
-fn spawn_detached(config_path: &Path, paths: &StatePaths) -> Result<(), StartError> {
-    if let Some(pid) = read_pid(&paths.pid)
-        && pid_alive(pid)
-    {
-        return Err(StartError::AlreadyRunning(pid));
-    }
-    // NOTE: stale state from a previous crash — replace both files so
-    // we never observe a pre-existing ready marker and false-positive.
-    let _ = fs::remove_file(&paths.pid);
-    let ready = paths.dir.join(READY_FILENAME);
-    let _ = fs::remove_file(&ready);
-
-    fs::create_dir_all(&paths.dir)?;
-    let log = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&paths.log)?;
-    // WHY: record the log size before spawn so on failure we can surface
-    // only this run's output, not noise from previous runs.
-    let log_offset = log.metadata().map_or(0, |m| m.len());
-    let log_err = log.try_clone()?;
-
-    let exe = env::current_exe()?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("start")
-        .arg("--config")
-        .arg(config_path)
-        .arg(DETACH_FLAG)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err));
-    unsafe {
-        cmd.pre_exec(|| {
-            // WHY: detach from controlling terminal so SIGHUP from the
-            // launching shell doesn't kill the server.
-            setsid().map_err(io::Error::from)?;
-            Ok(())
-        });
-    }
-    let mut child = cmd.spawn()?;
-    let child_pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
-
-    let deadline = Instant::now() + READY_TIMEOUT;
-    // Wait for the child to touch the ready marker, which it only does
-    // after `TcpListener::bind` returns inside `serve::run`. Anything
-    // that fails before bind — config parse, sqlite open, port-in-use —
-    // exits the child with no marker, and `try_wait` surfaces the log.
-    loop {
-        if ready.exists() {
-            break;
+impl Options {
+    /// # Errors
+    ///
+    /// Returns an error if the config is missing, a server is already
+    /// running, or the server fails to come up.
+    pub fn run(&self, config_path: &Path) -> Result<(), StartError> {
+        if !config_path.exists() {
+            return Err(StartError::ConfigMissing(config_path.display().to_string()));
         }
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(StartError::ChildExited {
-                log_path: paths.log.display().to_string(),
-                status,
-                tail: read_log_since(&paths.log, log_offset),
+        let paths = StatePaths::for_config(config_path);
+
+        if self.detached_child {
+            return paths.run_as_detached_child();
+        }
+        if self.foreground {
+            return paths.run_foreground();
+        }
+        paths.spawn_detached()
+    }
+}
+
+impl StatePaths {
+    /// Wait for the child to touch the ready marker, which it only does
+    /// after `TcpListener::bind` returns inside `serve::run`. Anything
+    /// that fails before bind — config parse, sqlite open, port-in-use —
+    /// exits the child with no marker, and `try_wait` surfaces the log.
+    /// `Ok(false)` means the child is still booting after `READY_TIMEOUT`
+    /// worth of polls.
+    fn await_ready(
+        &self,
+        ready: &Path,
+        child: &mut Child,
+        log_offset: u64,
+    ) -> Result<bool, StartError> {
+        let polls = READY_TIMEOUT.as_millis() / POLL_INTERVAL.as_millis();
+        for _ in 0..polls {
+            if ready.exists() {
+                return Ok(true);
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(StartError::ChildExited {
+                    log_path: self.log.display().to_string(),
+                    status,
+                    tail: read_log_since(&self.log, log_offset),
+                });
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Ok(ready.exists())
+    }
+
+    /// Remove the pid file and ready marker a previous crash may have
+    /// left behind, so a pre-existing marker can never false-positive the
+    /// ready wait. Returns the marker path.
+    fn clear_stale_markers(&self) -> Result<PathBuf, StartError> {
+        let _ = fs::remove_file(&self.pid);
+        let ready = self.dir.join(READY_FILENAME);
+        let _ = fs::remove_file(&ready);
+        fs::create_dir_all(&self.dir)?;
+        Ok(ready)
+    }
+
+    /// Open the detached log for appending and record its size, so on
+    /// failure only this run's output is surfaced, not noise from
+    /// previous runs.
+    fn open_log(&self) -> Result<DetachedLog, StartError> {
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.log)?;
+        let offset = file.metadata().map_or(0, |m| m.len());
+        Ok(DetachedLog { file, offset })
+    }
+
+    /// Variant of foreground that runs after self-respawn: the parent has
+    /// already redirected stdio and we just need to write the pid and serve.
+    /// The `on_ready` callback (a touch on the `ready` marker file) is how
+    /// the launching parent knows the server has actually bound its port.
+    fn run_as_detached_child(&self) -> Result<(), StartError> {
+        write_pid(&self.pid, current_pid())?;
+        let ready = self.dir.join(READY_FILENAME);
+        let ready_signal = ready.clone();
+        let result = serve::run_blocking(&self.config, move || {
+            let _ = File::create(&ready_signal);
+        })
+        .map_err(StartError::Serve);
+        let _ = fs::remove_file(&self.pid);
+        let _ = fs::remove_file(&ready);
+        result
+    }
+
+    fn run_foreground(&self) -> Result<(), StartError> {
+        if let Some(pid) = read_pid(&self.pid)
+            && pid_alive(pid)
+        {
+            return Err(StartError::AlreadyRunning(pid));
+        }
+        fs::create_dir_all(&self.dir)?;
+        write_pid(&self.pid, current_pid())?;
+        let result = serve::run_blocking(&self.config, || {}).map_err(StartError::Serve);
+        let _ = fs::remove_file(&self.pid);
+        result
+    }
+
+    /// Re-spawn this binary as `coulisse start --detached-child` with
+    /// stdio on the log file and its own session, so SIGHUP from the
+    /// launching shell doesn't kill the server.
+    fn spawn_child(&self, log: DetachedLog) -> Result<Child, StartError> {
+        let log_err = log.file.try_clone()?;
+        let exe = env::current_exe()?;
+        let mut cmd = Command::new(exe);
+        cmd.arg("start")
+            .arg("--config")
+            .arg(&self.config)
+            .arg(DETACH_FLAG)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.file))
+            .stderr(Stdio::from(log_err));
+        unsafe {
+            cmd.pre_exec(|| {
+                setsid().map_err(io::Error::from)?;
+                Ok(())
             });
         }
-        if Instant::now() >= deadline {
+        Ok(cmd.spawn()?)
+    }
+
+    fn spawn_detached(&self) -> Result<(), StartError> {
+        if let Some(pid) = read_pid(&self.pid)
+            && pid_alive(pid)
+        {
+            return Err(StartError::AlreadyRunning(pid));
+        }
+        let ready = self.clear_stale_markers()?;
+        let log = self.open_log()?;
+        let log_offset = log.offset;
+        let mut child = self.spawn_child(log)?;
+        let child_pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
+
+        if !self.await_ready(&ready, &mut child, log_offset)? {
             return Err(StartError::StartTimeout {
                 duration: READY_TIMEOUT,
-                log_path: paths.log.display().to_string(),
-                tail: read_log_since(&paths.log, log_offset),
+                log_path: self.log.display().to_string(),
+                tail: read_log_since(&self.log, log_offset),
             });
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    // WHY: leak the child handle so we don't try to wait/kill on drop.
-    drop(child);
+        // WHY: leak the child handle so we don't try to wait/kill on drop.
+        drop(child);
 
-    println!("coulisse started (pid {child_pid})");
-    println!("  config: {}", config_path.display());
-    println!("  log:    {}", paths.log.display());
-    println!("  stop with: coulisse stop");
-    Ok(())
+        println!("coulisse started (pid {child_pid})");
+        println!("  config: {}", self.config.display());
+        println!("  log:    {}", self.log.display());
+        println!("  stop with: coulisse stop");
+        Ok(())
+    }
+}
+
+/// The detached server's log, opened for appending, and the size it had
+/// before this run started writing to it.
+struct DetachedLog {
+    file: File,
+    offset: u64,
 }
 
 /// Read the log file from `start` to EOF, return the last ~30 lines

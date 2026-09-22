@@ -10,12 +10,15 @@
 
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use sqlx::SqlitePool;
+use tonic::metadata::errors::{InvalidMetadataKey, InvalidMetadataValue};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::{Config, OtlpConfig, OtlpProtocol};
 use crate::sqlite_layer::{SqliteLayer, SqliteLayerGuard};
+
+const DEFAULT_DIRECTIVES: &str = "info,sqlx=warn";
 
 /// Held for the process lifetime. Drops the `SqliteLayer` writer guard
 /// (best-effort drain) and shuts down the OTLP exporter so in-flight
@@ -40,116 +43,150 @@ impl Drop for OtlpGuard {
     }
 }
 
-/// Initialize the global tracing subscriber from `config`. Calls
-/// `tracing_subscriber::registry().init()` internally — must only be
-/// invoked once per process.
-///
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-pub fn init_subscriber(pool: SqlitePool, config: &Config) -> Result<TelemetryGuard, InitError> {
-    use opentelemetry::trace::TracerProvider as _;
+impl Config {
+    /// Initialize the global tracing subscriber from this config. Calls
+    /// `tracing_subscriber::registry().init()` internally — must only be
+    /// invoked once per process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OTLP exporter cannot be built.
+    pub fn init_subscriber(&self, pool: SqlitePool) -> Result<TelemetryGuard, InitError> {
+        use opentelemetry::trace::TracerProvider as _;
 
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn"));
+        let env_filter = env_filter_from_env();
 
-    let fmt_layer = config
-        .fmt
-        .enabled
-        .then(|| fmt::layer().with_target(false).with_writer(std::io::stderr));
+        let fmt_layer = self
+            .fmt
+            .enabled
+            .then(|| fmt::layer().with_target(false).with_writer(std::io::stderr));
 
-    let (sqlite_layer, sqlite_guard) = if config.sqlite.enabled {
-        let (layer, guard) = SqliteLayer::spawn(pool);
-        (Some(layer), Some(guard))
-    } else {
-        (None, None)
-    };
+        let (sqlite_layer, sqlite_guard) = if self.sqlite.enabled {
+            let (layer, guard) = SqliteLayer::spawn(pool);
+            (Some(layer), Some(guard))
+        } else {
+            (None, None)
+        };
 
-    // WHY: OTLP path is built inline so OpenTelemetryLayer's `S` generic
-    // infers from the stacked subscriber type. Extracting to a helper
-    // leaks the layer's type and doesn't compose with the existing
-    // `Layered<...>` chain.
-    if let Some(cfg) = config.otlp.as_ref() {
-        let provider = build_otlp_provider(cfg)?;
-        let tracer = provider.tracer("coulisse");
-        let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .with(sqlite_layer)
-            .with(otlp_layer)
-            .init();
-        Ok(TelemetryGuard {
-            sqlite: sqlite_guard,
-            otlp: Some(OtlpGuard { provider }),
-        })
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .with(sqlite_layer)
-            .init();
-        Ok(TelemetryGuard {
-            sqlite: sqlite_guard,
-            otlp: None,
-        })
+        // WHY: OTLP path is built inline so OpenTelemetryLayer's `S` generic
+        // infers from the stacked subscriber type. Extracting to a helper
+        // leaks the layer's type and doesn't compose with the existing
+        // `Layered<...>` chain.
+        if let Some(cfg) = self.otlp.as_ref() {
+            let provider = cfg.build_provider()?;
+            let tracer = provider.tracer("coulisse");
+            let otlp_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer)
+                .with(sqlite_layer)
+                .with(otlp_layer)
+                .init();
+            Ok(TelemetryGuard {
+                otlp: Some(OtlpGuard { provider }),
+                sqlite: sqlite_guard,
+            })
+        } else {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer)
+                .with(sqlite_layer)
+                .init();
+            Ok(TelemetryGuard {
+                otlp: None,
+                sqlite: sqlite_guard,
+            })
+        }
     }
 }
 
-fn build_otlp_provider(cfg: &OtlpConfig) -> Result<SdkTracerProvider, InitError> {
-    use opentelemetry_otlp::{WithExportConfig, WithHttpConfig, WithTonicConfig};
-    use opentelemetry_sdk::Resource;
-
-    let resource = Resource::builder()
-        .with_service_name(cfg.service_name.clone())
-        .build();
-
-    let exporter = match cfg.protocol {
-        OtlpProtocol::Grpc => {
-            let mut builder = opentelemetry_otlp::SpanExporter::builder()
-                .with_tonic()
-                .with_endpoint(&cfg.endpoint);
-            if !cfg.headers.is_empty() {
-                builder = builder.with_metadata(headers_to_metadata(&cfg.headers)?);
-            }
-            builder.build().map_err(InitError::Otlp)?
-        }
-        OtlpProtocol::HttpBinary => {
-            let mut builder = opentelemetry_otlp::SpanExporter::builder()
-                .with_http()
-                .with_endpoint(&cfg.endpoint);
-            if !cfg.headers.is_empty() {
-                builder = builder.with_headers(cfg.headers.clone());
-            }
-            builder.build().map_err(InitError::Otlp)?
-        }
+/// `RUST_LOG` when set and well-formed, the built-in default otherwise.
+/// A malformed value is reported on stderr: no subscriber exists yet, so
+/// `tracing` cannot carry the message.
+fn env_filter_from_env() -> EnvFilter {
+    let Some(spec) = std::env::var_os(EnvFilter::DEFAULT_ENV) else {
+        return EnvFilter::new(DEFAULT_DIRECTIVES);
     };
-
-    Ok(SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(resource)
-        .build())
+    let spec = spec.to_string_lossy();
+    EnvFilter::try_new(spec.as_ref()).unwrap_or_else(|err| {
+        eprintln!(
+            "telemetry: ignoring {}={spec:?} ({err}); using {DEFAULT_DIRECTIVES:?}",
+            EnvFilter::DEFAULT_ENV
+        );
+        EnvFilter::new(DEFAULT_DIRECTIVES)
+    })
 }
 
-fn headers_to_metadata(
-    headers: &std::collections::HashMap<String, String>,
-) -> Result<tonic::metadata::MetadataMap, InitError> {
-    let mut metadata = tonic::metadata::MetadataMap::new();
-    for (k, v) in headers {
-        let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
-            k.parse().map_err(|_| InitError::InvalidHeader(k.clone()))?;
-        let value = v.parse().map_err(|_| InitError::InvalidHeader(k.clone()))?;
-        metadata.insert(key, value);
+impl OtlpConfig {
+    fn build_provider(&self) -> Result<SdkTracerProvider, InitError> {
+        use opentelemetry_otlp::{WithExportConfig, WithHttpConfig, WithTonicConfig};
+        use opentelemetry_sdk::Resource;
+
+        let resource = Resource::builder()
+            .with_service_name(self.service_name.clone())
+            .build();
+
+        let exporter = match self.protocol {
+            OtlpProtocol::Grpc => {
+                let mut builder = opentelemetry_otlp::SpanExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(&self.endpoint);
+                if !self.headers.is_empty() {
+                    builder = builder.with_metadata(self.grpc_metadata()?);
+                }
+                builder.build()?
+            }
+            OtlpProtocol::HttpBinary => {
+                let mut builder = opentelemetry_otlp::SpanExporter::builder()
+                    .with_http()
+                    .with_endpoint(&self.endpoint);
+                if !self.headers.is_empty() {
+                    builder = builder.with_headers(self.headers.clone());
+                }
+                builder.build()?
+            }
+        };
+
+        Ok(SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(resource)
+            .build())
     }
-    Ok(metadata)
+
+    fn grpc_metadata(&self) -> Result<tonic::metadata::MetadataMap, InitError> {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        for (k, v) in &self.headers {
+            let key: tonic::metadata::MetadataKey<tonic::metadata::Ascii> =
+                k.parse().map_err(|source| InitError::InvalidHeaderName {
+                    name: k.clone(),
+                    source,
+                })?;
+            let value = v.parse().map_err(|source| InitError::InvalidHeaderValue {
+                name: k.clone(),
+                source,
+            })?;
+            metadata.insert(key, value);
+        }
+        Ok(metadata)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    #[error("invalid OTLP header: {0}")]
-    InvalidHeader(String),
+    #[error("invalid OTLP header name {name:?}: {source}")]
+    InvalidHeaderName {
+        name: String,
+        #[source]
+        source: InvalidMetadataKey,
+    },
+    #[error("invalid OTLP header value for {name:?}: {source}")]
+    InvalidHeaderValue {
+        name: String,
+        #[source]
+        source: InvalidMetadataValue,
+    },
     #[error("OTLP pipeline init failed: {0}")]
-    Otlp(opentelemetry_otlp::ExporterBuildError),
+    Otlp(#[from] opentelemetry_otlp::ExporterBuildError),
 }
 
 impl TelemetryGuard {

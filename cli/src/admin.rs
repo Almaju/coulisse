@@ -167,10 +167,10 @@ pub struct HomeState {
     pub telemetry: Arc<telemetry::Sink>,
 }
 
-pub fn home_router(state: HomeState) -> Router {
-    Router::new()
-        .route("/overview", get(home))
-        .with_state(state)
+impl HomeState {
+    pub fn router(self) -> Router {
+        Router::new().route("/overview", get(home)).with_state(self)
+    }
 }
 
 #[derive(Template)]
@@ -185,13 +185,9 @@ struct HomePage {
 
 const DAY_SECS: u64 = 86_400;
 
-async fn home(State(state): State<HomeState>) -> Result<Html<String>, StatusCode> {
+async fn home(State(state): State<HomeState>) -> Result<Html<String>, PageError> {
     let since = coulisse_core::now_secs().saturating_sub(DAY_SECS);
-    let activity = state
-        .telemetry
-        .recent_activity_counts(since)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let activity = state.telemetry.recent_activity_counts(since).await?;
     let settings = state.settings.load_full();
     let html = HomePage {
         agent_count: settings.agent_count,
@@ -200,15 +196,66 @@ async fn home(State(state): State<HomeState>) -> Result<Html<String>, StatusCode
         turns_24h: activity.turn_count,
         users_24h: activity.user_count,
     }
-    .render()
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .render()?;
     Ok(Html(html))
+}
+
+/// Why a cli-owned studio page could not be produced. Every variant is a
+/// server-side failure: the cause is logged and the client sees a 500.
+#[derive(Debug, thiserror::Error)]
+pub enum PageError {
+    #[error("page render failed: {0}")]
+    Render(#[from] askama::Error),
+    #[error("telemetry read failed: {0}")]
+    Telemetry(#[from] telemetry::TelemetryError),
+}
+
+impl IntoResponse for PageError {
+    fn into_response(self) -> Response {
+        tracing::error!(error = %self, "studio page request failed");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
 }
 
 #[derive(Clone)]
 pub struct ProviderRow {
     pub kind: String,
     pub masked_key: String,
+}
+
+/// How long-term user memory is configured, as the settings page shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserStateSummary {
+    Custom,
+    Disabled,
+    Enabled,
+}
+
+impl UserStateSummary {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Custom => "Enabled (custom)",
+            Self::Disabled => "Disabled",
+            Self::Enabled => "Enabled (auto)",
+        }
+    }
+}
+
+impl From<&memory::UserStateYaml> for UserStateSummary {
+    fn from(yaml: &memory::UserStateYaml) -> Self {
+        match yaml {
+            memory::UserStateYaml::Configured(_) => Self::Custom,
+            memory::UserStateYaml::OnOff(false) => Self::Disabled,
+            memory::UserStateYaml::OnOff(true) => Self::Enabled,
+        }
+    }
+}
+
+impl std::fmt::Display for UserStateSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 #[derive(Clone)]
@@ -220,7 +267,7 @@ pub struct SettingsView {
     pub judge_count: usize,
     pub memory_extractor: String,
     pub memory_storage: String,
-    pub memory_user_state: String,
+    pub memory_user_state: UserStateSummary,
     pub providers: Vec<ProviderRow>,
     pub telemetry_fmt: bool,
     pub telemetry_otlp: String,
@@ -230,18 +277,12 @@ pub struct SettingsView {
 impl SettingsView {
     #[must_use]
     pub fn from_config(config: &Config, memory_config: &memory::MemoryConfig) -> Self {
-        let auth_admin = auth_summary(config.auth.admin.as_ref());
-        let auth_proxy = auth_summary(config.auth.proxy.as_ref());
+        let auth_admin = Self::auth_summary(config.auth.admin.as_ref());
+        let auth_proxy = Self::auth_summary(config.auth.proxy.as_ref());
 
         let memory_storage = match &memory_config.backend {
             memory::BackendConfig::InMemory => "In-memory (ephemeral)".to_string(),
             memory::BackendConfig::Sqlite { path } => path.display().to_string(),
-        };
-
-        let memory_user_state = match &config.memory.user_state {
-            memory::UserStateYaml::Configured(_) => "Enabled (custom)".to_string(),
-            memory::UserStateYaml::OnOff(false) => "Disabled".to_string(),
-            memory::UserStateYaml::OnOff(true) => "Enabled (auto)".to_string(),
         };
 
         let memory_extractor = memory_config.extractor.as_ref().map_or_else(
@@ -252,17 +293,9 @@ impl SettingsView {
         let mut providers: Vec<ProviderRow> = config
             .providers
             .iter()
-            .map(|(kind, cfg)| {
-                let key = &cfg.api_key;
-                let masked_key = if key.len() > 4 {
-                    format!("····{}", &key[key.len() - 4..])
-                } else {
-                    "····".to_string()
-                };
-                ProviderRow {
-                    kind: kind.as_str().to_string(),
-                    masked_key,
-                }
+            .map(|(kind, cfg)| ProviderRow {
+                kind: kind.as_str().to_string(),
+                masked_key: mask_key(&cfg.api_key),
             })
             .collect();
         providers.sort_by(|a, b| a.kind.cmp(&b.kind));
@@ -275,7 +308,7 @@ impl SettingsView {
             judge_count: config.judges.len(),
             memory_extractor,
             memory_storage,
-            memory_user_state,
+            memory_user_state: UserStateSummary::from(&config.memory.user_state),
             providers,
             telemetry_fmt: config.telemetry.fmt.enabled,
             telemetry_otlp: config
@@ -285,6 +318,31 @@ impl SettingsView {
                 .map_or_else(|| "Disabled".to_string(), |o| o.endpoint.clone()),
             telemetry_sqlite: config.telemetry.sqlite.enabled,
         }
+    }
+
+    fn auth_summary(scope: Option<&auth::ScopeConfig>) -> String {
+        match scope {
+            None => "Unauthenticated".to_string(),
+            Some(s) => {
+                if s.basic.is_some() {
+                    "Basic auth".to_string()
+                } else if let Some(oidc) = &s.oidc {
+                    format!("OIDC ({})", oidc.issuer_url)
+                } else {
+                    "Unconfigured".to_string()
+                }
+            }
+        }
+    }
+}
+
+/// Show only the last four characters of an API key, or nothing at all
+/// for keys too short to keep a tail private.
+pub(crate) fn mask_key(key: &str) -> String {
+    if key.len() > 4 {
+        format!("····{}", &key[key.len() - 4..])
+    } else {
+        "····".to_string()
     }
 }
 
@@ -297,27 +355,13 @@ struct SettingsPage {
 /// # Errors
 ///
 /// Returns an error if the underlying operation fails.
-pub async fn settings(State(view): State<SettingsHandle>) -> Result<Html<String>, StatusCode> {
+pub async fn settings(State(view): State<SettingsHandle>) -> Result<Html<String>, PageError> {
     let snapshot = view.load_full();
     let html = SettingsPage {
         settings: (*snapshot).clone(),
     }
-    .render()
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .render()?;
     Ok(Html(html))
-}
-
-/// Whole-file config endpoint. `GET` returns the YAML (or JSON when
-/// the client asks for JSON via Accept). `PUT` replaces the file
-/// atomically with the supplied body — accepts JSON, YAML, or form
-/// encoding via the same body extractor. Power-user equivalent of
-/// `git pull && systemctl reload coulisse`, but via HTTP and with the
-/// validator running before anything touches disk.
-pub fn config_router(store: Arc<ConfigStore>) -> Router {
-    Router::new()
-        .route("/config", get(get_config).put(put_config))
-        .route("/config/edit", get(edit_config))
-        .with_state(store)
 }
 
 #[derive(Template)]
@@ -326,92 +370,101 @@ struct ConfigEditPage {
     yaml: String,
 }
 
-/// Full-file YAML editor page. Posts to `PUT /config` (`write_all`),
-/// which validates the whole config before replacing the file.
-async fn edit_config(
-    State(store): State<Arc<ConfigStore>>,
-) -> Result<Html<String>, ConfigEndpointError> {
-    let yaml = std::fs::read_to_string(store.path())
-        .map_err(|err| ConfigEndpointError::Io(err.to_string()))?;
-    let html = ConfigEditPage { yaml }
-        .render()
-        .map_err(|err| ConfigEndpointError::Io(err.to_string()))?;
-    Ok(Html(html))
-}
-
-async fn get_config(
-    State(store): State<Arc<ConfigStore>>,
-    fmt: ResponseFormat,
-) -> Result<Response, ConfigEndpointError> {
-    let bytes =
-        std::fs::read(store.path()).map_err(|err| ConfigEndpointError::Io(err.to_string()))?;
-    if matches!(fmt, ResponseFormat::Json) {
-        let value: Value = serde_yaml::from_slice(&bytes)
-            .map_err(|err| ConfigEndpointError::Parse(err.to_string()))?;
-        let json: serde_json::Value = serde_json::to_value(&value)
-            .map_err(|err| ConfigEndpointError::Parse(err.to_string()))?;
-        return Ok(Json(json).into_response());
+impl ConfigStore {
+    /// Whole-file config endpoint. `GET` returns the YAML (or JSON when
+    /// the client asks for JSON via Accept). `PUT` replaces the file
+    /// atomically with the supplied body — accepts JSON, YAML, or form
+    /// encoding via the same body extractor. Power-user equivalent of
+    /// `git pull && systemctl reload coulisse`, but via HTTP and with the
+    /// validator running before anything touches disk.
+    pub fn file_router(self: Arc<Self>) -> Router {
+        Router::new()
+            .route("/config", get(Self::get_config).put(Self::put_config))
+            .route("/config/edit", get(Self::edit_config))
+            .with_state(self)
     }
-    let text =
-        String::from_utf8(bytes).map_err(|err| ConfigEndpointError::Parse(err.to_string()))?;
-    let mut resp = text.into_response();
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/yaml; charset=utf-8"),
-    );
-    Ok(resp)
-}
 
-async fn put_config(
-    State(store): State<Arc<ConfigStore>>,
-    EitherFormOrJson(value): EitherFormOrJson<Value>,
-) -> Result<Response, ConfigEndpointError> {
-    store
-        .write_all(value)
-        .await
-        .map_err(ConfigEndpointError::from)?;
-    Ok(StatusCode::NO_CONTENT.into_response())
-}
+    /// Full-file YAML editor page. Posts to `PUT /config` (`write_all`),
+    /// which validates the whole config before replacing the file.
+    #[allow(clippy::unused_async)] // axum handlers must return a future
+    async fn edit_config(
+        State(store): State<Arc<Self>>,
+    ) -> Result<Html<String>, ConfigEndpointError> {
+        let yaml =
+            std::fs::read_to_string(store.path()).map_err(|source| ConfigEndpointError::Read {
+                path: store.path().display().to_string(),
+                source,
+            })?;
+        let html = ConfigEditPage { yaml }.render()?;
+        Ok(Html(html))
+    }
 
-#[derive(Debug)]
-pub enum ConfigEndpointError {
-    Invalid(String),
-    Io(String),
-    Parse(String),
-}
-
-impl From<ConfigPersistError> for ConfigEndpointError {
-    fn from(err: ConfigPersistError) -> Self {
-        match err {
-            ConfigPersistError::Invalid(m) => Self::Invalid(m),
-            ConfigPersistError::Io(m) => Self::Io(m),
-            ConfigPersistError::Parse(m) => Self::Parse(m),
+    async fn get_config(
+        State(store): State<Arc<Self>>,
+        fmt: ResponseFormat,
+    ) -> Result<Response, ConfigEndpointError> {
+        let bytes = std::fs::read(store.path()).map_err(|source| ConfigEndpointError::Read {
+            path: store.path().display().to_string(),
+            source,
+        })?;
+        if matches!(fmt, ResponseFormat::Json) {
+            let value: Value = serde_yaml::from_slice(&bytes)?;
+            let json: serde_json::Value = serde_json::to_value(&value)?;
+            return Ok(Json(json).into_response());
         }
+        let text = String::from_utf8(bytes)?;
+        let mut resp = text.into_response();
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/yaml; charset=utf-8"),
+        );
+        Ok(resp)
     }
+
+    async fn put_config(
+        State(store): State<Arc<Self>>,
+        EitherFormOrJson(value): EitherFormOrJson<Value>,
+    ) -> Result<Response, ConfigEndpointError> {
+        store.write_all(value).await?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigEndpointError {
+    #[error("config file is not valid UTF-8: {0}")]
+    Encoding(#[from] std::string::FromUtf8Error),
+    #[error("config file is not valid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    Persist(#[from] ConfigPersistError),
+    #[error("failed to read {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("config editor render failed: {0}")]
+    Render(#[from] askama::Error),
+    #[error("config file is not valid YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
 }
 
 impl IntoResponse for ConfigEndpointError {
     fn into_response(self) -> Response {
-        let (status, msg) = match self {
-            Self::Invalid(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
-            Self::Io(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
-            Self::Parse(m) => (StatusCode::BAD_REQUEST, m),
-        };
-        (status, msg).into_response()
-    }
-}
-
-fn auth_summary(scope: Option<&auth::ScopeConfig>) -> String {
-    match scope {
-        None => "Unauthenticated".to_string(),
-        Some(s) => {
-            if s.basic.is_some() {
-                "Basic auth".to_string()
-            } else if let Some(oidc) = &s.oidc {
-                format!("OIDC ({})", oidc.issuer_url)
-            } else {
-                "Unconfigured".to_string()
+        let status = match &self {
+            Self::Encoding(_)
+            | Self::Json(_)
+            | Self::Yaml(_)
+            | Self::Persist(ConfigPersistError::Parse(_)) => StatusCode::BAD_REQUEST,
+            Self::Persist(ConfigPersistError::Invalid(_)) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Persist(ConfigPersistError::Io(_)) | Self::Read { .. } | Self::Render(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
             }
+        };
+        if status.is_server_error() {
+            tracing::error!(error = %self, "config endpoint failed");
         }
+        (status, self.to_string()).into_response()
     }
 }

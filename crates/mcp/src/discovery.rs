@@ -62,84 +62,92 @@ struct ProtectedResourceMetadata {
     scopes_supported: Vec<String>,
 }
 
-/// Fetch and parse OAuth metadata for the MCP server.
-///
-/// `mcp_url` is the full MCP endpoint URL (`https://ai.todoist.net/mcp`).
-/// First attempts RFC 9728 protected-resource discovery to find the
-/// authorization server issuer + the resource-specific scopes; falls back
-/// to assuming the MCP origin is itself the authorization server.
-///
-/// When the protected-resource metadata declares its own `scopes_supported`,
-/// that list **replaces** the one returned by the AS — Todoist's AS lists
-/// admin scopes (`dev:app_console`, `billing:*`) the MCP endpoint won't
-/// grant, and requesting them yields `invalid_scope` at the consent screen.
-///
-/// # Errors
-///
-/// Returns `McpError::Discovery` if the URL is malformed, the request
-/// fails, or the response is not valid metadata.
-pub(crate) async fn fetch(mcp_url: &str) -> Result<AuthMetadata, McpError> {
-    let mcp_origin = origin_of(mcp_url)?;
-    let prm = fetch_protected_resource_metadata(&mcp_origin).await;
-    let as_issuer = prm
-        .as_ref()
-        .and_then(|p| p.authorization_servers.first().cloned())
-        .unwrap_or_else(|| mcp_origin.clone());
-    let mut metadata = fetch_authorization_server_metadata(&as_issuer).await?;
-    if let Some(p) = prm
-        && !p.scopes_supported.is_empty()
-    {
-        metadata.scopes_supported = p.scopes_supported;
+impl AuthMetadata {
+    /// Fetch and parse OAuth metadata for the MCP server.
+    ///
+    /// `mcp_url` is the full MCP endpoint URL (`https://ai.todoist.net/mcp`).
+    /// First attempts RFC 9728 protected-resource discovery to find the
+    /// authorization server issuer + the resource-specific scopes; falls back
+    /// to assuming the MCP origin is itself the authorization server.
+    ///
+    /// When the protected-resource metadata declares its own `scopes_supported`,
+    /// that list **replaces** the one returned by the AS — Todoist's AS lists
+    /// admin scopes (`dev:app_console`, `billing:*`) the MCP endpoint won't
+    /// grant, and requesting them yields `invalid_scope` at the consent screen.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::Discovery` if the URL is malformed, the request
+    /// fails, or the response is not valid metadata.
+    pub(crate) async fn discover(mcp_url: &str) -> Result<Self, McpError> {
+        let mcp_origin = origin_of(mcp_url)?;
+        let prm = ProtectedResourceMetadata::fetch(&mcp_origin).await;
+        let as_issuer = prm
+            .as_ref()
+            .and_then(|p| p.authorization_servers.first().cloned())
+            .unwrap_or_else(|| mcp_origin.clone());
+        let mut metadata = Self::fetch(&as_issuer).await?;
+        if let Some(p) = prm
+            && !p.scopes_supported.is_empty()
+        {
+            metadata.scopes_supported = p.scopes_supported;
+        }
+        Ok(metadata)
     }
-    Ok(metadata)
+
+    /// RFC 8414: fetch the authorization server metadata published by
+    /// `issuer`.
+    async fn fetch(issuer: &str) -> Result<Self, McpError> {
+        let issuer_trimmed = issuer.trim_end_matches('/');
+        let url = format!("{issuer_trimmed}/.well-known/oauth-authorization-server");
+        let response = reqwest::get(&url)
+            .await
+            .map_err(|source| McpError::Discovery {
+                source: Box::new(source),
+                url: url.clone(),
+            })?;
+        if !response.status().is_success() {
+            return Err(McpError::DiscoveryStatus {
+                status: response.status().as_u16(),
+                url,
+            });
+        }
+        response
+            .json::<Self>()
+            .await
+            .map_err(|source| McpError::Discovery {
+                source: Box::new(source),
+                url,
+            })
+    }
 }
 
-/// RFC 9728: fetch the MCP origin's protected-resource metadata. Returns
-/// `None` if the endpoint is absent or unparseable — callers fall back to
-/// assuming the MCP origin doubles as the auth server.
-async fn fetch_protected_resource_metadata(mcp_origin: &str) -> Option<ProtectedResourceMetadata> {
-    let url = format!("{mcp_origin}/.well-known/oauth-protected-resource");
-    let response = reqwest::get(&url).await.ok()?;
-    if !response.status().is_success() {
-        return None;
+impl ProtectedResourceMetadata {
+    /// RFC 9728: fetch the MCP origin's protected-resource metadata. Returns
+    /// `None` if the endpoint is absent or unparseable — callers fall back to
+    /// assuming the MCP origin doubles as the auth server.
+    async fn fetch(mcp_origin: &str) -> Option<Self> {
+        let url = format!("{mcp_origin}/.well-known/oauth-protected-resource");
+        let response = reqwest::get(&url).await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.json::<Self>().await.ok()
     }
-    response.json::<ProtectedResourceMetadata>().await.ok()
-}
-
-async fn fetch_authorization_server_metadata(issuer: &str) -> Result<AuthMetadata, McpError> {
-    let issuer_trimmed = issuer.trim_end_matches('/');
-    let url = format!("{issuer_trimmed}/.well-known/oauth-authorization-server");
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|source| McpError::Discovery {
-            url: url.clone(),
-            source: Box::new(source),
-        })?;
-    if !response.status().is_success() {
-        return Err(McpError::DiscoveryStatus {
-            status: response.status().as_u16(),
-            url,
-        });
-    }
-    response
-        .json::<AuthMetadata>()
-        .await
-        .map_err(|source| McpError::Discovery {
-            url,
-            source: Box::new(source),
-        })
 }
 
 /// Strip path + query + fragment from a URL, returning `scheme://authority`.
 /// Used as the well-known origin per RFC 8414 §3.
 fn origin_of(url: &str) -> Result<String, McpError> {
-    let parsed = reqwest::Url::parse(url).map_err(|_| McpError::DiscoveryInvalidUrl {
+    let parsed = reqwest::Url::parse(url).map_err(|source| McpError::DiscoveryInvalidUrl {
+        source: Box::new(source),
         url: url.to_string(),
     })?;
     let scheme = parsed.scheme();
     let authority = parsed
         .host_str()
         .ok_or_else(|| McpError::DiscoveryInvalidUrl {
+            source: "URL has no host".into(),
             url: url.to_string(),
         })?;
     let port_suffix = parsed.port().map_or(String::new(), |p| format!(":{p}"));

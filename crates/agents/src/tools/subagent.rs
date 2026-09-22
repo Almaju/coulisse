@@ -115,8 +115,8 @@ impl ToolDyn for SubagentTool {
         let description = self.purpose.clone();
         Box::pin(async move {
             ToolDefinition {
-                name,
                 description,
+                name,
                 parameters: json!({
                     "type": "object",
                     "properties": {

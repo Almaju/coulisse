@@ -96,7 +96,7 @@ impl Banner<'_> {
     }
 
     fn print_agents(&self, s: &Style) {
-        section_header(s, "Agents", self.agents.len());
+        s.section_header("Agents", self.agents.len());
         if self.agents.is_empty() {
             println!("    {}none configured{}", s.dim, s.reset);
             println!();
@@ -124,7 +124,7 @@ impl Banner<'_> {
     }
 
     fn print_experiments(&self, s: &Style) {
-        section_header(s, "Experiments", self.experiments.len());
+        s.section_header("Experiments", self.experiments.len());
         if self.experiments.is_empty() {
             println!("    {}none configured{}", s.dim, s.reset);
             println!();
@@ -162,7 +162,7 @@ impl Banner<'_> {
     }
 
     fn print_judges(&self, s: &Style) {
-        section_header(s, "Judges", self.judges.len());
+        s.section_header("Judges", self.judges.len());
         if self.judges.is_empty() {
             println!("    {}none configured{}", s.dim, s.reset);
             println!();
@@ -185,15 +185,6 @@ impl Banner<'_> {
         }
         println!();
     }
-}
-
-fn section_header(s: &Style, name: &str, count: usize) {
-    println!(
-        "  {bold}{name}{reset} {dim}({count}){reset}",
-        bold = s.bold,
-        reset = s.reset,
-        dim = s.dim,
-    );
 }
 
 struct Style {
@@ -235,5 +226,14 @@ impl Style {
         } else {
             url.to_string()
         }
+    }
+
+    fn section_header(&self, name: &str, count: usize) {
+        println!(
+            "  {bold}{name}{reset} {dim}({count}){reset}",
+            bold = self.bold,
+            reset = self.reset,
+            dim = self.dim,
+        );
     }
 }

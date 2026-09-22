@@ -20,9 +20,9 @@ pub use conversation::{
     CallError, Completion, CompletionStream, Conversation, MAX_TURNS, Message, Role, StreamEvent,
     ToolCallKind, Usage,
 };
-pub use pricing::{Cost, cost_for, warm as warm_pricing};
+pub use pricing::{Cost, PricingParseError, PricingTable};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, schemars::JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, schemars::JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Anthropic,

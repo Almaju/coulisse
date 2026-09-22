@@ -1,8 +1,8 @@
 use coulisse_core::migrate::{self, SchemaMigrator};
-use coulisse_core::{ToolCallKind, TurnId, UserId, i64_to_u32, u64_to_i64};
+use coulisse_core::{ToolCallKind, TurnId, UserId, i64_to_u32, i64_to_u64, u64_to_i64};
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::TelemetryError;
@@ -16,14 +16,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "telemetry";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("telemetry has only one schema version")
-    }
 }
 
 pub struct ActivityCounts {
@@ -83,7 +75,7 @@ impl Sink {
         .bind(correlation_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_event).collect()
+        rows.iter().map(Event::from_row).collect()
     }
 
     /// # Errors
@@ -110,6 +102,25 @@ impl Sink {
         })
     }
 
+    /// Most recent tool calls across all users, newest first. Used by the
+    /// `/admin/live` activity feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub async fn recent_tool_calls(&self, limit: u32) -> Result<Vec<ToolCall>, TelemetryError> {
+        let rows = sqlx::query(
+            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
+             turn_id, user_id FROM tool_calls \
+             ORDER BY created_at DESC \
+             LIMIT ?",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(ToolCall::from_row).collect()
+    }
+
     /// Turn ids for `user_id`, most recently active first, capped at `limit`.
     /// Used by the studio UI to list a user's recent turns without loading
     /// the full event stream.
@@ -133,16 +144,8 @@ impl Sink {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter()
-            .map(|row| {
-                let s: String = row.try_get("correlation_id")?;
-                let uuid = Uuid::parse_str(&s).map_err(|_| {
-                    TelemetryError::Database(sqlx::Error::Decode(
-                        format!("invalid correlation_id uuid: {s}").into(),
-                    ))
-                })?;
-                Ok(TurnId(uuid))
-            })
+        rows.iter()
+            .map(|row| uuid_column(row, "correlation_id").map(TurnId))
             .collect()
     }
 
@@ -184,7 +187,7 @@ impl Sink {
             out.push(ToolCallStats {
                 call_count: i64_to_u32(call_count),
                 error_count: i64_to_u32(error_count),
-                kind: parse_tool_call_kind(&kind)?,
+                kind: kind.parse::<ToolCallKind>()?,
                 tool_name,
                 user_count: i64_to_u32(user_count),
             });
@@ -211,26 +214,7 @@ impl Sink {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_tool_call).collect()
-    }
-
-    /// Most recent tool calls across all users, newest first. Used by the
-    /// `/admin/live` activity feed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying operation fails.
-    pub async fn recent_tool_calls(&self, limit: u32) -> Result<Vec<ToolCall>, TelemetryError> {
-        let rows = sqlx::query(
-            "SELECT args, created_at, error, id, kind, ordinal, result, tool_name, \
-             turn_id, user_id FROM tool_calls \
-             ORDER BY created_at DESC \
-             LIMIT ?",
-        )
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_tool_call).collect()
+        rows.iter().map(ToolCall::from_row).collect()
     }
 
     /// Tool calls for one turn, in insertion order. Used by the studio
@@ -250,7 +234,7 @@ impl Sink {
         .bind(turn_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_tool_call).collect()
+        rows.iter().map(ToolCall::from_row).collect()
     }
 
     /// All tool calls for one user, chronological. Studio uses this to
@@ -270,95 +254,64 @@ impl Sink {
         .bind(user_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_tool_call).collect()
+        rows.iter().map(ToolCall::from_row).collect()
     }
 }
 
-fn row_to_tool_call(row: &SqliteRow) -> Result<ToolCall, TelemetryError> {
-    let args: String = row.try_get("args")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let error: Option<String> = row.try_get("error")?;
-    let id: String = row.try_get("id")?;
-    let kind: String = row.try_get("kind")?;
-    let ordinal: i64 = row.try_get("ordinal")?;
-    let result: Option<String> = row.try_get("result")?;
-    let tool_name: String = row.try_get("tool_name")?;
-    let turn_id: String = row.try_get("turn_id")?;
-    let user_id: String = row.try_get("user_id")?;
-
-    let parse_uuid = |field: &str, s: &str| {
-        Uuid::parse_str(s).map_err(|_| {
-            TelemetryError::Database(sqlx::Error::Decode(
-                format!("invalid uuid in {field}: {s}").into(),
-            ))
-        })
-    };
-
-    Ok(ToolCall {
-        args,
-        created_at: created_at.try_into().unwrap_or(0u64),
-        error,
-        id: ToolCallId(parse_uuid("id", &id)?),
-        kind: parse_tool_call_kind(&kind)?,
-        ordinal: i64_to_u32(ordinal),
-        result,
-        tool_name,
-        turn_id: TurnId(parse_uuid("turn_id", &turn_id)?),
-        user_id: UserId(parse_uuid("user_id", &user_id)?),
+/// Read `column` as a UUID stored in its hyphenated text form.
+fn uuid_column(row: &SqliteRow, column: &'static str) -> Result<Uuid, TelemetryError> {
+    let value: String = row.try_get(column)?;
+    Uuid::parse_str(&value).map_err(|source| TelemetryError::InvalidUuid {
+        column,
+        source,
+        value,
     })
 }
 
-fn parse_tool_call_kind(s: &str) -> Result<ToolCallKind, TelemetryError> {
-    match s {
-        "mcp" => Ok(ToolCallKind::Mcp),
-        "subagent" => Ok(ToolCallKind::Subagent),
-        other => Err(TelemetryError::Database(sqlx::Error::Decode(
-            format!("unknown tool_call kind: {other}").into(),
-        ))),
+impl ToolCall {
+    fn from_row(row: &SqliteRow) -> Result<Self, TelemetryError> {
+        let args: String = row.try_get("args")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let error: Option<String> = row.try_get("error")?;
+        let kind: String = row.try_get("kind")?;
+        let ordinal: i64 = row.try_get("ordinal")?;
+        let result: Option<String> = row.try_get("result")?;
+        let tool_name: String = row.try_get("tool_name")?;
+        Ok(Self {
+            args,
+            created_at: i64_to_u64(created_at),
+            error,
+            id: ToolCallId(uuid_column(row, "id")?),
+            kind: kind.parse::<ToolCallKind>()?,
+            ordinal: i64_to_u32(ordinal),
+            result,
+            tool_name,
+            turn_id: TurnId(uuid_column(row, "turn_id")?),
+            user_id: UserId(uuid_column(row, "user_id")?),
+        })
     }
 }
 
-fn row_to_event(row: &SqliteRow) -> Result<Event, TelemetryError> {
-    let correlation_id: String = row.try_get("correlation_id")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let duration_ms: Option<i64> = row.try_get("duration_ms")?;
-    let id: String = row.try_get("id")?;
-    let kind: String = row.try_get("kind")?;
-    let parent_id: Option<String> = row.try_get("parent_id")?;
-    let payload: String = row.try_get("payload")?;
-    let user_id: String = row.try_get("user_id")?;
-
-    let parse_uuid = |field: &str, s: &str| {
-        Uuid::parse_str(s).map_err(|_| {
-            TelemetryError::Database(sqlx::Error::Decode(
-                format!("invalid uuid in {field}: {s}").into(),
-            ))
+impl Event {
+    fn from_row(row: &SqliteRow) -> Result<Self, TelemetryError> {
+        let created_at: i64 = row.try_get("created_at")?;
+        let duration_ms: Option<i64> = row.try_get("duration_ms")?;
+        let kind: String = row.try_get("kind")?;
+        let has_parent: Option<String> = row.try_get("parent_id")?;
+        let payload: String = row.try_get("payload")?;
+        let parent_id = match has_parent {
+            None => None,
+            Some(_) => Some(EventId(uuid_column(row, "parent_id")?)),
+        };
+        Ok(Self {
+            correlation_id: TurnId(uuid_column(row, "correlation_id")?),
+            created_at: i64_to_u64(created_at),
+            duration_ms: duration_ms.map(i64_to_u64),
+            id: EventId(uuid_column(row, "id")?),
+            kind: kind.parse::<EventKind>()?,
+            parent_id,
+            payload: serde_json::from_str(&payload)?,
+            user_id: UserId(uuid_column(row, "user_id")?),
         })
-    };
-
-    Ok(Event {
-        correlation_id: TurnId(parse_uuid("correlation_id", &correlation_id)?),
-        created_at: created_at.try_into().unwrap_or(0u64),
-        duration_ms: duration_ms.map(|d| d.try_into().unwrap_or(0u64)),
-        id: EventId(parse_uuid("id", &id)?),
-        kind: kind_from_str(&kind)?,
-        parent_id: parent_id
-            .as_deref()
-            .map(|s| parse_uuid("parent_id", s).map(EventId))
-            .transpose()?,
-        payload: serde_json::from_str(&payload)?,
-        user_id: UserId(parse_uuid("user_id", &user_id)?),
-    })
-}
-
-fn kind_from_str(s: &str) -> Result<EventKind, TelemetryError> {
-    match s {
-        "llm_call" => Ok(EventKind::LlmCall),
-        "tool_call" => Ok(EventKind::ToolCall),
-        "turn_finish" => Ok(EventKind::TurnFinish),
-        "turn_start" => Ok(EventKind::TurnStart),
-        other => Err(TelemetryError::Database(sqlx::Error::Decode(
-            format!("unknown event kind: {other}").into(),
-        ))),
     }
 }

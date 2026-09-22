@@ -12,62 +12,105 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Multipart, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
+use coulisse_core::UserId;
 use serde_json::json;
-use storage::{FileObject, StorageError, Store};
+use storage::{FileId, FileObject, InvalidFileId, StorageError, Store, Upload};
 
-pub fn router(store: Arc<Store>) -> Router {
-    Router::new()
-        .route("/v1/files", post(upload).get(list))
-        .route("/v1/files/{id}", get(get_metadata).delete(delete_file))
-        .route("/v1/files/{id}/content", get(get_content))
-        .with_state(store)
+/// The `/v1/files` API over one file store.
+pub struct FilesApi {
+    pub store: Arc<Store>,
+}
+
+impl FilesApi {
+    pub fn router(self) -> Router {
+        Router::new()
+            .route("/v1/files", post(upload).get(list))
+            .route("/v1/files/{id}", get(get_metadata).delete(delete_file))
+            .route("/v1/files/{id}/content", get(get_content))
+            .with_state(self.store)
+    }
+}
+
+/// The multipart fields of a `POST /v1/files` body as they arrive.
+#[derive(Default)]
+struct UploadForm {
+    file: Option<UploadedFile>,
+    purpose: Option<String>,
+}
+
+struct UploadedFile {
+    bytes: Vec<u8>,
+    content_type: String,
+    filename: String,
+}
+
+impl UploadForm {
+    async fn read(mut multipart: Multipart) -> Result<Self, FilesError> {
+        let mut form = Self::default();
+        while let Some(field) =
+            multipart
+                .next_field()
+                .await
+                .map_err(|source| FilesError::Multipart {
+                    context: "multipart error",
+                    source,
+                })?
+        {
+            match field.name() {
+                Some("purpose") => {
+                    form.purpose =
+                        Some(field.text().await.map_err(|source| FilesError::Multipart {
+                            context: "purpose read error",
+                            source,
+                        })?);
+                }
+                Some("file") => {
+                    let filename = field.file_name().unwrap_or("upload").to_string();
+                    let content_type = field
+                        .content_type()
+                        .unwrap_or("application/octet-stream")
+                        .to_string();
+                    let bytes = field
+                        .bytes()
+                        .await
+                        .map_err(|source| FilesError::Multipart {
+                            context: "file read error",
+                            source,
+                        })?
+                        .to_vec();
+                    form.file = Some(UploadedFile {
+                        bytes,
+                        content_type,
+                        filename,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(form)
+    }
+
+    fn into_upload(self) -> Result<Upload, FilesError> {
+        let file = self.file.ok_or(FilesError::MissingFile)?;
+        Ok(Upload {
+            bytes: file.bytes,
+            content_type: file.content_type,
+            filename: file.filename,
+            purpose: self.purpose.unwrap_or_else(|| "assistants".to_string()),
+            user_id: UserId::from_string("default"),
+        })
+    }
 }
 
 async fn upload(
     State(store): State<Arc<Store>>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<FileObject>, FilesError> {
-    let mut file_bytes: Option<(String, String, Vec<u8>)> = None; // (filename, content_type, bytes)
-    let mut purpose = String::from("assistants");
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| FilesError::BadRequest(format!("multipart error: {e}")))?
-    {
-        match field.name() {
-            Some("purpose") => {
-                purpose = field
-                    .text()
-                    .await
-                    .map_err(|e| FilesError::BadRequest(format!("purpose read error: {e}")))?;
-            }
-            Some("file") => {
-                let filename = field.file_name().unwrap_or("upload").to_string();
-                let content_type = field
-                    .content_type()
-                    .unwrap_or("application/octet-stream")
-                    .to_string();
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| FilesError::BadRequest(format!("file read error: {e}")))?
-                    .to_vec();
-                file_bytes = Some((filename, content_type, bytes));
-            }
-            _ => {}
-        }
-    }
-
-    let (filename, content_type, bytes) =
-        file_bytes.ok_or_else(|| FilesError::BadRequest("missing 'file' field".into()))?;
-
-    let meta = store
-        .upload(&filename, &content_type, &purpose, "default", bytes)
-        .await?;
+    let upload = UploadForm::read(multipart).await?.into_upload()?;
+    let meta = store.upload(upload).await?;
     Ok(Json(meta))
 }
 
@@ -80,6 +123,7 @@ async fn get_metadata(
     State(store): State<Arc<Store>>,
     Path(id): Path<String>,
 ) -> Result<Json<FileObject>, FilesError> {
+    let id: FileId = id.parse()?;
     let meta = store.get_metadata(&id).await?;
     Ok(Json(meta))
 }
@@ -88,51 +132,52 @@ async fn get_content(
     State(store): State<Arc<Store>>,
     Path(id): Path<String>,
 ) -> Result<Response, FilesError> {
+    let id: FileId = id.parse()?;
     let (meta, bytes) = store.get_content(&id).await?;
-    let content_type = meta.content_type.clone();
+    let content_type = HeaderValue::from_str(&meta.content_type)
+        .unwrap_or(HeaderValue::from_static("application/octet-stream"));
     let body = Bytes::from(bytes);
-    Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            content_type
-                .parse::<axum::http::HeaderValue>()
-                .unwrap_or_else(|_| {
-                    axum::http::HeaderValue::from_static("application/octet-stream")
-                }),
-        )],
-        body,
-    )
-        .into_response())
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response())
 }
 
 async fn delete_file(
     State(store): State<Arc<Store>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, FilesError> {
-    store.delete(&id).await?;
+    let file_id: FileId = id.parse()?;
+    store.delete(&file_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id, "object": "file" })))
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum FilesError {
-    BadRequest(String),
-    Storage(StorageError),
-}
-
-impl From<StorageError> for FilesError {
-    fn from(err: StorageError) -> Self {
-        Self::Storage(err)
-    }
+    #[error("{0}")]
+    InvalidId(#[from] InvalidFileId),
+    #[error("missing 'file' field")]
+    MissingFile,
+    #[error("{context}: {source}")]
+    Multipart {
+        context: &'static str,
+        #[source]
+        source: axum::extract::multipart::MultipartError,
+    },
+    #[error(transparent)]
+    Storage(#[from] StorageError),
 }
 
 impl IntoResponse for FilesError {
     fn into_response(self) -> Response {
         match self {
-            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
+            Self::InvalidId(
+                InvalidFileId::MissingPrefix(id) | InvalidFileId::Uuid { raw: id, .. },
+            ) => (StatusCode::NOT_FOUND, format!("file '{id}' not found")).into_response(),
+            Self::MissingFile | Self::Multipart { .. } => {
+                (StatusCode::BAD_REQUEST, self.to_string()).into_response()
+            }
             Self::Storage(StorageError::NotFound(id)) => {
                 (StatusCode::NOT_FOUND, format!("file '{id}' not found")).into_response()
             }
-            Self::Storage(StorageError::FileTooLarge { size, limit }) => (
+            Self::Storage(StorageError::FileTooLarge { limit, size }) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("file is {size} bytes; limit is {limit} bytes"),
             )
@@ -143,6 +188,7 @@ impl IntoResponse for FilesError {
             )
                 .into_response(),
             Self::Storage(err) => {
+                tracing::error!(error = %err, "file store request failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }
         }

@@ -7,7 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("embedder provider '{provider}' client init failed: {message}")]
-    ClientInit { provider: String, message: String },
+    ClientInit { message: String, provider: String },
     #[error("failed to create database directory {path}: {source}")]
     CreateDir {
         path: PathBuf,
@@ -37,8 +37,19 @@ pub enum MemoryError {
     Embed(#[from] EmbedError),
     #[error("no messages in conversation")]
     EmptyConversation,
+    #[error("stored data corrupted: invalid {column}: {source}")]
+    InvalidId {
+        column: &'static str,
+        source: uuid::Error,
+    },
     #[error("stored data corrupted: {0}")]
     RowDecode(String),
+}
+
+impl MemoryError {
+    pub(crate) fn invalid_id(column: &'static str) -> impl FnOnce(uuid::Error) -> Self {
+        move |source| Self::InvalidId { column, source }
+    }
 }
 
 #[derive(Debug, Error)]

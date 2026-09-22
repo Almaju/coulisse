@@ -10,7 +10,7 @@
 //! Each scope can be unauthenticated, HTTP Basic, OIDC, or — on the proxy
 //! scope only — self-issued API tokens. Cli applies [`Auth::wrap_proxy`] /
 //! [`Auth::wrap_admin`] to the respective routers at startup. The token
-//! scheme also owns a studio admin page ([`admin::router`]) for minting,
+//! scheme also owns a studio admin page ([`admin::TokenAdmin`]) for minting,
 //! monitoring spend on, and revoking tokens.
 
 pub mod admin;
@@ -20,9 +20,11 @@ mod token;
 
 pub use auth::{Auth, AuthenticatedPrincipal, AuthenticatedToken, BuildError};
 pub use config::{
-    BasicConfig, Config, ConfigError, IdentityMode, OidcConfig, ScopeConfig, TokensConfig,
+    BasicConfig, ClientId, ClientSecret, Config, ConfigError, IdentityMode, IssuerUrl,
+    McpAdminConfig, McpAdminToken, McpConsumerSecret, OidcConfig, Password, RedirectUrl,
+    ScopeConfig, TokensConfig,
 };
 pub use token::{
-    Budget, BudgetError, BudgetParseError, MintedToken, StoreError, TokenId, TokenRecord,
-    TokenStore, VerifiedToken, micro_to_usd,
+    Budget, BudgetError, BudgetKind, BudgetParseError, MintedToken, NewToken, StoreError, TokenId,
+    TokenRecord, TokenSecret, TokenStore, VerifiedToken, micro_to_usd,
 };

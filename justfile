@@ -12,12 +12,22 @@ dev:
     cargo watch -x run &
     wait
 
+fmt:
+    rabot fmt
+    cargo fmt --all
+
 install:
     cargo install cargo-watch --locked
     cargo install mdbook --locked
+    cargo install cargo-machete --locked
+    cargo install --git https://github.com/almaju/rabot --tag v0.1.4 --locked
 
 lint:
+    cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked
+    rabot fmt --check
+    rabot check --strict
+    cargo machete --with-metadata
 
 local:
     cargo install --path cli --bin coulisse --locked

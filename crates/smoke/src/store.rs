@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::migrate::{self, SchemaMigrator, UpgradeError};
 use coulisse_core::{MessageId, i64_to_u32, i64_to_u64, now_secs, u64_to_i64};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -24,7 +24,7 @@ impl SchemaMigrator for Schema {
         &self,
         from_version: &str,
         conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
+    ) -> Result<(), UpgradeError> {
         match from_version {
             "0.1.0" => {
                 conn.execute(
@@ -39,7 +39,10 @@ impl SchemaMigrator for Schema {
                 .await?;
                 Ok(())
             }
-            _ => unreachable!("unknown smoke schema version: {from_version}"),
+            other => Err(UpgradeError::UnknownStep {
+                from: other.to_string(),
+                name: Self::NAME,
+            }),
         }
     }
 }
@@ -124,7 +127,7 @@ impl SmokeStore {
         .bind(run_id.0.to_string())
         .fetch_optional(&self.pool)
         .await?;
-        row.as_ref().map(row_to_run).transpose()
+        row.as_ref().map(StoredRun::from_row).transpose()
     }
 
     /// # Errors
@@ -137,7 +140,7 @@ impl SmokeStore {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_dynamic_smoke).collect()
+        rows.iter().map(DynamicSmokeRow::from_row).collect()
     }
 
     /// # Errors
@@ -152,7 +155,7 @@ impl SmokeStore {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_run).collect()
+        rows.iter().map(StoredRun::from_row).collect()
     }
 
     /// # Errors
@@ -172,7 +175,7 @@ impl SmokeStore {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_run).collect()
+        rows.iter().map(StoredRun::from_row).collect()
     }
 
     /// # Errors
@@ -189,7 +192,7 @@ impl SmokeStore {
         .bind(run_id.0.to_string())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_message).collect()
+        rows.iter().map(StoredMessage::from_row).collect()
     }
 
     /// # Errors
@@ -353,82 +356,103 @@ impl SmokeStore {
     }
 }
 
-fn row_to_run(row: &SqliteRow) -> Result<StoredRun, SmokeStoreError> {
-    let agent_resolved: Option<String> = row.try_get("agent_resolved")?;
-    let ended_at: Option<i64> = row.try_get("ended_at")?;
-    let error: Option<String> = row.try_get("error")?;
-    let experiment: Option<String> = row.try_get("experiment")?;
-    let id: String = row.try_get("id")?;
-    let started_at: i64 = row.try_get("started_at")?;
-    let status: String = row.try_get("status")?;
-    let test_name: String = row.try_get("test_name")?;
-    let total_turns: i64 = row.try_get("total_turns")?;
-    let status = RunStatus::parse(&status)
-        .ok_or_else(|| SmokeStoreError::RowDecode(format!("invalid status: {status}")))?;
-    Ok(StoredRun {
-        agent_resolved,
-        ended_at: ended_at.map(i64_to_u64),
-        error,
-        experiment,
-        id: RunId(parse_uuid(&id, "run id")?),
-        started_at: i64_to_u64(started_at),
-        status,
-        test_name,
-        total_turns: i64_to_u32(total_turns),
-    })
+impl StoredRun {
+    fn from_row(row: &SqliteRow) -> Result<Self, SmokeStoreError> {
+        let agent_resolved: Option<String> = row.try_get("agent_resolved")?;
+        let ended_at: Option<i64> = row.try_get("ended_at")?;
+        let error: Option<String> = row.try_get("error")?;
+        let experiment: Option<String> = row.try_get("experiment")?;
+        let id: String = row.try_get("id")?;
+        let started_at: i64 = row.try_get("started_at")?;
+        let status: String = row.try_get("status")?;
+        let test_name: String = row.try_get("test_name")?;
+        let total_turns: i64 = row.try_get("total_turns")?;
+        let status = RunStatus::parse(&status)
+            .ok_or_else(|| SmokeStoreError::RowDecode(format!("invalid status: {status}")))?;
+        Ok(Self {
+            agent_resolved,
+            ended_at: ended_at.map(i64_to_u64),
+            error,
+            experiment,
+            id: id.parse().map_err(|source| SmokeStoreError::InvalidUuid {
+                column: "id",
+                source,
+            })?,
+            started_at: i64_to_u64(started_at),
+            status,
+            test_name,
+            total_turns: i64_to_u32(total_turns),
+        })
+    }
 }
 
-fn row_to_message(row: &SqliteRow) -> Result<StoredMessage, SmokeStoreError> {
-    let content: String = row.try_get("content")?;
-    let message_id: Option<String> = row.try_get("message_id")?;
-    let role: String = row.try_get("role")?;
-    let run_id: String = row.try_get("run_id")?;
-    let turn_index: i64 = row.try_get("turn_index")?;
-    let role = TurnRole::parse(&role)
-        .ok_or_else(|| SmokeStoreError::RowDecode(format!("invalid role: {role}")))?;
-    let message_id = match message_id {
-        None => None,
-        Some(s) => Some(MessageId(parse_uuid(&s, "message id")?)),
-    };
-    Ok(StoredMessage {
-        content,
-        message_id,
-        role,
-        run_id: RunId(parse_uuid(&run_id, "run id")?),
-        turn_index: i64_to_u32(turn_index),
-    })
+impl StoredMessage {
+    fn from_row(row: &SqliteRow) -> Result<Self, SmokeStoreError> {
+        let content: String = row.try_get("content")?;
+        let message_id: Option<String> = row.try_get("message_id")?;
+        let role: String = row.try_get("role")?;
+        let run_id: String = row.try_get("run_id")?;
+        let turn_index: i64 = row.try_get("turn_index")?;
+        let role = TurnRole::parse(&role)
+            .ok_or_else(|| SmokeStoreError::RowDecode(format!("invalid role: {role}")))?;
+        let message_id = match message_id {
+            None => None,
+            Some(s) => Some(MessageId(Uuid::parse_str(&s).map_err(|source| {
+                SmokeStoreError::InvalidUuid {
+                    column: "message_id",
+                    source,
+                }
+            })?)),
+        };
+        Ok(Self {
+            content,
+            message_id,
+            role,
+            run_id: run_id
+                .parse()
+                .map_err(|source| SmokeStoreError::InvalidUuid {
+                    column: "run_id",
+                    source,
+                })?,
+            turn_index: i64_to_u32(turn_index),
+        })
+    }
 }
 
-fn parse_uuid(s: &str, label: &str) -> Result<Uuid, SmokeStoreError> {
-    Uuid::parse_str(s).map_err(|e| SmokeStoreError::RowDecode(format!("invalid {label}: {e}")))
-}
-
-fn row_to_dynamic_smoke(row: &SqliteRow) -> Result<DynamicSmokeRow, SmokeStoreError> {
-    let config_json: Option<String> = row.try_get("config_json")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let disabled: i64 = row.try_get("disabled")?;
-    let name: String = row.try_get("name")?;
-    let updated_at: i64 = row.try_get("updated_at")?;
-    let config = match config_json {
-        None => None,
-        Some(s) => Some(
-            serde_json::from_str::<SmokeTestConfig>(&s)
-                .map_err(|e| SmokeStoreError::RowDecode(format!("config_json: {e}")))?,
-        ),
-    };
-    Ok(DynamicSmokeRow {
-        config,
-        created_at,
-        disabled: disabled != 0,
-        name,
-        updated_at,
-    })
+impl DynamicSmokeRow {
+    fn from_row(row: &SqliteRow) -> Result<Self, SmokeStoreError> {
+        let config_json: Option<String> = row.try_get("config_json")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let disabled: i64 = row.try_get("disabled")?;
+        let name: String = row.try_get("name")?;
+        let updated_at: i64 = row.try_get("updated_at")?;
+        let config = match config_json {
+            None => None,
+            Some(s) => Some(
+                serde_json::from_str::<SmokeTestConfig>(&s)
+                    .map_err(|e| SmokeStoreError::RowDecode(format!("config_json: {e}")))?,
+            ),
+        };
+        Ok(Self {
+            config,
+            created_at,
+            disabled: disabled != 0,
+            name,
+            updated_at,
+        })
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum SmokeStoreError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("invalid uuid in column '{column}': {source}")]
+    InvalidUuid {
+        column: &'static str,
+        #[source]
+        source: uuid::Error,
+    },
     #[error("schema migration failed: {0}")]
     Migrate(#[from] coulisse_core::migrate::MigrateError),
     #[error("failed to decode row: {0}")]

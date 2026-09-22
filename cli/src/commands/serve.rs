@@ -3,284 +3,416 @@
 //! process the detached `start` re-spawns into.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agents::{Agents, BootConfig, DynamicAgents, RigAgents};
+use agents::{Agents, AgentsError, BootConfig, DynamicAgents, DynamicAgentsError, RigAgents};
 use arc_swap::ArcSwap;
 use auth::{Auth, IdentityMode, TokenStore};
 use axum::Router;
 use axum::middleware::from_fn;
 use axum::response::Redirect;
 use axum::routing::get;
-use coulisse_core::{AgentResolver, ScoreLookup, SkillCatalog, TaskQueue, TaskStatus};
+use coulisse_core::{
+    AgentResolver, BoxFuture, ScoreLookup, SkillCatalog, TaskQueue, TaskStatus, UserId,
+};
 use experiments::{ExperimentResolver, ExperimentRouter, Experiments};
 use judges::{Judge, JudgeConfig, Judges};
 use limits::Tracker;
 use mcp::{
-    ConnectLinkSigner, McpServers, OAuthRouterState, TokenVault, VaultMigrator, oauth_router,
+    ConnectLinkSigner, McpError, McpServers, OAuthRouterState, PublicBaseUrl, TokenVault,
+    VaultMigrator,
 };
-use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store, UserId};
-use providers::ProviderKind;
+use memory::{BackendConfig, EmbedderConfig, Extractor, MemoryConfig, Store};
+use providers::{PricingTable, ProviderKind};
 use skills::Skills;
 use smoke::{RunDispatcher, SmokeStore};
 use storage::{BlobBackend, FsBackend, QuotaConfig, StorageYaml, Store as FileStore};
 use tasks::Tasks;
 use telemetry::Sink as TelemetrySink;
 use tokio::net::TcpListener;
+use triggers::Triggers;
 
 use crate::admin::shell as admin_shell;
 use crate::banner::Banner;
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::config_store::ConfigStore;
-use crate::memory_resolve;
-use crate::secrets::Secrets;
-use crate::server::{self, AppState};
+use crate::error::ServerError;
+use crate::files::FilesApi;
+use crate::memory_resolve::{MemoryResolveError, MemoryResolver};
+use crate::secrets::{EnvKeys, Secrets, SecretsError};
+use crate::server::{AppState, Identity};
 use crate::smoke_runner::SmokeRunner;
+use crate::workers::Workers;
 
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-///
-/// # Panics
-///
-/// Panics if the boot-time task reaper fails (the only way to reach
-/// this state is filesystem permission errors on the `SQLite` WAL,
-/// which would prevent the server from doing useful work anyway).
-pub fn run_blocking(
-    config_path: &Path,
-    on_ready: impl FnOnce() + Send,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse synchronously so the `server:` slice can size the tokio runtime
-    // before any async work begins — worker count is fixed once the runtime
-    // exists. Config parse failures surface here, before a runtime is even
-    // built.
-    let config = Config::from_path(config_path)?;
-    let runtime = config.server.runtime()?;
-    runtime.block_on(run(config, config_path, on_ready))
+/// Everything that can stop the server from coming up. Each variant is
+/// one boot step, so the message names the subsystem that failed.
+#[derive(Debug, thiserror::Error)]
+pub enum ServeError {
+    #[error("agents: {0}")]
+    Agents(#[from] AgentsError),
+    #[error("auth: {0}")]
+    Auth(#[from] auth::BuildError),
+    #[error("server.bind: {0}")]
+    Bind(#[from] server::BindError),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("config watcher: {0}")]
+    ConfigWatch(#[from] coulisse_core::ConfigPersistError),
+    #[error("dynamic agents: {0}")]
+    DynamicAgents(#[from] DynamicAgentsError),
+    #[error("experiments: {0}")]
+    Experiments(#[from] experiments::ExperimentsError),
+    #[error("file storage: {0}")]
+    FileStore(#[from] storage::StorageError),
+    #[error("judge: {0}")]
+    Judge(#[from] judges::JudgeBuildError),
+    #[error("judges: {0}")]
+    Judges(#[from] judges::JudgeStoreError),
+    #[error("rate limits: {0}")]
+    Limits(#[from] limits::LimitError),
+    #[error("mcp: {0}")]
+    Mcp(#[from] McpError),
+    #[error("memory: {0}")]
+    Memory(#[from] memory::ConfigError),
+    #[error(transparent)]
+    MemoryResolve(#[from] MemoryResolveError),
+    #[error("schema migration: {0}")]
+    Migrate(#[from] coulisse_core::migrate::MigrateError),
+    #[error("pricing: {0}")]
+    Pricing(#[from] providers::PricingParseError),
+    #[error("failed to build the tokio runtime: {0}")]
+    Runtime(#[source] std::io::Error),
+    #[error(transparent)]
+    Secrets(#[from] SecretsError),
+    #[error(transparent)]
+    Server(#[from] ServerError),
+    #[error("skills: {0}")]
+    Skills(#[from] skills::SkillsError),
+    #[error("smoke tests: {0}")]
+    Smoke(#[from] smoke::SmokeStoreError),
+    #[error("tasks: {0}")]
+    Tasks(#[from] tasks::TaskError),
+    #[error("telemetry: {0}")]
+    Telemetry(#[from] telemetry::InitError),
+    #[error("telemetry: {0}")]
+    TelemetrySink(#[from] telemetry::TelemetryError),
+    #[error("api tokens: {0}")]
+    Tokens(#[from] auth::StoreError),
 }
 
-#[allow(clippy::too_many_lines)] // top-level wiring; readable as a flat sequence
-async fn run(
+/// Parse the config synchronously so the `server:` slice can size the
+/// tokio runtime before any async work begins — worker count is fixed
+/// once the runtime exists — then serve until the listener closes.
+///
+/// # Errors
+///
+/// Returns an error if the config cannot be loaded or any boot step fails.
+pub fn run_blocking(config_path: &Path, on_ready: impl FnOnce() + Send) -> Result<(), ServeError> {
+    let config = Config::from_path(config_path)?;
+    let runtime = config.server.runtime().map_err(ServeError::Runtime)?;
+    runtime.block_on(Boot::new(config, config_path).run(on_ready))
+}
+
+/// One server boot: the validated config, where it came from, and the
+/// state directory (`.coulisse/` next to the YAML) that holds everything
+/// Coulisse generates — the `SQLite` database, uploaded files, the MCP
+/// secrets file, the detached log/pid. There are no path knobs to point
+/// these elsewhere.
+struct Boot {
     config: Config,
-    config_path: &Path,
-    on_ready: impl FnOnce() + Send,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let default_user_id = config.default_user_id.as_deref().map(UserId::from_string);
-    // Token auth binds identity to the credential by construction, so it
-    // forces `from_credential` regardless of the (possibly default) `identity`
-    // field — otherwise a tokened request could spoof another user via
-    // `safety_identifier`.
-    let proxy_identity = match config.auth.proxy.as_ref() {
-        Some(scope) if scope.tokens.is_some() => IdentityMode::FromCredential,
-        Some(scope) => scope.identity,
-        None => IdentityMode::default(),
-    };
-    // State dir (`.coulisse/` next to the YAML) holds everything Coulisse
-    // generates: the SQLite database, uploaded files, the MCP secrets file,
-    // the detached log/pid. Keeps state out of the directory beside the
-    // config — and there are no path knobs to point these elsewhere.
-    let state_dir = crate::secrets::state_dir_for(config_path);
-    let memory_config =
-        memory_resolve::resolve_memory(&config.memory, &config.providers, &state_dir)?;
+    config_path: PathBuf,
+    state_dir: PathBuf,
+}
 
-    // WHY: warm the vendored LiteLLM pricing table so the first chat
-    // completion doesn't pay for ~9k JSON entries on the request path.
-    // Off the request path; one-shot at boot.
-    providers::warm_pricing();
-
-    let memory_summary = memory_summary(&memory_config);
-    // Resolve infrastructure secrets (vault encryption + HMAC) only when
-    // an OAuth-enabled MCP server is configured. Priority: env vars >
-    // .coulisse/secrets.env > generated on the fly. Zero-config for
-    // local boots; deploy-friendly via env vars.
-    let mcp_secrets = if config.mcp.values().any(|c| c.oauth.is_some()) {
-        Some(crate::secrets::Secrets::load_or_generate(&state_dir)?)
-    } else {
-        None
-    };
-    let stores = boot_stores(&config, &memory_config, &state_dir, mcp_secrets.as_ref()).await?;
-    // Auth is built after stores so the token scheme can borrow the token
-    // store opened during boot. OIDC discovery (its only network step) still
-    // happens here.
-    let auth = Auth::from_config(config.auth.clone(), Some(stores.token_store.clone())).await?;
-    let _telemetry_guard = telemetry::init_subscriber(stores.pool.clone(), &config.telemetry)?;
-    // Build the per-user connect-link signer once, then thread it into
-    // both the MCP runtime (so `NotConnectedTool` can mint URLs) and the
-    // OAuth route state (so `/mcp/.../connect` validates the same
-    // signature). One signer, two consumers — they must use the same key.
-    let signer = build_connect_link_signer(&config, mcp_secrets.as_ref());
-    let runtime = build_runtime(&config, &memory_config, &stores, signer.clone()).await?;
-    let worker_tasks = Arc::clone(&runtime.tasks);
-    let worker_agents = Arc::clone(&runtime.prompter);
-    let proxy_state = build_proxy_state(default_user_id, proxy_identity, &stores, runtime);
-    // Reap `running` tasks left over from a previous process before workers
-    // start, so PM sees them as `errored` on the next wakeup instead of
-    // believing the work is still in flight. Cutoff = now: any task still
-    // in `running` is by definition orphaned.
-    let now = coulisse_core::now_secs();
-    match TaskStatus::reap_stale_running(
-        Arc::clone(&worker_tasks).as_ref(),
-        now,
-        "process restarted before task completed",
-    )
-    .await
-    {
-        Ok(0) => {}
-        Ok(n) => tracing::info!(reaped = n, "stale running tasks marked errored"),
-        Err(e) => tracing::warn!(%e, "task reap on boot failed; continuing"),
-    }
-    crate::workers::spawn(Arc::clone(&worker_tasks), worker_agents, 4);
-    let trigger_user_id =
-        default_user_id.unwrap_or_else(|| coulisse_core::UserId::from_string("cron"));
-    triggers::spawn_cron(
-        &config.triggers,
-        Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
-        trigger_user_id,
-    );
-    triggers::fire_boot(
-        &config.triggers,
-        Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
-        trigger_user_id,
-    )
-    .await;
-    sidecars::spawn_all(&config.sidecars);
-
-    let addr = config.server.socket_addr()?;
-    print_banner(
-        addr,
-        &auth,
-        &config,
-        &memory_config,
-        &stores,
-        &proxy_state,
-        &memory_summary,
-    );
-
-    // NOTE: lift names that the wiring blocks below still reference.
-    let Stores {
-        agents_list,
-        dynamic_agents,
-        experiments_list,
-        experiments_store,
-        file_store,
-        judge_store,
-        judges_list,
-        memory,
-        mcp_vault,
-        settings_view,
-        smoke_list,
-        smoke_store,
-        telemetry,
-        token_store,
-        yaml_agents,
-        yaml_experiments,
-        yaml_judges,
-        yaml_smoke,
-        ..
-    } = stores;
-
-    // NOTE: ConfigStore is the single point all YAML edits flow through —
-    // admin POSTs, the `PUT /admin/config` handler, hand-edits picked up
-    // by the file watcher. The `on_reload` closure is the seam back into
-    // the in-memory hot state held by feature crates.
-    let on_reload = make_on_reload(ReloadHandles {
-        agents_list: Arc::clone(&agents_list),
-        dynamic_agents: Arc::clone(&dynamic_agents),
-        experiments_list: Arc::clone(&experiments_list),
-        experiments_store: Arc::clone(&experiments_store),
-        judge_store: Arc::clone(&judge_store),
-        judges_list: Arc::clone(&judges_list),
-        settings_view: Arc::clone(&settings_view),
-        smoke_list: Arc::clone(&smoke_list),
-        smoke_store: Arc::clone(&smoke_store),
-        state_dir: state_dir.clone(),
-        yaml_agents: Arc::clone(&yaml_agents),
-        yaml_experiments: Arc::clone(&yaml_experiments),
-        yaml_judges: Arc::clone(&yaml_judges),
-        yaml_smoke: Arc::clone(&yaml_smoke),
-    });
-    let config_path_abs =
-        std::fs::canonicalize(config_path).unwrap_or_else(|_| PathBuf::from(config_path));
-    let config_store = Arc::new(ConfigStore::new(config_path_abs, config.clone(), on_reload));
-    let _watcher_guard = config_store.spawn_watcher()?;
-
-    let admin_router = auth.wrap_admin(build_admin_router(AdminWiring {
-        agents_list: Arc::clone(&agents_list),
-        config_store: Arc::clone(&config_store),
-        dynamic_agents: Arc::clone(&dynamic_agents),
-        experiments_list: Arc::clone(&experiments_list),
-        experiments_store: Arc::clone(&experiments_store),
-        judge_store: Arc::clone(&judge_store),
-        judges_list: Arc::clone(&judges_list),
-        memory: Arc::clone(&memory),
-        proxy_state: Arc::clone(&proxy_state),
-        settings_view,
-        smoke_list: Arc::clone(&smoke_list),
-        smoke_store: Arc::clone(&smoke_store),
-        tasks: Arc::clone(&worker_tasks),
-        telemetry,
-        token_store,
-        yaml_agents,
-        yaml_experiments,
-        yaml_judges,
-        yaml_smoke,
-    }));
-    let proxy_router = auth.wrap_proxy(server::router(proxy_state));
-    let files_router = auth.wrap_proxy(crate::files::router(file_store));
-
-    // Mount OAuth routes outside auth wrappers — they have their own
-    // consumer-secret check (for the admin endpoint) and HMAC-signed
-    // tokens (for the per-user connect link). Uses the same signer the
-    // MCP runtime was built with — both sides must agree on the key.
-    let oauth_routes = match (mcp_vault, signer) {
-        (Some(vault), Some(signer)) => {
-            let consumer_secret = config.auth.mcp_consumer_secret.clone().unwrap_or_default();
-            Some(oauth_router(OAuthRouterState {
-                configs: config.mcp.clone(),
-                consumer_secret,
-                hmac_key: signer.hmac_key.clone(),
-                public_base_url: signer.public_base_url.clone(),
-                vault,
-            }))
+impl Boot {
+    fn new(config: Config, config_path: &Path) -> Self {
+        Self {
+            config,
+            config_path: config_path.to_path_buf(),
+            state_dir: crate::secrets::state_dir_for(config_path),
         }
-        _ => None,
-    };
-
-    // WHY: axum 0.8 nests asymmetrically — `nest("/admin", ...)` matches
-    // the inner `/` route at `/admin`, but a request to `/admin/` returns
-    // 404. Redirect the trailing-slash form so bookmarks don't break.
-    let mut app = Router::new()
-        .merge(proxy_router)
-        .merge(files_router)
-        .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
-        .nest("/admin", admin_router);
-    if let Some(oauth) = oauth_routes {
-        app = app.merge(oauth);
     }
-    // Webhook triggers — `/hooks/<name>` routes declared under `triggers:`.
-    // Coulisse stays platform-agnostic: external bridges POST JSON here,
-    // we substitute it into the configured prompt template and enqueue.
-    app = app.merge(triggers::webhook_router(
-        &config.triggers,
-        Arc::clone(&worker_tasks) as Arc<dyn coulisse_core::TaskQueue>,
-        trigger_user_id,
-    ));
-    let app = config.server.apply_layers(app);
-    let listener = TcpListener::bind(addr).await?;
-    // Signal readiness only after the port is bound — anything failing
-    // before this point exits the child without firing the callback, so
-    // the launching `coulisse start` surfaces the error instead of
-    // falsely reporting success.
-    on_ready();
-    axum::serve(listener, app).await?;
-    Ok(())
+
+    /// The whole HTTP surface: proxy and files behind the proxy auth
+    /// scope, the studio behind the admin scope, OAuth and webhook routes
+    /// with their own checks.
+    fn app(&self, auth: &Auth, runnable: Runnable<'_>) -> Router {
+        let Runnable {
+            config_store,
+            proxy_state,
+            signer,
+            stores,
+            triggers,
+            worker_tasks,
+        } = runnable;
+        let admin_router = auth.wrap_admin(
+            AdminWiring {
+                agents_list: stores.agents_list.clone(),
+                config_store,
+                dynamic_agents: Arc::clone(&stores.dynamic_agents),
+                experiments_list: stores.experiments_list.clone(),
+                experiments_store: Arc::clone(&stores.experiments_store),
+                judge_store: Arc::clone(&stores.judge_store),
+                judges_list: stores.judges_list.clone(),
+                memory: Arc::clone(&stores.memory),
+                proxy_state: Arc::clone(proxy_state),
+                settings_view: Arc::clone(&stores.settings_view),
+                smoke_list: stores.smoke_list.clone(),
+                smoke_store: Arc::clone(&stores.smoke_store),
+                tasks: Arc::clone(worker_tasks),
+                telemetry: Arc::clone(&stores.telemetry),
+                token_store: Arc::clone(&stores.token_store),
+                yaml_agents: stores.yaml_agents.clone(),
+                yaml_experiments: stores.yaml_experiments.clone(),
+                yaml_judges: stores.yaml_judges.clone(),
+                yaml_smoke: stores.yaml_smoke.clone(),
+            }
+            .into_router(),
+        );
+        let proxy_router = auth.wrap_proxy(Arc::clone(proxy_state).router());
+        let files_router = auth.wrap_proxy(
+            FilesApi {
+                store: Arc::clone(&stores.file_store),
+            }
+            .router(),
+        );
+
+        // WHY: axum 0.8 nests asymmetrically — `nest("/admin", ...)` matches
+        // the inner `/` route at `/admin`, but a request to `/admin/` returns
+        // 404. Redirect the trailing-slash form so bookmarks don't break.
+        let mut app = Router::new()
+            .merge(proxy_router)
+            .merge(files_router)
+            .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
+            .nest("/admin", admin_router);
+        if let Some(oauth) = self.oauth_routes(stores, signer) {
+            app = app.merge(oauth);
+        }
+        app = app.merge(triggers.webhook_router());
+        self.config.server.apply_layers(app)
+    }
+
+    /// `ConfigStore` is the single point all YAML edits flow through —
+    /// admin POSTs, the `PUT /admin/config` handler, hand-edits picked up
+    /// by the file watcher. Its `on_reload` closure is the seam back into
+    /// the in-memory hot state held by feature crates.
+    fn config_store(&self, stores: &Stores) -> Arc<ConfigStore> {
+        let on_reload = ReloadHandles {
+            agents_list: stores.agents_list.clone(),
+            dynamic_agents: Arc::clone(&stores.dynamic_agents),
+            experiments_list: stores.experiments_list.clone(),
+            experiments_store: Arc::clone(&stores.experiments_store),
+            judge_store: Arc::clone(&stores.judge_store),
+            judges_list: stores.judges_list.clone(),
+            settings_view: Arc::clone(&stores.settings_view),
+            smoke_list: stores.smoke_list.clone(),
+            smoke_store: Arc::clone(&stores.smoke_store),
+            state_dir: self.state_dir.clone(),
+            yaml_agents: stores.yaml_agents.clone(),
+            yaml_experiments: stores.yaml_experiments.clone(),
+            yaml_judges: stores.yaml_judges.clone(),
+            yaml_smoke: stores.yaml_smoke.clone(),
+        }
+        .into_hook();
+        let config_path_abs =
+            std::fs::canonicalize(&self.config_path).unwrap_or(self.config_path.clone());
+        Arc::new(ConfigStore::new(
+            config_path_abs,
+            self.config.clone(),
+            on_reload,
+        ))
+    }
+
+    /// Build the per-user `ConnectLinkSigner` exactly when OAuth is wired up
+    /// (i.e. the vault was opened because at least one MCP server has an
+    /// `oauth:` block). One signer serves both the MCP runtime (so
+    /// `NotConnectedTool` can mint URLs) and the OAuth route state (so
+    /// `/mcp/.../connect` validates the same signature) — they must use
+    /// the same key.
+    fn connect_link_signer(
+        &self,
+        secrets: Option<&Secrets>,
+    ) -> Result<Option<ConnectLinkSigner>, McpError> {
+        let Some(secrets) = secrets else {
+            return Ok(None);
+        };
+        Ok(Some(ConnectLinkSigner::new(
+            &secrets.hmac_key,
+            PublicBaseUrl::new(self.config.effective_public_base_url()),
+        )?))
+    }
+
+    /// Token auth binds identity to the credential by construction, so it
+    /// forces `from_credential` regardless of the (possibly default)
+    /// `identity` field — otherwise a tokened request could spoof another
+    /// user via `safety_identifier`.
+    fn identity(&self) -> Identity {
+        let mode = match self.config.auth.proxy.as_ref() {
+            Some(scope) if scope.tokens.is_some() => IdentityMode::FromCredential,
+            Some(scope) => scope.identity,
+            None => IdentityMode::default(),
+        };
+        Identity {
+            default_user_id: self
+                .config
+                .default_user_id
+                .as_ref()
+                .map(crate::config::UserKey::user_id),
+            mode,
+        }
+    }
+
+    /// Resolve infrastructure secrets (vault encryption + HMAC) only when
+    /// an OAuth-enabled MCP server is configured. Priority: env vars >
+    /// `.coulisse/secrets.env` > generated on the fly. Zero-config for
+    /// local boots; deploy-friendly via env vars.
+    fn mcp_secrets(&self) -> Result<Option<Secrets>, SecretsError> {
+        if self.config.mcp.values().any(|c| c.oauth.is_some()) {
+            return Ok(Some(Secrets::resolve(
+                &self.state_dir,
+                EnvKeys::from_env(),
+            )?));
+        }
+        Ok(None)
+    }
+
+    fn memory_config(&self) -> Result<MemoryConfig, MemoryResolveError> {
+        MemoryResolver {
+            providers: &self.config.providers,
+            state_dir: &self.state_dir,
+        }
+        .resolve(&self.config.memory)
+    }
+
+    /// OAuth routes live outside the auth wrappers — they have their own
+    /// consumer-secret check (for the admin endpoint) and HMAC-signed
+    /// tokens (for the per-user connect link). They use the same signer
+    /// the MCP runtime was built with, so both sides agree on the key.
+    fn oauth_routes(&self, stores: &Stores, signer: Option<ConnectLinkSigner>) -> Option<Router> {
+        let vault = stores.mcp_vault.clone()?;
+        let signer = signer?;
+        Some(
+            OAuthRouterState {
+                configs: self.config.mcp.clone(),
+                consumer_secret: self
+                    .config
+                    .auth
+                    .mcp_consumer_secret
+                    .as_ref()
+                    .map(|s| mcp::ConsumerSecret::new(s.expose())),
+                signer,
+                vault,
+            }
+            .router(),
+        )
+    }
+
+    async fn run(self, on_ready: impl FnOnce() + Send) -> Result<(), ServeError> {
+        let memory_config = self.memory_config()?;
+        let pricing = Arc::new(PricingTable::vendored()?);
+        let mcp_secrets = self.mcp_secrets()?;
+        let stores = Stores::open(
+            &self.config,
+            &memory_config,
+            &self.state_dir,
+            mcp_secrets.as_ref(),
+        )
+        .await?;
+        // Auth is built after stores so the token scheme can borrow the token
+        // store opened during boot. OIDC discovery (its only network step) still
+        // happens here.
+        let auth = Auth::from_config(
+            self.config.auth.clone(),
+            Some(Arc::clone(&stores.token_store)),
+        )
+        .await?;
+        let _telemetry_guard = self.config.telemetry.init_subscriber(stores.pool.clone())?;
+        let signer = self.connect_link_signer(mcp_secrets.as_ref())?;
+        let runtime = Runtime::build(&self.config, &memory_config, &stores, signer.clone()).await?;
+        runtime.reap_stale_tasks().await;
+        let worker_tasks = Arc::clone(&runtime.tasks);
+        Workers {
+            agents: Arc::clone(&runtime.prompter),
+            tasks: Arc::clone(&worker_tasks),
+        }
+        .spawn(4);
+        let identity = self.identity();
+        let triggers = self.triggers(&worker_tasks, identity);
+        triggers.spawn_cron();
+        triggers.fire_boot().await;
+        sidecars::spawn_all(&self.config.sidecars);
+        let proxy_state = runtime.into_app_state(&stores, identity, pricing);
+
+        let addr = self.config.server.socket_addr()?;
+        Banner {
+            addr,
+            agents: &proxy_state.agents.agents(),
+            auth: &auth,
+            experiments: &stores.experiments_list.load(),
+            extractor: memory_config.extractor.as_ref(),
+            judges: &stores.judges_list.load(),
+            memory_summary: &MemorySummary::of(&memory_config).0,
+        }
+        .print();
+
+        let config_store = self.config_store(&stores);
+        let _watcher_guard = config_store.spawn_watcher()?;
+        let app = self.app(
+            &auth,
+            Runnable {
+                config_store,
+                proxy_state: &proxy_state,
+                signer,
+                stores: &stores,
+                triggers: &triggers,
+                worker_tasks: &worker_tasks,
+            },
+        );
+        let listener = TcpListener::bind(addr).await.map_err(ServerError::Bind)?;
+        // Signal readiness only after the port is bound — anything failing
+        // before this point exits the child without firing the callback, so
+        // the launching `coulisse start` surfaces the error instead of
+        // falsely reporting success.
+        on_ready();
+        axum::serve(listener, app)
+            .await
+            .map_err(ServerError::Serve)?;
+        Ok(())
+    }
+
+    /// Time- and event-based triggers enqueue on behalf of the default
+    /// user, or a fixed `cron` identity when no default is configured.
+    fn triggers(&self, tasks: &Arc<Tasks>, identity: Identity) -> Triggers {
+        let trigger_user_id = identity
+            .default_user_id
+            .unwrap_or_else(|| UserId::from_string("cron"));
+        Triggers::new(
+            &self.config.triggers,
+            Arc::clone(tasks) as Arc<dyn TaskQueue>,
+            trigger_user_id,
+        )
+    }
+}
+
+/// Everything a booted server exposes over HTTP, ready to be composed
+/// into one router.
+struct Runnable<'a> {
+    config_store: Arc<ConfigStore>,
+    proxy_state: &'a Arc<AppState<RigAgents>>,
+    signer: Option<ConnectLinkSigner>,
+    stores: &'a Stores,
+    triggers: &'a Triggers,
+    worker_tasks: &'a Arc<Tasks>,
 }
 
 /// Persistent stores opened against the shared `SQLite` pool, plus the
 /// hot-reloadable arc-swap lists each feature crate watches.
 struct Stores {
+    /// The merged effective list the runtime resolves against; `yaml_agents`
+    /// is the raw YAML view, kept alongside so the admin layer can compute
+    /// source labels and the smart DELETE handler can decide
+    /// tombstone-vs-physical-delete.
     agents_list: agents::AgentList,
     dynamic_agents: Arc<DynamicAgents>,
     experiments_list: experiments::ExperimentList,
@@ -288,13 +420,17 @@ struct Stores {
     file_store: Arc<FileStore>,
     judge_store: Arc<Judges>,
     judges_list: judges::JudgeList,
-    memory: Arc<Store>,
     mcp_vault: Option<Arc<TokenVault>>,
+    memory: Arc<Store>,
     pool: memory::SqlitePool,
     settings_view: crate::admin::SettingsHandle,
     smoke_list: smoke::SmokeList,
     smoke_store: Arc<SmokeStore>,
     telemetry: Arc<TelemetrySink>,
+    /// Always opened: the studio token page is always mounted (it shows an
+    /// empty state and the create form like every other admin page). Minted
+    /// tokens only *gate* the proxy once `auth.proxy.tokens` is set — until
+    /// then the page notes they're inert.
     token_store: Arc<TokenStore>,
     yaml_agents: agents::AgentList,
     yaml_experiments: experiments::ExperimentList,
@@ -302,176 +438,207 @@ struct Stores {
     yaml_smoke: smoke::SmokeList,
 }
 
-/// Open one `SQLite` pool, every per-feature store, and reconcile each
-/// store with the YAML it was given. Each crate runs its own schema
-/// migrations against the shared pool — table ownership is per-crate,
-/// the connection is shared so operators back up one file.
-async fn boot_stores(
-    config: &Config,
-    memory_config: &MemoryConfig,
-    state_dir: &Path,
-    mcp_secrets: Option<&Secrets>,
-) -> Result<Stores, Box<dyn std::error::Error>> {
-    // NOTE: the merged effective list (`agents_list`) is what the runtime
-    // resolves against; `yaml_agents` is the raw YAML view, kept alongside
-    // so the admin layer can compute source labels and the smart DELETE
-    // handler can decide tombstone-vs-physical-delete.
-    let agents_list = agents::agent_list(config.agents.clone());
-    let yaml_agents = agents::agent_list(config.agents.clone());
-    let judges_list = judges::judge_list(config.judges.clone());
-    let yaml_judges = judges::judge_list(config.judges.clone());
-    let experiments_list = experiments::experiment_list(config.experiments.clone());
-    let yaml_experiments = experiments::experiment_list(config.experiments.clone());
-    let smoke_list = smoke::smoke_list(config.smoke_tests.clone());
-    let yaml_smoke = smoke::smoke_list(config.smoke_tests.clone());
-    let settings_view = Arc::new(ArcSwap::from_pointee(
-        crate::admin::SettingsView::from_config(config, memory_config),
-    ));
+impl Stores {
+    /// Open one `SQLite` pool, every per-feature store, and reconcile each
+    /// store with the YAML it was given. Each crate runs its own schema
+    /// migrations against the shared pool — table ownership is per-crate,
+    /// the connection is shared so operators back up one file.
+    async fn open(
+        config: &Config,
+        memory_config: &MemoryConfig,
+        state_dir: &Path,
+        mcp_secrets: Option<&Secrets>,
+    ) -> Result<Self, ServeError> {
+        let agents_list = agents::AgentList::new(config.agents.clone());
+        let yaml_agents = agents::AgentList::new(config.agents.clone());
+        let judges_list = judges::JudgeList::new(config.judges.clone());
+        let yaml_judges = judges::JudgeList::new(config.judges.clone());
+        let experiments_list = experiments::ExperimentList::new(config.experiments.clone());
+        let yaml_experiments = experiments::ExperimentList::new(config.experiments.clone());
+        let smoke_list = smoke::SmokeList::new(config.smoke_tests.clone());
+        let yaml_smoke = smoke::SmokeList::new(config.smoke_tests.clone());
+        let settings_view = Arc::new(ArcSwap::from_pointee(
+            crate::admin::SettingsView::from_config(config, memory_config),
+        ));
 
-    let pool = memory::open_pool(&memory_config.backend).await?;
+        let pool = memory_config.backend.open_pool().await?;
+        let mcp_vault = Self::open_vault(&pool, mcp_secrets).await?;
+        let dynamic_agents = Arc::new(DynamicAgents::open(pool.clone()).await?);
+        let report = dynamic_agents.rebuild(&agents_list, &config.agents).await?;
+        MergeCounts::from(&report).log("agents");
 
-    // Open the MCP token vault if any server has an oauth block. The
-    // vault + HMAC keys come from the resolved `Secrets` (env > on-disk
-    // > generated) so no manual env-var setup is needed for zero-config
-    // local boots.
-    let mcp_vault = if let Some(secrets) = mcp_secrets {
-        coulisse_core::migrate::run(&pool, &VaultMigrator)
-            .await
-            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
-        Some(Arc::new(TokenVault::new(pool.clone(), &secrets.vault_key)?))
-    } else {
-        None
-    };
-    let dynamic_agents = Arc::new(DynamicAgents::open(pool.clone()).await?);
-    let report = dynamic_agents.rebuild(&agents_list, &config.agents).await?;
-    log_agents_merge(&report);
+        let memory = Arc::new(
+            Store::open(
+                pool.clone(),
+                memory_config.clone(),
+                config.embedder_fallback_key(memory_config).as_deref(),
+            )
+            .await?,
+        );
 
-    let memory = Arc::new(
-        Store::open(
+        let file_store = Arc::new(
+            Self::open_file_store(pool.clone(), &config.storage, &state_dir.join("files")).await?,
+        );
+
+        let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
+        let judge_store = Arc::new(Judges::open(pool.clone()).await?);
+        let report = judge_store
+            .rebuild_judges(&judges_list, &config.judges)
+            .await?;
+        MergeCounts::from(&report).log("judges");
+
+        let smoke_store = Arc::new(SmokeStore::open(pool.clone()).await?);
+        let report = smoke_store
+            .rebuild_smoke(&smoke_list, &config.smoke_tests)
+            .await?;
+        MergeCounts::from(&report).log("smoke tests");
+
+        let experiments_store = Arc::new(Experiments::open(pool.clone()).await?);
+        let report = experiments_store
+            .rebuild(&experiments_list, &config.experiments)
+            .await?;
+        MergeCounts::from(&report).log("experiments");
+
+        let token_store = Arc::new(TokenStore::open(pool.clone()).await?);
+
+        Ok(Self {
+            agents_list,
+            dynamic_agents,
+            experiments_list,
+            experiments_store,
+            file_store,
+            judge_store,
+            judges_list,
+            mcp_vault,
+            memory,
+            pool,
+            settings_view,
+            smoke_list,
+            smoke_store,
+            telemetry,
+            token_store,
+            yaml_agents,
+            yaml_experiments,
+            yaml_judges,
+            yaml_smoke,
+        })
+    }
+
+    /// Open the MCP token vault if any server has an oauth block. The
+    /// vault + HMAC keys come from the resolved `Secrets` (env, then the
+    /// on-disk file, then generated) so no manual env-var setup is needed
+    /// for zero-config local boots.
+    async fn open_vault(
+        pool: &memory::SqlitePool,
+        mcp_secrets: Option<&Secrets>,
+    ) -> Result<Option<Arc<TokenVault>>, ServeError> {
+        let Some(secrets) = mcp_secrets else {
+            return Ok(None);
+        };
+        coulisse_core::migrate::run(pool, &VaultMigrator).await?;
+        Ok(Some(Arc::new(TokenVault::new(
             pool.clone(),
-            memory_config.clone(),
-            embedder_fallback_key(config, memory_config).as_deref(),
-        )
-        .await?,
-    );
-
-    let file_store =
-        Arc::new(open_file_store(pool.clone(), &config.storage, &state_dir.join("files")).await?);
-
-    let telemetry = Arc::new(TelemetrySink::open(pool.clone()).await?);
-    let judge_store = Arc::new(Judges::open(pool.clone()).await?);
-    let report = judge_store
-        .rebuild_judges(&judges_list, &config.judges)
-        .await?;
-    log_judges_merge(&report);
-
-    let smoke_store = Arc::new(SmokeStore::open(pool.clone()).await?);
-    let report = smoke_store
-        .rebuild_smoke(&smoke_list, &config.smoke_tests)
-        .await?;
-    log_smoke_merge(&report);
-
-    let experiments_store = Arc::new(Experiments::open(pool.clone()).await?);
-    let report = experiments_store
-        .rebuild(&experiments_list, &config.experiments)
-        .await?;
-    log_experiments_merge(&report);
-
-    // Always opened: the studio token page is always mounted (it shows an
-    // empty state and the create form like every other admin page). Minted
-    // tokens only *gate* the proxy once `auth.proxy.tokens` is set — until
-    // then the page notes they're inert.
-    let token_store = Arc::new(TokenStore::open(pool.clone()).await?);
-
-    Ok(Stores {
-        agents_list,
-        dynamic_agents,
-        experiments_list,
-        experiments_store,
-        file_store,
-        judge_store,
-        judges_list,
-        memory,
-        mcp_vault,
-        pool,
-        settings_view,
-        smoke_list,
-        smoke_store,
-        telemetry,
-        token_store,
-        yaml_agents,
-        yaml_experiments,
-        yaml_judges,
-        yaml_smoke,
-    })
+            &secrets.vault_key,
+        )?)))
+    }
 }
 
-/// Construct the blob backend and open the file store. The filesystem
-/// backend always lives under `.coulisse/files` (`files_dir`); only the
-/// backend choice and quotas come from YAML.
-async fn open_file_store(
-    pool: memory::SqlitePool,
-    yaml: &StorageYaml,
-    files_dir: &Path,
-) -> Result<FileStore, storage::StorageError> {
-    let backend = match yaml.backend {
-        storage::BackendKind::Fs => {
-            let fs = FsBackend::new(files_dir).await?;
-            BlobBackend::Fs(fs)
+impl Stores {
+    /// Construct the blob backend and open the file store. The filesystem
+    /// backend always lives under `.coulisse/files` (`files_dir`); only the
+    /// backend choice and quotas come from YAML.
+    async fn open_file_store(
+        pool: memory::SqlitePool,
+        yaml: &StorageYaml,
+        files_dir: &Path,
+    ) -> Result<FileStore, storage::StorageError> {
+        let backend = match yaml.backend {
+            storage::BackendKind::Fs => {
+                let fs = FsBackend::new(files_dir).await?;
+                BlobBackend::Fs(fs)
+            }
+            #[cfg(feature = "s3")]
+            storage::BackendKind::S3 => {
+                let Some(s3_cfg) = yaml.s3.as_ref() else {
+                    return Err(storage::StorageError::backend(
+                        "storage.backend: s3 — an `s3:` block is required for the s3 backend",
+                    ));
+                };
+                BlobBackend::S3(storage::S3Backend::new(s3_cfg).await?)
+            }
+            #[cfg(not(feature = "s3"))]
+            storage::BackendKind::S3 => {
+                return Err(storage::StorageError::backend(
+                    "storage.backend: s3 — this binary was built without the 's3' feature; rebuild with `--features s3`",
+                ));
+            }
+        };
+        FileStore::open(pool, backend, QuotaConfig::from(yaml)).await
+    }
+}
+
+/// The four counts every feature's YAML/database merge reports.
+struct MergeCounts {
+    dynamic: usize,
+    overrides: usize,
+    tombstones: usize,
+    yaml: usize,
+}
+
+impl From<&agents::MergeReport> for MergeCounts {
+    fn from(report: &agents::MergeReport) -> Self {
+        Self {
+            dynamic: report.dynamic_count,
+            overrides: report.override_count,
+            tombstones: report.tombstone_count,
+            yaml: report.yaml_count,
         }
-        #[cfg(feature = "s3")]
-        storage::BackendKind::S3 => {
-            let s3_cfg = yaml.s3.as_ref().expect("s3 config required for s3 backend");
-            BlobBackend::S3(storage::S3Backend::from_config(s3_cfg).await?)
+    }
+}
+
+impl From<&judges::MergeReport> for MergeCounts {
+    fn from(report: &judges::MergeReport) -> Self {
+        Self {
+            dynamic: report.dynamic_count,
+            overrides: report.override_count,
+            tombstones: report.tombstone_count,
+            yaml: report.yaml_count,
         }
-        #[cfg(not(feature = "s3"))]
-        storage::BackendKind::S3 => {
-            return Err(storage::StorageError::backend(
-                "storage.backend: s3 — this binary was built without the 's3' feature; rebuild with `--features s3`",
-            ));
+    }
+}
+
+impl From<&smoke::MergeReport> for MergeCounts {
+    fn from(report: &smoke::MergeReport) -> Self {
+        Self {
+            dynamic: report.dynamic_count,
+            overrides: report.override_count,
+            tombstones: report.tombstone_count,
+            yaml: report.yaml_count,
         }
-    };
-    FileStore::open(pool, backend, QuotaConfig::from(yaml)).await
+    }
 }
 
-fn log_agents_merge(report: &agents::MergeReport) {
-    tracing::info!(
-        yaml = report.yaml_count,
-        overrides = report.override_count,
-        dynamic = report.dynamic_count,
-        tombstones = report.tombstone_count,
-        "agents merged",
-    );
+impl From<&experiments::MergeReport> for MergeCounts {
+    fn from(report: &experiments::MergeReport) -> Self {
+        Self {
+            dynamic: report.dynamic_count,
+            overrides: report.override_count,
+            tombstones: report.tombstone_count,
+            yaml: report.yaml_count,
+        }
+    }
 }
 
-fn log_judges_merge(report: &judges::MergeReport) {
-    tracing::info!(
-        yaml = report.yaml_count,
-        overrides = report.override_count,
-        dynamic = report.dynamic_count,
-        tombstones = report.tombstone_count,
-        "judges merged",
-    );
-}
-
-fn log_smoke_merge(report: &smoke::MergeReport) {
-    tracing::info!(
-        yaml = report.yaml_count,
-        overrides = report.override_count,
-        dynamic = report.dynamic_count,
-        tombstones = report.tombstone_count,
-        "smoke tests merged",
-    );
-}
-
-fn log_experiments_merge(report: &experiments::MergeReport) {
-    tracing::info!(
-        yaml = report.yaml_count,
-        overrides = report.override_count,
-        dynamic = report.dynamic_count,
-        tombstones = report.tombstone_count,
-        "experiments merged",
-    );
+impl MergeCounts {
+    fn log(&self, feature: &'static str) {
+        tracing::info!(
+            yaml = self.yaml,
+            overrides = self.overrides,
+            dynamic = self.dynamic,
+            tombstones = self.tombstones,
+            "{feature} merged",
+        );
+    }
 }
 
 /// Long-lived runtime objects derived from the configured stores.
@@ -484,112 +651,107 @@ struct Runtime {
     tracker: Tracker,
 }
 
-async fn build_runtime(
-    config: &Config,
-    memory_config: &MemoryConfig,
-    stores: &Stores,
-    signer: Option<ConnectLinkSigner>,
-) -> Result<Runtime, Box<dyn std::error::Error>> {
-    // NOTE: build runtime Judge objects from the merged list (DB shadows +
-    // YAML) so DB-only judges are usable from the moment they're created.
-    // The HashMap itself is rebuilt only at boot — runtime hot-reload of
-    // the Judge instances is a follow-up.
-    let judges = build_judges(&stores.judges_list.load())?;
-    let mcp = Arc::new(
-        McpServers::connect_with_vault(config.mcp.clone(), stores.mcp_vault.clone(), signer)
-            .await?,
-    );
-    let experiments = Arc::new(ExperimentRouter::new(
-        stores.experiments_list.load().to_vec(),
-    ));
-    let resolver: Arc<dyn AgentResolver> = Arc::new(ExperimentResolver::new(
-        Arc::clone(&experiments),
-        Some(Arc::clone(&stores.judge_store) as Arc<dyn ScoreLookup>),
-    ));
-    let tasks = Arc::new(Tasks::open(stores.pool.clone()).await?);
-    let skills = Skills::load(&config.skills)?;
-    let skill_catalog: Option<Arc<dyn SkillCatalog>> = if skills.is_empty() {
-        None
-    } else {
-        Some(Arc::new(skills) as Arc<dyn SkillCatalog>)
-    };
-    let prompter = Arc::new(RigAgents::new(BootConfig {
-        agents: Arc::clone(&stores.agents_list),
-        mcp,
-        providers: config.providers.clone(),
-        resolver,
-        skills: skill_catalog,
-        task_queue: Some(Arc::clone(&tasks) as Arc<dyn TaskQueue>),
-        task_status: Some(Arc::clone(&tasks) as Arc<dyn TaskStatus>),
-    })?);
-    let extractor = memory_config
-        .extractor
-        .as_ref()
-        .map(|cfg| Arc::new(Extractor::new(cfg.clone(), Arc::clone(&prompter) as _)));
-    let tracker = Tracker::open(stores.pool.clone()).await?;
-    Ok(Runtime {
-        experiments,
-        extractor,
-        judges,
-        prompter,
-        tasks,
-        tracker,
-    })
-}
-
-fn build_proxy_state(
-    default_user_id: Option<UserId>,
-    proxy_identity: IdentityMode,
-    stores: &Stores,
-    runtime: Runtime,
-) -> Arc<AppState<RigAgents>> {
-    Arc::new(AppState {
-        agents: runtime.prompter,
-        default_user_id,
-        experiments: runtime.experiments,
-        extractor: runtime.extractor,
-        judges: Arc::new(runtime.judges),
-        judge_store: Arc::clone(&stores.judge_store),
-        memory: Arc::clone(&stores.memory),
-        proxy_identity,
-        tokens: Arc::clone(&stores.token_store),
-        tracker: runtime.tracker,
-    })
-}
-
-fn print_banner(
-    addr: SocketAddr,
-    auth: &Auth,
-    _config: &Config,
-    memory_config: &MemoryConfig,
-    stores: &Stores,
-    proxy_state: &AppState<RigAgents>,
-    memory_summary: &str,
-) {
-    let agent_snapshot = proxy_state.agents.agents();
-    let judges_snapshot = stores.judges_list.load();
-    let experiments_snapshot = stores.experiments_list.load();
-    Banner {
-        addr,
-        agents: &agent_snapshot,
-        auth,
-        experiments: &experiments_snapshot,
-        extractor: memory_config.extractor.as_ref(),
-        judges: &judges_snapshot,
-        memory_summary,
+impl Runtime {
+    /// Build the runtime `Judge` objects from the merged list (DB shadows
+    /// and YAML) so DB-only judges are usable from the moment they're
+    /// created. The map itself is rebuilt only at boot — runtime hot-reload
+    /// of the `Judge` instances is a follow-up.
+    async fn build(
+        config: &Config,
+        memory_config: &MemoryConfig,
+        stores: &Stores,
+        signer: Option<ConnectLinkSigner>,
+    ) -> Result<Self, ServeError> {
+        let judges = build_judges(&stores.judges_list.load())?;
+        let mcp = Arc::new(
+            McpServers::connect_with_vault(config.mcp.clone(), stores.mcp_vault.clone(), signer)
+                .await?,
+        );
+        let experiments = Arc::new(ExperimentRouter::new(
+            stores.experiments_list.load().to_vec(),
+        ));
+        let resolver: Arc<dyn AgentResolver> = Arc::new(ExperimentResolver::new(
+            Arc::clone(&experiments),
+            Some(Arc::clone(&stores.judge_store) as Arc<dyn ScoreLookup>),
+        ));
+        let tasks = Arc::new(Tasks::open(stores.pool.clone()).await?);
+        let skills = Skills::load(&config.skills)?;
+        let skill_catalog: Option<Arc<dyn SkillCatalog>> = if skills.is_empty() {
+            None
+        } else {
+            Some(Arc::new(skills) as Arc<dyn SkillCatalog>)
+        };
+        let prompter = Arc::new(RigAgents::new(BootConfig {
+            agents: stores.agents_list.clone(),
+            mcp,
+            providers: config.providers.clone(),
+            resolver,
+            skills: skill_catalog,
+            task_queue: Some(Arc::clone(&tasks) as Arc<dyn TaskQueue>),
+            task_status: Some(Arc::clone(&tasks) as Arc<dyn TaskStatus>),
+        })?);
+        let extractor = memory_config
+            .extractor
+            .as_ref()
+            .map(|cfg| Arc::new(Extractor::new(cfg.clone(), Arc::clone(&prompter) as _)));
+        let tracker = Tracker::open(stores.pool.clone()).await?;
+        Ok(Self {
+            experiments,
+            extractor,
+            judges,
+            prompter,
+            tasks,
+            tracker,
+        })
     }
-    .print();
+
+    fn into_app_state(
+        self,
+        stores: &Stores,
+        identity: Identity,
+        pricing: Arc<PricingTable>,
+    ) -> Arc<AppState<RigAgents>> {
+        Arc::new(AppState {
+            agents: self.prompter,
+            experiments: self.experiments,
+            extractor: self.extractor,
+            identity,
+            judge_store: Arc::clone(&stores.judge_store),
+            judges: Arc::new(self.judges),
+            memory: Arc::clone(&stores.memory),
+            pricing,
+            tokens: Arc::clone(&stores.token_store),
+            tracker: self.tracker,
+        })
+    }
+
+    /// Reap `running` tasks left over from a previous process before
+    /// workers start, so PM sees them as `errored` on the next wakeup
+    /// instead of believing the work is still in flight. Cutoff = now: any
+    /// task still in `running` is by definition orphaned.
+    async fn reap_stale_tasks(&self) {
+        let now = coulisse_core::now_secs();
+        match TaskStatus::reap_stale_running(
+            self.tasks.as_ref(),
+            now,
+            "process restarted before task completed",
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(reaped = n, "stale running tasks marked errored"),
+            Err(e) => tracing::warn!(%e, "task reap on boot failed; continuing"),
+        }
+    }
 }
 
 /// The seam back into in-memory hot state for the `ConfigStore`. Every
 /// YAML edit (admin POST, `PUT /admin/config`, hand-edit picked up by
 /// the file watcher) flows through this closure.
-type ReloadHook = Arc<
-    dyn Fn(Config) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
->;
+type ReloadHook = Arc<dyn Fn(Config) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// Handles consumed by [`make_on_reload`]. A struct so the long argument
-/// list stays self-documenting at the call site.
+/// Handles the reload hook needs. A struct so the long argument list
+/// stays self-documenting at the call site.
 struct ReloadHandles {
     agents_list: agents::AgentList,
     dynamic_agents: Arc<DynamicAgents>,
@@ -607,78 +769,66 @@ struct ReloadHandles {
     yaml_smoke: smoke::SmokeList,
 }
 
-fn make_on_reload(handles: ReloadHandles) -> ReloadHook {
-    let ReloadHandles {
-        agents_list,
-        dynamic_agents,
-        experiments_list,
-        experiments_store,
-        judge_store,
-        judges_list,
-        settings_view,
-        smoke_list,
-        smoke_store,
-        state_dir,
-        yaml_agents,
-        yaml_experiments,
-        yaml_judges,
-        yaml_smoke,
-    } = handles;
-    Arc::new(move |cfg: Config| {
-        let agents_list = Arc::clone(&agents_list);
-        let dynamic_agents = Arc::clone(&dynamic_agents);
-        let experiments_store = Arc::clone(&experiments_store);
-        let experiments_list = Arc::clone(&experiments_list);
-        let judge_store = Arc::clone(&judge_store);
-        let judges_list = Arc::clone(&judges_list);
-        let settings_view = Arc::clone(&settings_view);
-        let smoke_list = Arc::clone(&smoke_list);
-        let smoke_store = Arc::clone(&smoke_store);
-        let state_dir = state_dir.clone();
-        let yaml_agents = Arc::clone(&yaml_agents);
-        let yaml_experiments = Arc::clone(&yaml_experiments);
-        let yaml_judges = Arc::clone(&yaml_judges);
-        let yaml_smoke = Arc::clone(&yaml_smoke);
-        Box::pin(async move {
-            yaml_agents.store(Arc::new(cfg.agents.clone()));
-            yaml_judges.store(Arc::new(cfg.judges.clone()));
-            yaml_experiments.store(Arc::new(cfg.experiments.clone()));
-            yaml_smoke.store(Arc::new(cfg.smoke_tests.clone()));
-            // WHY: re-resolve memory config; on failure keep the previous
-            // settings view rather than crashing the reload path. The chat
-            // path keeps its boot-time Store regardless — memory itself
-            // does not hot reload.
-            match memory_resolve::resolve_memory(&cfg.memory, &cfg.providers, &state_dir) {
-                Err(err) => tracing::warn!(
-                    error = %err,
-                    "memory config resolution failed during reload; keeping previous settings view",
-                ),
-                Ok(resolved) => settings_view.store(Arc::new(
-                    crate::admin::SettingsView::from_config(&cfg, &resolved),
-                )),
+impl ReloadHandles {
+    async fn apply(&self, cfg: Config) {
+        self.yaml_agents.store(Arc::new(cfg.agents.clone()));
+        self.yaml_judges.store(cfg.judges.clone());
+        self.yaml_experiments.store(cfg.experiments.clone());
+        self.yaml_smoke.store(Arc::new(cfg.smoke_tests.clone()));
+        // WHY: re-resolve memory config; on failure keep the previous
+        // settings view rather than crashing the reload path. The chat
+        // path keeps its boot-time Store regardless — memory itself
+        // does not hot reload.
+        let resolver = MemoryResolver {
+            providers: &cfg.providers,
+            state_dir: &self.state_dir,
+        };
+        match resolver.resolve(&cfg.memory) {
+            Err(err) => tracing::warn!(
+                error = %err,
+                "memory config resolution failed during reload; keeping previous settings view",
+            ),
+            Ok(memory_config) => {
+                self.settings_view
+                    .store(Arc::new(crate::admin::SettingsView::from_config(
+                        &cfg,
+                        &memory_config,
+                    )));
             }
-            log_rebuild_failure(
-                "agents",
-                dynamic_agents.rebuild(&agents_list, &cfg.agents).await,
-            );
-            log_rebuild_failure(
-                "judges",
-                judge_store.rebuild_judges(&judges_list, &cfg.judges).await,
-            );
-            log_rebuild_failure(
-                "experiments",
-                experiments_store
-                    .rebuild(&experiments_list, &cfg.experiments)
-                    .await,
-            );
-            log_rebuild_failure(
-                "smoke",
-                smoke_store
-                    .rebuild_smoke(&smoke_list, &cfg.smoke_tests)
-                    .await,
-            );
+        }
+        log_rebuild_failure(
+            "agents",
+            self.dynamic_agents
+                .rebuild(&self.agents_list, &cfg.agents)
+                .await,
+        );
+        log_rebuild_failure(
+            "judges",
+            self.judge_store
+                .rebuild_judges(&self.judges_list, &cfg.judges)
+                .await,
+        );
+        log_rebuild_failure(
+            "experiments",
+            self.experiments_store
+                .rebuild(&self.experiments_list, &cfg.experiments)
+                .await,
+        );
+        log_rebuild_failure(
+            "smoke",
+            self.smoke_store
+                .rebuild_smoke(&self.smoke_list, &cfg.smoke_tests)
+                .await,
+        );
+    }
+
+    fn into_hook(self) -> ReloadHook {
+        let handles = Arc::new(self);
+        Arc::new(move |cfg: Config| {
+            let handles = Arc::clone(&handles);
+            Box::pin(async move { handles.apply(cfg).await })
         })
-    })
+    }
 }
 
 fn log_rebuild_failure<T, E: std::fmt::Display>(kind: &str, result: Result<T, E>) {
@@ -690,7 +840,7 @@ fn log_rebuild_failure<T, E: std::fmt::Display>(kind: &str, result: Result<T, E>
     }
 }
 
-/// Handles consumed by [`build_admin_router`]. As with `ReloadHandles`,
+/// Handles the admin surface is composed from. As with `ReloadHandles`,
 /// a struct so the call site stays readable.
 struct AdminWiring {
     agents_list: agents::AgentList,
@@ -714,81 +864,82 @@ struct AdminWiring {
     yaml_smoke: smoke::SmokeList,
 }
 
-/// Compose the admin surface from each feature crate's router.
-/// Cross-feature views (e.g. tool calls inside a conversation page) are
-/// filled in via htmx fragments so feature crates remain decoupled.
-fn build_admin_router(w: AdminWiring) -> Router {
-    let smoke_runner: Arc<dyn RunDispatcher> = Arc::new(SmokeRunner {
-        configs: Arc::clone(&w.smoke_list),
-        state: w.proxy_state,
-        store: Arc::clone(&w.smoke_store),
-    });
-    Router::new()
-        .merge(agents::admin::router(
-            w.agents_list,
-            w.dynamic_agents,
-            w.yaml_agents,
-        ))
-        .merge(crate::admin::config_router(Arc::clone(&w.config_store)))
-        .merge(crate::admin::static_router())
-        .merge(crate::admin_extras::router(Arc::clone(&w.config_store)))
-        .merge(crate::openapi::router(w.config_store))
-        .merge(experiments::admin::router(
-            w.experiments_list,
-            w.experiments_store,
-            w.yaml_experiments,
-        ))
-        .merge(judges::admin::router(
-            w.judge_store,
-            w.judges_list,
-            w.yaml_judges,
-        ))
-        .merge(memory::admin::router(w.memory))
-        .merge(smoke::admin::router(
-            w.smoke_list,
-            w.smoke_store,
-            smoke_runner,
-            w.yaml_smoke,
-        ))
-        .merge(telemetry::admin::router(Arc::clone(&w.telemetry)))
-        .merge(crate::admin::home_router(crate::admin::HomeState {
-            settings: Arc::clone(&w.settings_view),
-            telemetry: Arc::clone(&w.telemetry),
-        }))
-        .merge(crate::admin::live::router(crate::admin::live::State {
-            tasks: w.tasks,
-            telemetry: w.telemetry,
-        }))
-        .merge(
-            Router::new()
-                .route("/settings", get(crate::admin::settings))
-                .with_state(w.settings_view),
-        )
-        .route(
-            "/",
-            get(|| async { Redirect::permanent("/admin/overview") }),
-        )
-        .merge(auth::admin::router(w.token_store))
-        .layer(from_fn(admin_shell))
-}
-
-/// Build the per-user `ConnectLinkSigner` exactly when OAuth is wired up
-/// (i.e. the vault was opened because at least one MCP server has an
-/// `oauth:` block). `Config::validate` already asserts the env vars are
-/// present in that case, so the expect/decode here are safe.
-fn build_connect_link_signer(
-    config: &Config,
-    secrets: Option<&Secrets>,
-) -> Option<ConnectLinkSigner> {
-    use base64::Engine as _;
-    let secrets = secrets?;
-    let hmac_key = base64::engine::general_purpose::STANDARD
-        .decode(secrets.hmac_key.trim())
-        .expect("hmac key invariant: 32 bytes base64 (set via env var or generated locally)");
-    Some(ConnectLinkSigner {
-        hmac_key,
-        public_base_url: config.effective_public_base_url(),
-    })
+impl AdminWiring {
+    /// Compose the admin surface from each feature crate's router.
+    /// Cross-feature views (e.g. tool calls inside a conversation page) are
+    /// filled in via htmx fragments so feature crates remain decoupled.
+    fn into_router(self) -> Router {
+        let smoke_runner: Arc<dyn RunDispatcher> = Arc::new(SmokeRunner {
+            configs: self.smoke_list.clone(),
+            state: self.proxy_state,
+            store: Arc::clone(&self.smoke_store),
+        });
+        Router::new()
+            .merge(
+                agents::admin::AgentsAdmin {
+                    dynamic_agents: self.dynamic_agents,
+                    runtime_agents: self.agents_list,
+                    yaml_agents: self.yaml_agents,
+                }
+                .router(),
+            )
+            .merge(Arc::clone(&self.config_store).file_router())
+            .merge(crate::admin::static_router())
+            .merge(Arc::clone(&self.config_store).sections_router())
+            .merge(self.config_store.openapi_router())
+            .merge(
+                experiments::admin::ExperimentsAdmin {
+                    runtime_experiments: self.experiments_list,
+                    store: self.experiments_store,
+                    yaml_experiments: self.yaml_experiments,
+                }
+                .router(),
+            )
+            .merge(
+                judges::admin::JudgesAdmin {
+                    runtime_configs: self.judges_list,
+                    store: self.judge_store,
+                    yaml_configs: self.yaml_judges,
+                }
+                .router(),
+            )
+            .merge(self.memory.admin_router())
+            .merge(
+                smoke::SmokeAdmin {
+                    dispatcher: smoke_runner,
+                    runtime_configs: self.smoke_list,
+                    store: self.smoke_store,
+                    yaml_configs: self.yaml_smoke,
+                }
+                .router(),
+            )
+            .merge(telemetry::admin::TelemetryAdmin::new(Arc::clone(&self.telemetry)).router())
+            .merge(
+                crate::admin::HomeState {
+                    settings: Arc::clone(&self.settings_view),
+                    telemetry: Arc::clone(&self.telemetry),
+                }
+                .router(),
+            )
+            .merge(
+                crate::admin::live::LiveBoard {
+                    tasks: self.tasks,
+                    telemetry: self.telemetry,
+                }
+                .router(),
+            )
+            .merge(
+                Router::new()
+                    .route("/settings", get(crate::admin::settings))
+                    .with_state(self.settings_view),
+            )
+            .route(
+                "/",
+                get(|| async { Redirect::permanent("/admin/overview") }),
+            )
+            .merge(auth::admin::TokenAdmin::new(self.token_store).router())
+            .layer(from_fn(admin_shell))
+    }
 }
 
 fn build_judges(
@@ -802,34 +953,41 @@ fn build_judges(
     Ok(out)
 }
 
-/// Derive an API key to use when the memory embedder config doesn't carry
-/// its own. Looks up the matching top-level provider entry so users who
-/// already configured `OpenAI` for completions don't have to repeat the key.
-fn embedder_fallback_key(config: &Config, memory_config: &MemoryConfig) -> Option<String> {
-    // WHY: hash and voyage are not completion providers — no fallback
-    // applies. For Voyage, the user must set
-    // `memory.user_state.embed_with.api_key` explicitly.
-    let kind = match &memory_config.embedder {
-        EmbedderConfig::Hash { .. } | EmbedderConfig::Voyage { .. } => return None,
-        EmbedderConfig::Openai { .. } => ProviderKind::Openai,
-    };
-    config.providers.get(&kind).map(|p| p.api_key.clone())
+impl Config {
+    /// Derive an API key to use when the memory embedder config doesn't carry
+    /// its own. Looks up the matching top-level provider entry so users who
+    /// already configured `OpenAI` for completions don't have to repeat the key.
+    fn embedder_fallback_key(&self, memory_config: &MemoryConfig) -> Option<String> {
+        // WHY: hash and voyage are not completion providers — no fallback
+        // applies. For Voyage, the user must set
+        // `memory.user_state.embed_with.api_key` explicitly.
+        let kind = match &memory_config.embedder {
+            EmbedderConfig::Hash { .. } | EmbedderConfig::Voyage { .. } => return None,
+            EmbedderConfig::Openai { .. } => ProviderKind::Openai,
+        };
+        self.providers.get(&kind).map(|p| p.api_key.clone())
+    }
 }
 
-fn memory_summary(config: &MemoryConfig) -> String {
-    let backend = match &config.backend {
-        BackendConfig::InMemory => "in-memory (ephemeral)".to_string(),
-        BackendConfig::Sqlite { path } => format!("sqlite at {}", path.display()),
-    };
-    if config.extractor.is_none() && config.recall_k == 0 {
-        return format!("{backend}; user_state: disabled (history only)");
-    }
-    let embedder = match &config.embedder {
-        EmbedderConfig::Hash { dims } => {
-            format!("hash (dims={dims}, OFFLINE — no semantic understanding)")
+/// The one-line memory description on the startup banner.
+struct MemorySummary(String);
+
+impl MemorySummary {
+    fn of(config: &MemoryConfig) -> Self {
+        let backend = match &config.backend {
+            BackendConfig::InMemory => "in-memory (ephemeral)".to_string(),
+            BackendConfig::Sqlite { path } => format!("sqlite at {}", path.display()),
+        };
+        if config.extractor.is_none() && config.recall_k == 0 {
+            return Self(format!("{backend}; user_state: disabled (history only)"));
         }
-        EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
-        EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
-    };
-    format!("{backend}; embedder={embedder}")
+        let embedder = match &config.embedder {
+            EmbedderConfig::Hash { dims } => {
+                format!("hash (dims={dims}, OFFLINE — no semantic understanding)")
+            }
+            EmbedderConfig::Openai { model, .. } => format!("openai / {model}"),
+            EmbedderConfig::Voyage { model, .. } => format!("voyage / {model}"),
+        };
+        Self(format!("{backend}; embedder={embedder}"))
+    }
 }

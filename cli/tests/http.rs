@@ -4,8 +4,10 @@
 //! also exercise the `MemoryFlush` Drop guard by dropping the response body
 //! mid-stream.
 //!
-//! Tests use the `current_thread` flavor so a 20ms sleep after dropping a
-//! response is enough for the spawned memory-flush task to complete.
+//! Tests use the `current_thread` flavor, so background work spawned by a
+//! request (memory flush, judge scoring, shadow runs) only progresses when
+//! the test yields; [`wait_until`] polls the store while yielding, so a
+//! test waits on the state it asserts rather than on a fixed delay.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -17,16 +19,43 @@ use agents::{ToolCallKind, Usage};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
-use coulisse::server::AppState;
+use coulisse::server::{AppState, Identity};
 use experiments::{ExperimentConfig, Strategy, Variant};
 use http_body_util::BodyExt;
-use judges::{Judge, JudgeConfig, Judges, Score};
+use judges::{Judge, JudgeConfig, Judges, Score, ScoreId};
 use limits::Tracker;
 use memory::{
     BackendConfig, EmbedderConfig, MemoryConfig, MessageId, Role as MemRole, Store, UserId,
 };
-use providers::ProviderKind;
+use providers::{PricingTable, ProviderKind};
 use tower::ServiceExt;
+
+/// Longest a test waits for background work before failing.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll `probe` until it is true, yielding to the runtime between probes so
+/// spawned tasks make progress. Panics after `SETTLE_TIMEOUT`.
+async fn wait_until<F, Fut>(what: &str, mut probe: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let settled = tokio::time::timeout(SETTLE_TIMEOUT, async {
+        while !probe().await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(settled.is_ok(), "timed out waiting for {what}");
+}
+
+/// Give every task spawned so far a chance to run to completion, for
+/// tests that assert something did *not* happen.
+async fn settle() {
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+}
 
 fn agent_with_judges(judges: Vec<String>) -> AgentConfig {
     AgentConfig {
@@ -55,8 +84,8 @@ pub struct TestHarness {
     pub app: Router,
     pub sink: Arc<telemetry::Sink>,
     pub state: Arc<AppState<ScriptedAgents>>,
-    pub telemetry_guard: telemetry::SqliteLayerGuard,
     pub subscriber_guard: tracing::subscriber::DefaultGuard,
+    pub telemetry_guard: telemetry::SqliteLayerGuard,
 }
 
 async fn make_app(replies: Vec<ScriptedReply>) -> TestHarness {
@@ -79,13 +108,6 @@ async fn make_app_with_experiments(
 ) -> TestHarness {
     use tracing_subscriber::layer::SubscriberExt;
 
-    // Boot path normally calls `providers::warm_pricing`; tests build
-    // the AppState directly, so warm explicitly here. Otherwise the
-    // first call into `record_llm_call` lazy-loads ~9k LiteLLM
-    // entries on the request path and trips Drop-guard timing
-    // assertions in streaming tests.
-    providers::warm_pricing();
-
     let agents_runner = Arc::new(ScriptedAgents::new(agents, replies));
     let experiments = Arc::new(experiments::ExperimentRouter::new(experiments));
     let config = MemoryConfig {
@@ -93,7 +115,7 @@ async fn make_app_with_experiments(
         embedder: EmbedderConfig::Hash { dims: 32 },
         ..MemoryConfig::default()
     };
-    let pool = memory::open_pool(&config.backend).await.unwrap();
+    let pool = config.backend.open_pool().await.unwrap();
     let memory = Arc::new(Store::open(pool.clone(), config, None).await.unwrap());
     let tracker = Tracker::open(pool.clone()).await.unwrap();
     let sink = Arc::new(telemetry::Sink::open(pool.clone()).await.unwrap());
@@ -104,23 +126,26 @@ async fn make_app_with_experiments(
     let judge_store = Arc::new(Judges::open(pool).await.unwrap());
     let state = Arc::new(AppState {
         agents: agents_runner,
-        default_user_id: None,
         experiments,
         extractor: None,
-        judges: Arc::new(judges),
+        identity: Identity {
+            default_user_id: None,
+            mode: auth::IdentityMode::FromRequest,
+        },
         judge_store,
+        judges: Arc::new(judges),
         memory,
-        proxy_identity: auth::IdentityMode::FromRequest,
+        pricing: Arc::new(PricingTable::vendored().unwrap()),
         tokens,
         tracker,
     });
-    let app = coulisse::server::router(Arc::clone(&state));
+    let app = Arc::clone(&state).router();
     TestHarness {
         app,
         sink,
         state,
-        telemetry_guard,
         subscriber_guard,
+        telemetry_guard,
     }
 }
 
@@ -439,30 +464,24 @@ async fn bandit_routes_to_the_highest_scoring_variant() {
     // both above min_samples=5. epsilon=0 in the experiment forces
     // pure exploitation.
     let user_id = UserId::from_string("alice");
+    let seeded = |agent_name: &str, score: f32, reasoning: &str| Score {
+        agent_name: agent_name.into(),
+        created_at: coulisse_core::now_secs(),
+        criterion: "helpfulness".into(),
+        id: ScoreId::new(),
+        judge_model: "gpt-scripted".into(),
+        judge_name: "quality".into(),
+        message_id: MessageId::new(),
+        reasoning: reasoning.into(),
+        score,
+        user_id,
+    };
     for _ in 0..6 {
-        let s = Score::new(
-            user_id,
-            MessageId::new(),
-            "alice-v1".into(),
-            "quality".into(),
-            "gpt-scripted".into(),
-            "helpfulness".into(),
-            9.0,
-            "leader".into(),
-        );
+        let s = seeded("alice-v1", 9.0, "leader");
         state.judge_store.append_score(s).await.unwrap();
     }
     for _ in 0..6 {
-        let s = Score::new(
-            user_id,
-            MessageId::new(),
-            "alice-v2".into(),
-            "quality".into(),
-            "gpt-scripted".into(),
-            "helpfulness".into(),
-            2.0,
-            "laggard".into(),
-        );
+        let s = seeded("alice-v2", 2.0, "laggard");
         state.judge_store.append_score(s).await.unwrap();
     }
 
@@ -597,8 +616,11 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
     // User saw the primary's reply, not the shadow's.
     assert_eq!(v["choices"][0]["message"]["content"], "primary answer");
 
-    // Drain background shadow run + judge task.
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    let user_id = UserId::from_string("alice");
+    wait_until("the shadow run to be scored", || async {
+        state.judge_store.scores(user_id).await.unwrap().len() == 1
+    })
+    .await;
 
     let dispatched = state.agents.dispatched_to();
     assert!(
@@ -610,7 +632,6 @@ async fn shadow_runs_non_primary_variants_and_attributes_their_scores() {
         "shadow dispatched: {dispatched:?}"
     );
 
-    let user_id = UserId::from_string("alice");
     let um = state.memory.for_user(user_id);
     // Only the primary's reply should be in messages — shadow does not pollute history.
     let messages = um.messages().await.unwrap();
@@ -836,12 +857,12 @@ async fn streaming_persists_full_assistant_message_on_normal_completion() {
     let resp = app.oneshot(req).await.unwrap();
     let _ = collect(resp.into_body()).await;
 
-    // The Drop guard spawns a task; give the runtime a moment to drain it.
-    tokio::time::sleep(Duration::from_millis(20)).await;
-
     let um = state.memory.for_user(UserId::from_string("alice"));
+    wait_until("the flushed conversation", || async {
+        um.messages().await.unwrap().len() == 2
+    })
+    .await;
     let messages = um.messages().await.unwrap();
-    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "count");
     assert_eq!(messages[1].content, "one two three");
 }
@@ -891,10 +912,11 @@ async fn judge_scores_are_persisted_after_a_turn() {
     assert_eq!(resp.status(), StatusCode::OK);
     drop(collect(resp.into_body()).await);
 
-    // Give the spawned judge task time to persist.
-    tokio::time::sleep(Duration::from_millis(30)).await;
-
     let user_id = UserId::from_string("alice");
+    wait_until("both judge scores", || async {
+        state.judge_store.scores(user_id).await.unwrap().len() == 2
+    })
+    .await;
     let mut scores = state.judge_store.scores(user_id).await.unwrap();
     scores.sort_by(|a, b| a.criterion.cmp(&b.criterion));
     assert_eq!(scores.len(), 2);
@@ -947,12 +969,12 @@ async fn judge_scores_are_persisted_after_a_streaming_turn() {
     assert_eq!(resp.status(), StatusCode::OK);
     let _ = collect(resp.into_body()).await;
 
-    // MemoryFlush spawns on Drop; the judge spawns again from inside.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let user_id = UserId::from_string("alice");
+    wait_until("the judge score", || async {
+        state.judge_store.scores(user_id).await.unwrap().len() == 1
+    })
+    .await;
     let scores = state.judge_store.scores(user_id).await.unwrap();
-    assert_eq!(scores.len(), 1);
     assert_eq!(scores[0].criterion, "helpfulness");
     assert!((scores[0].score - 7.0).abs() < f32::EPSILON);
 }
@@ -991,9 +1013,19 @@ async fn judge_sampling_rate_zero_records_nothing() {
     assert_eq!(resp.status(), StatusCode::OK);
     drop(collect(resp.into_body()).await);
 
-    tokio::time::sleep(Duration::from_millis(30)).await;
-
     let user_id = UserId::from_string("alice");
+    wait_until("the conversation to be persisted", || async {
+        state
+            .memory
+            .for_user(user_id)
+            .messages()
+            .await
+            .unwrap()
+            .len()
+            == 2
+    })
+    .await;
+    settle().await;
     assert_eq!(state.judge_store.scores(user_id).await.unwrap().len(), 0);
 }
 
@@ -1016,8 +1048,8 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
         app,
         sink,
         state,
-        telemetry_guard,
         subscriber_guard: _guard,
+        telemetry_guard,
     } = make_app(vec![reply]).await;
     let req = json_request(&serde_json::json!({
         "model": "assistant",
@@ -1029,13 +1061,15 @@ async fn streaming_persists_tool_calls_attached_to_assistant_message() {
     assert_eq!(resp.status(), StatusCode::OK);
     drop(collect(resp.into_body()).await);
 
-    // Drop guard spawns the persistence task; give it time to complete.
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    let user_id = UserId::from_string("alice");
+    let um = state.memory.for_user(user_id);
+    wait_until("the flushed conversation", || async {
+        um.messages().await.unwrap().len() == 2
+    })
+    .await;
     // Drain the SqliteLayer writer so spans land before we read.
     telemetry_guard.flush().await;
 
-    let user_id = UserId::from_string("alice");
-    let um = state.memory.for_user(user_id);
     let messages = um.messages().await.unwrap();
     assert_eq!(messages.len(), 2);
     let assistant = &messages[1];
@@ -1089,16 +1123,14 @@ async fn streaming_persists_partial_message_when_client_disconnects() {
     let _first = body.next().await.unwrap().unwrap();
     drop(body);
 
-    // Let the Drop guard's spawned task persist whatever we accumulated.
-    tokio::time::sleep(Duration::from_millis(30)).await;
-
     let um = state.memory.for_user(UserId::from_string("alice"));
+    wait_until("the user message to be persisted", || async {
+        !um.messages().await.unwrap().is_empty()
+    })
+    .await;
+    settle().await;
     let messages = um.messages().await.unwrap();
     // User message must be persisted. Assistant may be partial or full.
-    assert!(
-        !messages.is_empty(),
-        "no messages persisted after disconnect"
-    );
     assert_eq!(messages[0].content, "go");
     if messages.len() > 1 {
         let assistant = &messages[1].content;

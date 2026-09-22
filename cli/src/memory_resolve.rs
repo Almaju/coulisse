@@ -32,144 +32,142 @@ use memory::{
 use providers::{ProviderConfig, ProviderKind};
 use thiserror::Error;
 
-/// Resolve the user-facing YAML shape into the explicit runtime config.
-///
-/// `state_dir` is the project's `.coulisse/` directory (next to the config
-/// file). The database always lands there — there is no path knob — so state
-/// stays co-located with the project and `.coulisse/` is the one thing to
-/// back up or volume-mount.
-///
-/// # Errors
-///
-/// Returns an error when `user_state: true` is requested but the providers
-/// map can't supply a usable extraction model, or when an explicit
-/// `learn_from`/`embed_with` references an unconfigured provider.
-pub fn resolve_memory<S: BuildHasher>(
-    yaml: &MemoryYaml,
-    providers: &HashMap<ProviderKind, ProviderConfig, S>,
-    state_dir: &Path,
-) -> Result<MemoryConfig, MemoryResolveError> {
-    let backend = BackendConfig::Sqlite {
-        path: state_dir.join(DEFAULT_SQLITE_FILENAME),
-    };
+/// What the resolution needs from the rest of the config: the providers
+/// that can drive embedding and extraction, and the project's `.coulisse/`
+/// state directory (next to the config file). The database always lands
+/// there — there is no path knob — so state stays co-located with the
+/// project and `.coulisse/` is the one thing to back up or volume-mount.
+pub struct MemoryResolver<'a, S: BuildHasher = std::collections::hash_map::RandomState> {
+    pub providers: &'a HashMap<ProviderKind, ProviderConfig, S>,
+    pub state_dir: &'a Path,
+}
 
-    let (enabled, overrides) = yaml.user_state.parts();
-    if !enabled {
-        return Ok(MemoryConfig {
+impl<S: BuildHasher> MemoryResolver<'_, S> {
+    /// Resolve the user-facing YAML shape into the explicit runtime config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `user_state: true` is requested but the providers
+    /// map can't supply a usable extraction model, or when an explicit
+    /// `learn_from`/`embed_with` references an unconfigured provider.
+    pub fn resolve(&self, yaml: &MemoryYaml) -> Result<MemoryConfig, MemoryResolveError> {
+        let backend = BackendConfig::Sqlite {
+            path: self.state_dir.join(DEFAULT_SQLITE_FILENAME),
+        };
+
+        let (enabled, overrides) = yaml.user_state.parts();
+        if !enabled {
+            return Ok(MemoryConfig {
+                backend,
+                embedder: EmbedderConfig::Hash {
+                    dims: default_hash_dims(),
+                },
+                extractor: None,
+                recall_k: 0,
+                ..MemoryConfig::default()
+            });
+        }
+
+        let embedder = self.embedder(overrides.and_then(|c| c.embed_with.as_ref()));
+        let extractor = self.extractor(overrides)?;
+        let recall_k = overrides
+            .and_then(|c| c.recall_k)
+            .unwrap_or_else(default_recall_k);
+
+        Ok(MemoryConfig {
             backend,
-            embedder: EmbedderConfig::Hash {
-                dims: default_hash_dims(),
-            },
-            extractor: None,
-            recall_k: 0,
+            embedder,
+            extractor: Some(extractor),
+            recall_k,
             ..MemoryConfig::default()
-        });
+        })
     }
 
-    let embedder = resolve_embedder(overrides.and_then(|c| c.embed_with.as_ref()), providers);
-    let extractor = resolve_extractor(overrides, providers)?;
-    let recall_k = overrides
-        .and_then(|c| c.recall_k)
-        .unwrap_or_else(default_recall_k);
-
-    Ok(MemoryConfig {
-        backend,
-        embedder,
-        extractor: Some(extractor),
-        recall_k,
-        ..MemoryConfig::default()
-    })
-}
-
-fn resolve_embedder<S: BuildHasher>(
-    yaml: Option<&EmbedderYaml>,
-    providers: &HashMap<ProviderKind, ProviderConfig, S>,
-) -> EmbedderConfig {
-    match yaml {
-        None => auto_pick_embedder(providers),
-        Some(EmbedderYaml::Hash { dims }) => EmbedderConfig::Hash {
-            dims: dims.unwrap_or_else(default_hash_dims),
-        },
-        Some(EmbedderYaml::Openai { api_key, model }) => EmbedderConfig::Openai {
-            api_key: api_key.clone(),
-            model: model.clone().unwrap_or_else(default_openai_embedding_model),
-        },
-        Some(EmbedderYaml::Voyage { api_key, model }) => EmbedderConfig::Voyage {
-            api_key: api_key.clone(),
-            model: model.clone().unwrap_or_else(default_voyage_model),
-        },
-    }
-}
-
-/// Pick a usable embedder from the configured providers without an
-/// explicit override. Prefers `OpenAI` (if configured) for real semantic
-/// embeddings; falls back to the offline hash embedder so Coulisse always
-/// boots, even with only Anthropic configured.
-fn auto_pick_embedder<S: BuildHasher>(
-    providers: &HashMap<ProviderKind, ProviderConfig, S>,
-) -> EmbedderConfig {
-    if providers.contains_key(&ProviderKind::Openai) {
-        EmbedderConfig::Openai {
-            api_key: None,
-            model: default_openai_embedding_model(),
-        }
-    } else {
-        EmbedderConfig::Hash {
-            dims: default_hash_dims(),
-        }
-    }
-}
-
-fn resolve_extractor<S: BuildHasher>(
-    overrides: Option<&UserStateConfig>,
-    providers: &HashMap<ProviderKind, ProviderConfig, S>,
-) -> Result<ExtractorConfig, MemoryResolveError> {
-    let (provider, model) = match overrides.and_then(|c| c.learn_from.as_ref()) {
-        None => auto_pick_extractor(providers)?,
-        Some(ProviderModel { provider, model }) => {
-            let kind = ProviderKind::parse(provider).ok_or_else(|| {
-                MemoryResolveError::LearnFromUnknownProvider {
-                    provider: provider.clone(),
-                }
-            })?;
-            if !providers.contains_key(&kind) {
-                return Err(MemoryResolveError::LearnFromProviderNotConfigured { provider: kind });
+    /// Pick a usable embedder from the configured providers without an
+    /// explicit override. Prefers `OpenAI` (if configured) for real semantic
+    /// embeddings; falls back to the offline hash embedder so Coulisse always
+    /// boots, even with only Anthropic configured.
+    fn auto_embedder(&self) -> EmbedderConfig {
+        if self.providers.contains_key(&ProviderKind::Openai) {
+            EmbedderConfig::Openai {
+                api_key: None,
+                model: default_openai_embedding_model(),
             }
-            (provider.clone(), model.clone())
-        }
-    };
-    Ok(ExtractorConfig {
-        dedup_threshold: overrides
-            .and_then(|c| c.dedup_threshold)
-            .unwrap_or_else(default_dedup_threshold),
-        max_facts_per_turn: overrides
-            .and_then(|c| c.max_facts_per_turn)
-            .unwrap_or_else(default_extractor_max_facts),
-        model,
-        provider,
-    })
-}
-
-/// Pick the first configured provider in a stable priority order and use
-/// its known cheap "haiku-tier" model for extraction. Anthropic comes
-/// first because it's the most common Coulisse setup.
-fn auto_pick_extractor<S: BuildHasher>(
-    providers: &HashMap<ProviderKind, ProviderConfig, S>,
-) -> Result<(String, String), MemoryResolveError> {
-    const PRIORITY: &[(ProviderKind, &str)] = &[
-        (ProviderKind::Anthropic, "claude-haiku-4-5-20251001"),
-        (ProviderKind::Openai, "gpt-4o-mini"),
-        (ProviderKind::Gemini, "gemini-2.0-flash-lite"),
-        (ProviderKind::Groq, "llama-3.1-8b-instant"),
-        (ProviderKind::Deepseek, "deepseek-chat"),
-        (ProviderKind::Cohere, "command-r"),
-    ];
-    for (kind, model) in PRIORITY {
-        if providers.contains_key(kind) {
-            return Ok((kind.as_str().to_string(), (*model).to_string()));
+        } else {
+            EmbedderConfig::Hash {
+                dims: default_hash_dims(),
+            }
         }
     }
-    Err(MemoryResolveError::NoExtractorProvider)
+
+    /// Pick the first configured provider in a stable priority order and use
+    /// its known cheap "haiku-tier" model for extraction. Anthropic comes
+    /// first because it's the most common Coulisse setup.
+    fn auto_extractor(&self) -> Result<(String, String), MemoryResolveError> {
+        const PRIORITY: &[(ProviderKind, &str)] = &[
+            (ProviderKind::Anthropic, "claude-haiku-4-5-20251001"),
+            (ProviderKind::Openai, "gpt-4o-mini"),
+            (ProviderKind::Gemini, "gemini-2.0-flash-lite"),
+            (ProviderKind::Groq, "llama-3.1-8b-instant"),
+            (ProviderKind::Deepseek, "deepseek-chat"),
+            (ProviderKind::Cohere, "command-r"),
+        ];
+        for (kind, model) in PRIORITY {
+            if self.providers.contains_key(kind) {
+                return Ok((kind.as_str().to_string(), (*model).to_string()));
+            }
+        }
+        Err(MemoryResolveError::NoExtractorProvider)
+    }
+
+    fn embedder(&self, yaml: Option<&EmbedderYaml>) -> EmbedderConfig {
+        match yaml {
+            None => self.auto_embedder(),
+            Some(EmbedderYaml::Hash { dims }) => EmbedderConfig::Hash {
+                dims: dims.unwrap_or_else(default_hash_dims),
+            },
+            Some(EmbedderYaml::Openai { api_key, model }) => EmbedderConfig::Openai {
+                api_key: api_key.clone(),
+                model: model.clone().unwrap_or_else(default_openai_embedding_model),
+            },
+            Some(EmbedderYaml::Voyage { api_key, model }) => EmbedderConfig::Voyage {
+                api_key: api_key.clone(),
+                model: model.clone().unwrap_or_else(default_voyage_model),
+            },
+        }
+    }
+
+    fn extractor(
+        &self,
+        overrides: Option<&UserStateConfig>,
+    ) -> Result<ExtractorConfig, MemoryResolveError> {
+        let (provider, model) = match overrides.and_then(|c| c.learn_from.as_ref()) {
+            None => self.auto_extractor()?,
+            Some(ProviderModel { model, provider }) => {
+                let kind = ProviderKind::parse(provider).ok_or_else(|| {
+                    MemoryResolveError::LearnFromUnknownProvider {
+                        provider: provider.clone(),
+                    }
+                })?;
+                if !self.providers.contains_key(&kind) {
+                    return Err(MemoryResolveError::LearnFromProviderNotConfigured {
+                        provider: kind,
+                    });
+                }
+                (provider.clone(), model.clone())
+            }
+        };
+        Ok(ExtractorConfig {
+            dedup_threshold: overrides
+                .and_then(|c| c.dedup_threshold)
+                .unwrap_or_else(default_dedup_threshold),
+            max_facts_per_turn: overrides
+                .and_then(|c| c.max_facts_per_turn)
+                .unwrap_or_else(default_extractor_max_facts),
+            model,
+            provider,
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -212,7 +210,11 @@ mod tests {
         yaml: &MemoryYaml,
         providers: &HashMap<ProviderKind, ProviderConfig>,
     ) -> Result<MemoryConfig, MemoryResolveError> {
-        resolve_memory(yaml, providers, Path::new(".coulisse"))
+        MemoryResolver {
+            providers,
+            state_dir: Path::new(".coulisse"),
+        }
+        .resolve(yaml)
     }
 
     #[test]

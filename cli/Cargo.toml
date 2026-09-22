@@ -50,6 +50,7 @@ triggers.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 coulisse-core.workspace = true

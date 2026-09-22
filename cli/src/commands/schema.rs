@@ -11,8 +11,8 @@ use crate::config::Config;
 
 /// # Errors
 ///
-/// Returns an error if the underlying operation fails.
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// Returns an error if the schema cannot be serialized as JSON.
+pub fn run() -> Result<(), serde_json::Error> {
     let schema = schema_for!(Config);
     let json = serde_json::to_string_pretty(&schema)?;
     println!("{json}");

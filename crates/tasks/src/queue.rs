@@ -1,12 +1,9 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{
-    TaskId, TaskQueue, TaskQueueError, TaskStatus, TaskStatusError, TaskSummary, UserId,
-    i64_to_u64, now_secs, u64_to_i64,
+    BoxFuture, TaskId, TaskQueue, TaskQueueError, TaskState, TaskStatus, TaskStatusError,
+    TaskSubmission, TaskSummary, UserId, i64_to_u64, now_secs, u64_to_i64,
 };
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::error::TaskError;
@@ -17,48 +14,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "tasks";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("tasks has only one schema version")
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TaskState {
-    Done,
-    Errored,
-    Queued,
-    Running,
-}
-
-impl TaskState {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Done => "done",
-            Self::Errored => "errored",
-            Self::Queued => "queued",
-            Self::Running => "running",
-        }
-    }
-
-    fn parse(raw: &str, id: &str) -> Result<Self, TaskError> {
-        match raw {
-            "done" => Ok(Self::Done),
-            "errored" => Ok(Self::Errored),
-            "queued" => Ok(Self::Queued),
-            "running" => Ok(Self::Running),
-            other => Err(TaskError::MalformedRow {
-                field: "state",
-                id: id.to_string(),
-                value: other.to_string(),
-            }),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -101,26 +56,70 @@ impl Tasks {
     /// # Errors
     ///
     /// Returns an error if the underlying database write fails.
-    pub async fn enqueue(
-        &self,
-        agent: &str,
-        prompt: &str,
-        user_id: UserId,
-    ) -> Result<TaskId, TaskError> {
+    pub async fn enqueue(&self, submission: TaskSubmission<'_>) -> Result<TaskId, TaskError> {
         let id = TaskId::new();
         let now = u64_to_i64(now_secs());
         sqlx::query(
             "INSERT INTO tasks (agent, created_at, id, prompt, state, user_id) \
              VALUES (?, ?, ?, ?, 'queued', ?)",
         )
-        .bind(agent)
+        .bind(submission.agent)
         .bind(now)
         .bind(id.0.to_string())
-        .bind(prompt)
-        .bind(user_id.0.to_string())
+        .bind(submission.prompt)
+        .bind(submission.user_id.0.to_string())
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Look up a task by id. Returns `None` if no such task exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database read fails.
+    pub async fn get(&self, id: TaskId) -> Result<Option<Task>, TaskError> {
+        let row = sqlx::query_as::<_, TaskRow>(
+            "SELECT agent, created_at, error, finished_at, id, prompt, result, \
+                    started_at, state, user_id \
+             FROM tasks WHERE id = ?",
+        )
+        .bind(id.0.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(TaskRow::into_task).transpose()
+    }
+
+    /// Transition `id` to `done` with the agent's final reply as `result`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database write fails.
+    pub async fn mark_done(&self, id: TaskId, result: &str) -> Result<(), TaskError> {
+        let now = u64_to_i64(now_secs());
+        sqlx::query("UPDATE tasks SET state = 'done', finished_at = ?, result = ? WHERE id = ?")
+            .bind(now)
+            .bind(result)
+            .bind(id.0.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Transition `id` to `errored` with the displayed failure reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database write fails.
+    pub async fn mark_errored(&self, id: TaskId, error: &str) -> Result<(), TaskError> {
+        let now = u64_to_i64(now_secs());
+        sqlx::query("UPDATE tasks SET state = 'errored', finished_at = ?, error = ? WHERE id = ?")
+            .bind(now)
+            .bind(error)
+            .bind(id.0.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Atomically claim the oldest queued task and transition it to
@@ -179,66 +178,15 @@ impl Tasks {
         .await?;
         rows.into_iter().map(TaskRow::into_task).collect()
     }
-
-    /// Look up a task by id. Returns `None` if no such task exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying database read fails.
-    pub async fn get(&self, id: TaskId) -> Result<Option<Task>, TaskError> {
-        let row = sqlx::query_as::<_, TaskRow>(
-            "SELECT agent, created_at, error, finished_at, id, prompt, result, \
-                    started_at, state, user_id \
-             FROM tasks WHERE id = ?",
-        )
-        .bind(id.0.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(TaskRow::into_task).transpose()
-    }
-
-    /// Transition `id` to `done` with the agent's final reply as `result`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying database write fails.
-    pub async fn mark_done(&self, id: TaskId, result: &str) -> Result<(), TaskError> {
-        let now = u64_to_i64(now_secs());
-        sqlx::query("UPDATE tasks SET state = 'done', finished_at = ?, result = ? WHERE id = ?")
-            .bind(now)
-            .bind(result)
-            .bind(id.0.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Transition `id` to `errored` with the displayed failure reason.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying database write fails.
-    pub async fn mark_errored(&self, id: TaskId, error: &str) -> Result<(), TaskError> {
-        let now = u64_to_i64(now_secs());
-        sqlx::query("UPDATE tasks SET state = 'errored', finished_at = ?, error = ? WHERE id = ?")
-            .bind(now)
-            .bind(error)
-            .bind(id.0.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
 }
 
 impl TaskQueue for Tasks {
     fn submit<'a>(
         &'a self,
-        agent: &'a str,
-        prompt: &'a str,
-        user_id: UserId,
-    ) -> Pin<Box<dyn Future<Output = Result<TaskId, TaskQueueError>> + Send + 'a>> {
+        submission: TaskSubmission<'a>,
+    ) -> BoxFuture<'a, Result<TaskId, TaskQueueError>> {
         Box::pin(async move {
-            self.enqueue(agent, prompt, user_id)
+            self.enqueue(submission)
                 .await
                 .map_err(|e| TaskQueueError::new(e.to_string()))
         })
@@ -246,24 +194,11 @@ impl TaskQueue for Tasks {
 }
 
 impl TaskStatus for Tasks {
-    fn recent<'a>(
-        &'a self,
-        limit: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TaskSummary>, TaskStatusError>> + Send + 'a>> {
-        Box::pin(async move {
-            let rows = self
-                .recent(limit)
-                .await
-                .map_err(|e| TaskStatusError::new(e.to_string()))?;
-            Ok(rows.into_iter().map(into_summary).collect())
-        })
-    }
-
     fn reap_stale_running<'a>(
         &'a self,
         started_before_secs: u64,
         reason: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, TaskStatusError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<u64, TaskStatusError>> {
         Box::pin(async move {
             let now = u64_to_i64(now_secs());
             let cutoff = u64_to_i64(started_before_secs);
@@ -280,19 +215,31 @@ impl TaskStatus for Tasks {
             .map_err(|e| TaskStatusError::new(e.to_string()))
         })
     }
+
+    fn recent(&self, limit: u32) -> BoxFuture<'_, Result<Vec<TaskSummary>, TaskStatusError>> {
+        Box::pin(async move {
+            let rows = self
+                .recent(limit)
+                .await
+                .map_err(|e| TaskStatusError::new(e.to_string()))?;
+            Ok(rows.into_iter().map(TaskSummary::from).collect())
+        })
+    }
 }
 
-fn into_summary(task: Task) -> TaskSummary {
-    TaskSummary {
-        agent: task.agent,
-        created_at: task.created_at,
-        error: task.error,
-        finished_at: task.finished_at,
-        id: task.id,
-        prompt: task.prompt,
-        result: task.result,
-        started_at: task.started_at,
-        state: task.state.as_str().to_string(),
+impl From<Task> for TaskSummary {
+    fn from(task: Task) -> Self {
+        Self {
+            agent: task.agent,
+            created_at: task.created_at,
+            error: task.error,
+            finished_at: task.finished_at,
+            id: task.id,
+            prompt: task.prompt,
+            result: task.result,
+            started_at: task.started_at,
+            state: task.state,
+        }
     }
 }
 
@@ -312,17 +259,23 @@ struct TaskRow {
 
 impl TaskRow {
     fn into_task(self) -> Result<Task, TaskError> {
-        let state = TaskState::parse(&self.state, &self.id)?;
-        let task_uuid = Uuid::parse_str(&self.id).map_err(|_| TaskError::MalformedRow {
-            field: "id",
+        let state = self
+            .state
+            .parse::<TaskState>()
+            .map_err(|source| TaskError::UnknownState {
+                id: self.id.clone(),
+                source,
+            })?;
+        let task_uuid = Uuid::parse_str(&self.id).map_err(|source| TaskError::InvalidId {
             id: self.id.clone(),
-            value: self.id.clone(),
+            source,
         })?;
-        let user_uuid = Uuid::parse_str(&self.user_id).map_err(|_| TaskError::MalformedRow {
-            field: "user_id",
-            id: self.id.clone(),
-            value: self.user_id.clone(),
-        })?;
+        let user_uuid =
+            Uuid::parse_str(&self.user_id).map_err(|source| TaskError::InvalidUserId {
+                id: self.id.clone(),
+                source,
+                user_id: self.user_id.clone(),
+            })?;
         Ok(Task {
             agent: self.agent,
             created_at: i64_to_u64(self.created_at),
@@ -344,6 +297,14 @@ mod tests {
     use sqlx::sqlite::SqliteConnectOptions;
     use std::str::FromStr;
 
+    fn submission<'a>(agent: &'a str, prompt: &'a str, user_id: UserId) -> TaskSubmission<'a> {
+        TaskSubmission {
+            agent,
+            prompt,
+            user_id,
+        }
+    }
+
     async fn queue() -> Tasks {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
         let pool = SqlitePool::connect_with(opts).await.unwrap();
@@ -354,7 +315,10 @@ mod tests {
     async fn enqueue_and_pick() {
         let q = queue().await;
         let user = UserId::new();
-        let id = q.enqueue("pm", "do the thing", user).await.unwrap();
+        let id = q
+            .enqueue(submission("pm", "do the thing", user))
+            .await
+            .unwrap();
 
         let picked = q.next_runnable().await.unwrap().unwrap();
         assert_eq!(picked.id, id);
@@ -370,7 +334,10 @@ mod tests {
     #[tokio::test]
     async fn mark_done_persists_result() {
         let q = queue().await;
-        let id = q.enqueue("pm", "p", UserId::new()).await.unwrap();
+        let id = q
+            .enqueue(submission("pm", "p", UserId::new()))
+            .await
+            .unwrap();
         let _ = q.next_runnable().await.unwrap().unwrap();
         q.mark_done(id, "all good").await.unwrap();
 
@@ -384,7 +351,10 @@ mod tests {
     #[tokio::test]
     async fn mark_errored_persists_reason() {
         let q = queue().await;
-        let id = q.enqueue("pm", "p", UserId::new()).await.unwrap();
+        let id = q
+            .enqueue(submission("pm", "p", UserId::new()))
+            .await
+            .unwrap();
         let _ = q.next_runnable().await.unwrap().unwrap();
         q.mark_errored(id, "provider timeout").await.unwrap();
 
@@ -398,8 +368,8 @@ mod tests {
     async fn fifo_order() {
         let q = queue().await;
         let user = UserId::new();
-        let first = q.enqueue("a", "1", user).await.unwrap();
-        let second = q.enqueue("b", "2", user).await.unwrap();
+        let first = q.enqueue(submission("a", "1", user)).await.unwrap();
+        let second = q.enqueue(submission("b", "2", user)).await.unwrap();
 
         let p1 = q.next_runnable().await.unwrap().unwrap();
         let p2 = q.next_runnable().await.unwrap().unwrap();
@@ -416,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn submit_via_trait_returns_task_id() {
         let q = queue().await;
-        let id = TaskQueue::submit(&q, "pm", "prompt", UserId::new())
+        let id = TaskQueue::submit(&q, submission("pm", "prompt", UserId::new()))
             .await
             .unwrap();
         let t = q.get(id).await.unwrap().unwrap();
@@ -427,21 +397,24 @@ mod tests {
     async fn task_status_recent_returns_summaries() {
         let q = queue().await;
         let user = UserId::new();
-        q.enqueue("pm", "1", user).await.unwrap();
-        q.enqueue("coder", "2", user).await.unwrap();
+        q.enqueue(submission("pm", "1", user)).await.unwrap();
+        q.enqueue(submission("coder", "2", user)).await.unwrap();
 
         let summaries = TaskStatus::recent(&q, 10).await.unwrap();
         assert_eq!(summaries.len(), 2);
         let agents: Vec<_> = summaries.iter().map(|s| s.agent.as_str()).collect();
         assert!(agents.contains(&"pm"));
         assert!(agents.contains(&"coder"));
-        assert!(summaries.iter().all(|s| s.state == "queued"));
+        assert!(summaries.iter().all(|s| s.state == TaskState::Queued));
     }
 
     #[tokio::test]
     async fn reap_stale_running_marks_old_running_errored() {
         let q = queue().await;
-        let id = q.enqueue("pm", "p", UserId::new()).await.unwrap();
+        let id = q
+            .enqueue(submission("pm", "p", UserId::new()))
+            .await
+            .unwrap();
         let _ = q.next_runnable().await.unwrap().unwrap();
 
         let touched = TaskStatus::reap_stale_running(&q, u64::MAX, "process restarted")
@@ -457,7 +430,9 @@ mod tests {
     #[tokio::test]
     async fn reap_stale_running_leaves_recent_running_alone() {
         let q = queue().await;
-        q.enqueue("pm", "p", UserId::new()).await.unwrap();
+        q.enqueue(submission("pm", "p", UserId::new()))
+            .await
+            .unwrap();
         let _ = q.next_runnable().await.unwrap().unwrap();
 
         // started_before_secs = 0 → only tasks that started before epoch are reaped.

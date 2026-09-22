@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// `EventId` — nests it under the scope that triggered it. The tree rooted
 /// at the top-level `turn_start` event captures the full causal structure
 /// of a turn, including nested subagent recursion.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct EventId(pub Uuid);
 

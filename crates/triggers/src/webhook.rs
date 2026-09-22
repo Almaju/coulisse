@@ -20,87 +20,90 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
-use coulisse_core::{TaskQueue, UserId};
+use coulisse_core::{TaskQueue, TaskSubmission, UserId};
 use serde_json::Value;
 use tracing::{error, info};
 
 use crate::config::{TriggerConfig, TriggerKind};
 
+/// One `type: webhook` entry, ready to serve `POST <path>`. Doubles as the
+/// axum handler state so each mounted route carries its own trigger.
 #[derive(Clone)]
-struct HookState {
+pub(crate) struct WebhookTrigger {
     agent_template: String,
     name: String,
+    path: String,
     prompt_template: String,
     queue: Arc<dyn TaskQueue>,
     user_id: UserId,
 }
 
-/// Build an axum router that mounts one `POST` handler per webhook
-/// trigger. Non-webhook entries (cron, future variants) are ignored.
-///
-/// The returned router uses the unit state `()`; each handler holds its
-/// own per-trigger state baked in.
-//
-// `queue: Arc` taken by value because it's cloned into each per-trigger
-// `HookState`; the `Arc::clone(&queue)` inside is the idiomatic shape.
-#[allow(clippy::needless_pass_by_value)]
-pub fn webhook_router(
-    triggers: &[TriggerConfig],
-    queue: Arc<dyn TaskQueue>,
-    user_id: UserId,
-) -> Router {
-    let mut router = Router::new();
-    for t in triggers {
-        let TriggerKind::Webhook { path } = &t.kind else {
-            continue;
+impl WebhookTrigger {
+    /// `None` when `config` is not a webhook trigger.
+    pub(crate) fn from_config(
+        config: &TriggerConfig,
+        queue: Arc<dyn TaskQueue>,
+        user_id: UserId,
+    ) -> Option<Self> {
+        let TriggerKind::Webhook { path } = &config.kind else {
+            return None;
         };
-        let state = HookState {
-            agent_template: t.agent.clone(),
-            name: t.name.clone(),
-            prompt_template: t.prompt.clone(),
-            queue: Arc::clone(&queue),
+        Some(Self {
+            agent_template: config.agent.clone(),
+            name: config.name.clone(),
+            path: path.clone(),
+            prompt_template: config.prompt.clone(),
+            queue,
             user_id,
-        };
-        router = router.route(path, post(handle).with_state(state));
+        })
     }
-    router
-}
 
-async fn handle(
-    State(state): State<HookState>,
-    Json(payload): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
-    let agent = substitute(&state.agent_template, &payload);
-    let prompt = substitute(&state.prompt_template, &payload);
-    // Reject payloads that left the `agent` field unresolved. A literal
-    // `{{ name }}` survives substitution when the path is missing — at
-    // that point we can't enqueue, the worker would just fail later
-    // with an "unknown agent" task error.
-    if agent.contains("{{") || agent.trim().is_empty() {
-        error!(
-            trigger = %state.name,
-            template = %state.agent_template,
-            resolved = %agent,
-            "webhook agent template did not resolve to a name"
-        );
-        return Err(StatusCode::BAD_REQUEST);
+    pub(crate) fn mount(self, router: Router) -> Router {
+        let path = self.path.clone();
+        router.route(&path, post(Self::handle).with_state(self))
     }
-    match state.queue.submit(&agent, &prompt, state.user_id).await {
-        Ok(task_id) => {
-            info!(
-                trigger = %state.name,
-                agent = %agent,
-                task_id = %task_id.0,
-                "webhook trigger fired"
+
+    async fn handle(
+        State(trigger): State<Self>,
+        Json(payload): Json<Value>,
+    ) -> Result<Json<Value>, StatusCode> {
+        let agent = substitute(&trigger.agent_template, &payload);
+        let prompt = substitute(&trigger.prompt_template, &payload);
+        // Reject payloads that left the `agent` field unresolved. A literal
+        // `{{ name }}` survives substitution when the path is missing — at
+        // that point we can't enqueue, the worker would just fail later
+        // with an "unknown agent" task error.
+        if agent.contains("{{") || agent.trim().is_empty() {
+            error!(
+                trigger = %trigger.name,
+                template = %trigger.agent_template,
+                resolved = %agent,
+                "webhook agent template did not resolve to a name"
             );
-            Ok(Json(serde_json::json!({
-                "ok": true,
-                "task_id": task_id.0.to_string(),
-            })))
+            return Err(StatusCode::BAD_REQUEST);
         }
-        Err(e) => {
-            error!(trigger = %state.name, %e, "webhook trigger failed to enqueue");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        let submission = TaskSubmission {
+            agent: &agent,
+            prompt: &prompt,
+            user_id: trigger.user_id,
+        };
+        match trigger.queue.submit(submission).await {
+            Ok(task_id) => {
+                info!(
+                    trigger = %trigger.name,
+                    agent = %agent,
+                    task_id = %task_id.0,
+                    "webhook trigger fired"
+                );
+                Ok(Json(serde_json::json!({
+                    "ok": true,
+                    "task_id": task_id.0.to_string(),
+                })))
+            }
+            Err(e) => {
+                error!(trigger = %trigger.name, %e, "webhook trigger failed to enqueue");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
         }
     }
 }
@@ -206,12 +209,12 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::response::Response;
-    use coulisse_core::{TaskId, TaskQueue, TaskQueueError, UserId};
+    use coulisse_core::{BoxFuture, TaskId, TaskQueue, TaskQueueError, TaskSubmission, UserId};
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    use crate::Triggers;
     use crate::config::{TriggerConfig, TriggerKind};
-    use crate::webhook_router;
 
     #[derive(Default)]
     struct CapturingQueue {
@@ -221,13 +224,9 @@ mod tests {
     impl TaskQueue for CapturingQueue {
         fn submit<'a>(
             &'a self,
-            agent: &'a str,
-            prompt: &'a str,
-            _user_id: UserId,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<TaskId, TaskQueueError>> + Send + 'a>,
-        > {
-            let captured = (agent.to_string(), prompt.to_string());
+            submission: TaskSubmission<'a>,
+        ) -> BoxFuture<'a, Result<TaskId, TaskQueueError>> {
+            let captured = (submission.agent.to_string(), submission.prompt.to_string());
             Box::pin(async move {
                 self.calls.lock().unwrap().push(captured);
                 Ok(TaskId::new())
@@ -236,7 +235,7 @@ mod tests {
     }
 
     fn router_with(triggers: &[TriggerConfig], queue: Arc<CapturingQueue>) -> Router {
-        webhook_router(triggers, queue as Arc<dyn TaskQueue>, UserId::new())
+        Triggers::new(triggers, queue as Arc<dyn TaskQueue>, UserId::new()).webhook_router()
     }
 
     fn chat_trigger(agent_template: &str) -> TriggerConfig {

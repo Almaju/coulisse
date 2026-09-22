@@ -23,11 +23,13 @@ impl StatePaths {
             .filter(|p| !p.as_os_str().is_empty())
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let dir = parent.join(".coulisse");
+        let log = dir.join("coulisse.log");
+        let pid = dir.join("coulisse.pid");
         Self {
-            log: dir.join("coulisse.log"),
-            pid: dir.join("coulisse.pid"),
             config,
             dir,
+            log,
+            pid,
         }
     }
 }

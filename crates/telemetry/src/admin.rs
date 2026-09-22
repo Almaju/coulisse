@@ -12,7 +12,6 @@ mod templates;
 mod views;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use askama::Template;
 use axum::Router;
@@ -20,133 +19,131 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use uuid::Uuid;
+use coulisse_core::{UserId, now_secs};
 
 use crate::{Sink, TelemetryError, TurnId};
-use coulisse_core::UserId;
 use templates::{EventsFragment, ToolCallsFragment, ToolDetailPage, ToolsPage};
-use views::{event_rows, recent_tool_call_rows, tool_call_rows, tool_detail_row, tool_list_rows};
+use views::{EventTree, RecentToolCallRow, ToolCallRow, ToolDetailRow, ToolListRow};
 
-/// Build the admin router for telemetry. Cli merges this into the
-/// combined `/admin` router.
-pub fn router(sink: Arc<Sink>) -> Router {
-    Router::new()
-        .route("/tools", get(tools_page))
-        .route("/tools/{name}", get(tool_detail))
-        .route("/users/{user_id}/turns/{turn_id}/events", get(turn_events))
-        .route(
-            "/users/{user_id}/turns/{turn_id}/tool-calls",
-            get(turn_tool_calls),
-        )
-        .with_state(sink)
+const STATS_WINDOW_SECS: u64 = 7 * 86_400;
+
+/// Handler state for the telemetry admin pages. Cli merges
+/// [`TelemetryAdmin::router`] into the combined `/admin` router.
+#[derive(Clone)]
+pub struct TelemetryAdmin {
+    sink: Arc<Sink>,
 }
 
-async fn tool_detail(
-    State(sink): State<Arc<Sink>>,
-    Path(name): Path<String>,
-) -> Result<Html<String>, AdminError> {
-    let since = now_epoch().saturating_sub(7 * 86_400);
-    let stats = sink.tool_call_stats(since).await?;
-    let entry = stats
-        .into_iter()
-        .find(|s| s.tool_name == name)
-        .ok_or(AdminError::NotFound)?;
-    let calls = sink.tool_calls_for_tool(&name, 20).await?;
-    render(ToolDetailPage {
-        recent_calls: recent_tool_call_rows(calls),
-        tool: tool_detail_row(&entry),
-    })
-}
+impl TelemetryAdmin {
+    #[must_use]
+    pub fn new(sink: Arc<Sink>) -> Self {
+        Self { sink }
+    }
 
-async fn tools_page(State(sink): State<Arc<Sink>>) -> Result<Html<String>, AdminError> {
-    let since = now_epoch().saturating_sub(7 * 86_400);
-    let stats = sink.tool_call_stats(since).await?;
-    render(ToolsPage {
-        tools: tool_list_rows(stats),
-    })
-}
+    pub fn router(self) -> Router {
+        Router::new()
+            .route("/tools", get(Self::tools_page))
+            .route("/tools/{name}", get(Self::tool_detail))
+            .route(
+                "/users/{user_id}/turns/{turn_id}/events",
+                get(Self::turn_events),
+            )
+            .route(
+                "/users/{user_id}/turns/{turn_id}/tool-calls",
+                get(Self::turn_tool_calls),
+            )
+            .with_state(self)
+    }
 
-async fn turn_events(
-    State(sink): State<Arc<Sink>>,
-    Path((user_id, turn_id)): Path<(String, String)>,
-) -> Result<Html<String>, AdminError> {
-    let user_id = parse_user_id(&user_id)?;
-    let turn_id = parse_turn_id(&turn_id)?;
-    let events = sink.fetch_turn(user_id, turn_id).await?;
-    render(EventsFragment {
-        rows: event_rows(events),
-    })
-}
+    async fn tool_detail(
+        State(admin): State<Self>,
+        Path(name): Path<String>,
+    ) -> Result<Html<String>, AdminError> {
+        let now = now_secs();
+        let stats = admin
+            .sink
+            .tool_call_stats(now.saturating_sub(STATS_WINDOW_SECS))
+            .await?;
+        let entry = stats
+            .into_iter()
+            .find(|s| s.tool_name == name)
+            .ok_or(AdminError::NotFound)?;
+        let calls = admin.sink.tool_calls_for_tool(&name, 20).await?;
+        render(ToolDetailPage {
+            recent_calls: calls
+                .into_iter()
+                .map(|call| RecentToolCallRow::new(call, now))
+                .collect(),
+            tool: ToolDetailRow::from(&entry),
+        })
+    }
 
-async fn turn_tool_calls(
-    State(sink): State<Arc<Sink>>,
-    Path((_user_id, turn_id)): Path<(String, String)>,
-) -> Result<Html<String>, AdminError> {
-    let turn_id = parse_turn_id(&turn_id)?;
-    let calls = sink.tool_calls_for_turn(turn_id).await?;
-    render(ToolCallsFragment {
-        rows: tool_call_rows(calls),
-    })
+    async fn tools_page(State(admin): State<Self>) -> Result<Html<String>, AdminError> {
+        let since = now_secs().saturating_sub(STATS_WINDOW_SECS);
+        let stats = admin.sink.tool_call_stats(since).await?;
+        render(ToolsPage {
+            tools: stats.into_iter().map(ToolListRow::from).collect(),
+        })
+    }
+
+    async fn turn_events(
+        State(admin): State<Self>,
+        Path((user_id, turn_id)): Path<(String, String)>,
+    ) -> Result<Html<String>, AdminError> {
+        let user_id = user_id
+            .parse::<UserId>()
+            .map_err(AdminError::InvalidUserId)?;
+        let turn_id = turn_id
+            .parse::<TurnId>()
+            .map_err(AdminError::InvalidTurnId)?;
+        let events = admin.sink.fetch_turn(user_id, turn_id).await?;
+        render(EventsFragment {
+            rows: EventTree::from(events).into_rows(),
+        })
+    }
+
+    async fn turn_tool_calls(
+        State(admin): State<Self>,
+        Path((_user_id, turn_id)): Path<(String, String)>,
+    ) -> Result<Html<String>, AdminError> {
+        let turn_id = turn_id
+            .parse::<TurnId>()
+            .map_err(AdminError::InvalidTurnId)?;
+        let calls = admin.sink.tool_calls_for_turn(turn_id).await?;
+        render(ToolCallsFragment {
+            rows: calls.into_iter().map(ToolCallRow::from).collect(),
+        })
+    }
 }
 
 fn render<T: Template>(tpl: T) -> Result<Html<String>, AdminError> {
     Ok(Html(tpl.render()?))
 }
 
-fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-fn parse_user_id(raw: &str) -> Result<UserId, AdminError> {
-    Uuid::parse_str(raw)
-        .map(UserId::from)
-        .map_err(|_| AdminError::InvalidUserId)
-}
-
-fn parse_turn_id(raw: &str) -> Result<TurnId, AdminError> {
-    Uuid::parse_str(raw)
-        .map(TurnId)
-        .map_err(|_| AdminError::InvalidTurnId)
-}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum AdminError {
-    InvalidTurnId,
-    InvalidUserId,
+    #[error("turn_id must be a valid UUID")]
+    InvalidTurnId(#[source] uuid::Error),
+    #[error("user_id must be a valid UUID")]
+    InvalidUserId(#[source] uuid::Error),
+    #[error("not found")]
     NotFound,
-    Render(askama::Error),
-    Telemetry(TelemetryError),
-}
-
-impl From<TelemetryError> for AdminError {
-    fn from(err: TelemetryError) -> Self {
-        Self::Telemetry(err)
-    }
-}
-
-impl From<askama::Error> for AdminError {
-    fn from(err: askama::Error) -> Self {
-        Self::Render(err)
-    }
+    #[error("template render failed: {0}")]
+    Render(#[from] askama::Error),
+    #[error("{0}")]
+    Telemetry(#[from] TelemetryError),
 }
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::InvalidTurnId => (
-                StatusCode::BAD_REQUEST,
-                "turn_id must be a valid UUID".to_string(),
-            ),
-            Self::InvalidUserId => (
-                StatusCode::BAD_REQUEST,
-                "user_id must be a valid UUID".to_string(),
-            ),
-            Self::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
-            Self::Render(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-            Self::Telemetry(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        let status = match self {
+            Self::InvalidTurnId(_) | Self::InvalidUserId(_) => StatusCode::BAD_REQUEST,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Render(_) | Self::Telemetry(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, message).into_response()
+        if status.is_server_error() {
+            tracing::error!(error = %self, "telemetry admin request failed");
+        }
+        (status, self.to_string()).into_response()
     }
 }

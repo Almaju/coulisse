@@ -43,6 +43,10 @@ const SECRETS_FILENAME: &str = "secrets.env";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
+    #[error(
+        "{path} is malformed: expected `KEY=value` lines for COULISSE_VAULT_KEY and COULISSE_HMAC_KEY. Delete the file to regenerate, but note that this will invalidate every stored OAuth token."
+    )]
+    Malformed { path: String },
     #[error("failed to read {path}: {source}")]
     Read {
         path: String,
@@ -55,12 +59,6 @@ pub enum SecretsError {
         #[source]
         source: io::Error,
     },
-    #[error(
-        "{path} is malformed: expected `KEY=value` lines for COULISSE_VAULT_KEY and \
-         COULISSE_HMAC_KEY. Delete the file to regenerate, but note that this will \
-         invalidate every stored OAuth token."
-    )]
-    Malformed { path: String },
 }
 
 #[derive(Clone, Debug)]
@@ -69,56 +67,28 @@ pub struct Secrets {
     pub vault_key: String,
 }
 
+/// The two keys as the environment supplies them. Both must be present
+/// for the environment to win; a lone key falls through to the file.
+#[derive(Clone, Debug, Default)]
+pub struct EnvKeys {
+    pub hmac_key: Option<String>,
+    pub vault_key: Option<String>,
+}
+
+impl EnvKeys {
+    /// Read `COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY` from the process
+    /// environment. Called once, at boot, before any worker threads exist.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            hmac_key: std::env::var(HMAC_KEY_VAR).ok(),
+            vault_key: std::env::var(VAULT_KEY_VAR).ok(),
+        }
+    }
+}
+
 impl Secrets {
-    /// Resolve secrets for this Coulisse instance. Reads the env vars
-    /// (`COULISSE_VAULT_KEY` / `COULISSE_HMAC_KEY`) at the one well-
-    /// defined spot — process boot, before any worker threads exist —
-    /// and delegates to `resolve` for the actual env > file > generate
-    /// priority. Tests bypass this and call `resolve` directly with
-    /// injected values, so no test ever mutates the process env.
-    ///
-    /// # Errors
-    ///
-    /// Returns `SecretsError` if the secrets file exists but is
-    /// unreadable / malformed, or if writing a freshly generated file
-    /// fails.
-    pub fn load_or_generate(state_dir: &Path) -> Result<Self, SecretsError> {
-        let env_vault = std::env::var(VAULT_KEY_VAR).ok();
-        let env_hmac = std::env::var(HMAC_KEY_VAR).ok();
-        Self::resolve(state_dir, env_vault.as_deref(), env_hmac.as_deref())
-    }
-
-    fn resolve(
-        state_dir: &Path,
-        env_vault: Option<&str>,
-        env_hmac: Option<&str>,
-    ) -> Result<Self, SecretsError> {
-        if let (Some(vault_key), Some(hmac_key)) = (env_vault, env_hmac) {
-            return Ok(Self {
-                hmac_key: hmac_key.to_string(),
-                vault_key: vault_key.to_string(),
-            });
-        }
-
-        let path = state_dir.join(SECRETS_FILENAME);
-        if path.exists() {
-            return parse_secrets_file(&path);
-        }
-
-        let secrets = Self::generate();
-        fs::create_dir_all(state_dir).map_err(|source| SecretsError::Write {
-            path: state_dir.display().to_string(),
-            source,
-        })?;
-        write_secrets_file(&path, &secrets)?;
-        tracing::info!(
-            path = %path.display(),
-            "generated MCP OAuth encryption keys at first boot — \
-             back this file up; losing it invalidates every stored token"
-        );
-        Ok(secrets)
-    }
-
+    // rabot: allow(ambient-randomness) cryptographic secret: a replayable generator would be a vulnerability
     fn generate() -> Self {
         let mut vault = [0u8; 32];
         rand::rng().fill_bytes(&mut vault);
@@ -129,88 +99,125 @@ impl Secrets {
             vault_key: B64.encode(vault),
         }
     }
-}
 
-fn parse_secrets_file(path: &Path) -> Result<Secrets, SecretsError> {
-    let contents = fs::read_to_string(path).map_err(|source| SecretsError::Read {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let mut vault_key: Option<String> = None;
-    let mut hmac_key: Option<String> = None;
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim().trim_matches('"').to_string();
-        match key {
-            VAULT_KEY_VAR => vault_key = Some(value),
-            HMAC_KEY_VAR => hmac_key = Some(value),
-            _ => {}
-        }
-    }
-    match (vault_key, hmac_key) {
-        (Some(vault_key), Some(hmac_key)) => Ok(Secrets {
-            hmac_key,
-            vault_key,
-        }),
-        _ => Err(SecretsError::Malformed {
-            path: path.display().to_string(),
-        }),
-    }
-}
-
-#[cfg(unix)]
-fn write_secrets_file(path: &Path, secrets: &Secrets) -> Result<(), SecretsError> {
-    use std::io::Write;
-
-    let body = format!(
-        "# Auto-generated by coulisse on first boot. Encryption material for\n\
-         # MCP per-user OAuth tokens — back this file up. Losing it makes every\n\
-         # token in `mcp_oauth_tokens` unrecoverable (users have to re-authorize\n\
-         # each connected MCP server).\n\
-         #\n\
-         # You can override these by exporting COULISSE_VAULT_KEY and\n\
-         # COULISSE_HMAC_KEY as environment variables; env wins over this file.\n\
-         {VAULT_KEY_VAR}={}\n\
-         {HMAC_KEY_VAR}={}\n",
-        secrets.vault_key, secrets.hmac_key,
-    );
-
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|source| SecretsError::Write {
+    fn parse_file(path: &Path) -> Result<Self, SecretsError> {
+        let contents = fs::read_to_string(path).map_err(|source| SecretsError::Read {
             path: path.display().to_string(),
             source,
         })?;
-    file.write_all(body.as_bytes())
-        .map_err(|source| SecretsError::Write {
-            path: path.display().to_string(),
+        let mut vault_key: Option<String> = None;
+        let mut hmac_key: Option<String> = None;
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            let value = value.trim().trim_matches('"').to_string();
+            match key {
+                VAULT_KEY_VAR => vault_key = Some(value),
+                HMAC_KEY_VAR => hmac_key = Some(value),
+                _ => {}
+            }
+        }
+        match (vault_key, hmac_key) {
+            (Some(vault_key), Some(hmac_key)) => Ok(Self {
+                hmac_key,
+                vault_key,
+            }),
+            _ => Err(SecretsError::Malformed {
+                path: path.display().to_string(),
+            }),
+        }
+    }
+
+    /// Resolve secrets for this Coulisse instance with the env > file >
+    /// generate priority. `env` is read once at boot by
+    /// [`EnvKeys::from_env`]; tests pass injected values, so no test ever
+    /// mutates the process environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretsError` if the secrets file exists but is
+    /// unreadable / malformed, or if writing a freshly generated file
+    /// fails.
+    pub fn resolve(state_dir: &Path, env: EnvKeys) -> Result<Self, SecretsError> {
+        if let (Some(vault_key), Some(hmac_key)) = (env.vault_key, env.hmac_key) {
+            return Ok(Self {
+                hmac_key,
+                vault_key,
+            });
+        }
+
+        let path = state_dir.join(SECRETS_FILENAME);
+        if path.exists() {
+            return Self::parse_file(&path);
+        }
+
+        let secrets = Self::generate();
+        fs::create_dir_all(state_dir).map_err(|source| SecretsError::Write {
+            path: state_dir.display().to_string(),
             source,
         })?;
-    // Belt and suspenders: if the file pre-existed (race), re-assert perms.
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    Ok(())
-}
+        secrets.write_file(&path)?;
+        tracing::info!(
+            path = %path.display(),
+            "generated MCP OAuth encryption keys at first boot — \
+             back this file up; losing it invalidates every stored token"
+        );
+        Ok(secrets)
+    }
 
-#[cfg(not(unix))]
-fn write_secrets_file(path: &Path, secrets: &Secrets) -> Result<(), SecretsError> {
-    let body = format!(
-        "{VAULT_KEY_VAR}={}\n{HMAC_KEY_VAR}={}\n",
-        secrets.vault_key, secrets.hmac_key,
-    );
-    fs::write(path, body).map_err(|source| SecretsError::Write {
-        path: path.display().to_string(),
-        source,
-    })
+    #[cfg(unix)]
+    fn write_file(&self, path: &Path) -> Result<(), SecretsError> {
+        use std::io::Write;
+
+        let body = format!(
+            "# Auto-generated by coulisse on first boot. Encryption material for\n\
+             # MCP per-user OAuth tokens — back this file up. Losing it makes every\n\
+             # token in `mcp_oauth_tokens` unrecoverable (users have to re-authorize\n\
+             # each connected MCP server).\n\
+             #\n\
+             # You can override these by exporting COULISSE_VAULT_KEY and\n\
+             # COULISSE_HMAC_KEY as environment variables; env wins over this file.\n\
+             {VAULT_KEY_VAR}={}\n\
+             {HMAC_KEY_VAR}={}\n",
+            self.vault_key, self.hmac_key,
+        );
+
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|source| SecretsError::Write {
+                path: path.display().to_string(),
+                source,
+            })?;
+        file.write_all(body.as_bytes())
+            .map_err(|source| SecretsError::Write {
+                path: path.display().to_string(),
+                source,
+            })?;
+        // Belt and suspenders: if the file pre-existed (race), re-assert perms.
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn write_file(&self, path: &Path) -> Result<(), SecretsError> {
+        let body = format!(
+            "{VAULT_KEY_VAR}={}\n{HMAC_KEY_VAR}={}\n",
+            self.vault_key, self.hmac_key,
+        );
+        fs::write(path, body).map_err(|source| SecretsError::Write {
+            path: path.display().to_string(),
+            source,
+        })
+    }
 }
 
 #[must_use]
@@ -236,7 +243,11 @@ mod tests {
             format!("{VAULT_KEY_VAR}=file-vault\n{HMAC_KEY_VAR}=file-hmac\n"),
         )
         .unwrap();
-        let secrets = Secrets::resolve(dir.path(), Some("env-vault"), Some("env-hmac")).unwrap();
+        let env = EnvKeys {
+            hmac_key: Some("env-hmac".into()),
+            vault_key: Some("env-vault".into()),
+        };
+        let secrets = Secrets::resolve(dir.path(), env).unwrap();
         assert_eq!(secrets.vault_key, "env-vault");
         assert_eq!(secrets.hmac_key, "env-hmac");
     }
@@ -246,16 +257,20 @@ mod tests {
         // Only the vault env set (not the hmac one) → fall through to
         // file or generation, don't pick up just the vault half.
         let dir = TempDir::new().unwrap();
-        let secrets = Secrets::resolve(dir.path(), Some("env-vault"), None).unwrap();
+        let env = EnvKeys {
+            hmac_key: None,
+            vault_key: Some("env-vault".into()),
+        };
+        let secrets = Secrets::resolve(dir.path(), env).unwrap();
         assert_ne!(secrets.vault_key, "env-vault");
     }
 
     #[test]
     fn first_boot_generates_and_persists() {
         let dir = TempDir::new().unwrap();
-        let first = Secrets::resolve(dir.path(), None, None).unwrap();
+        let first = Secrets::resolve(dir.path(), EnvKeys::default()).unwrap();
         // Same dir, second call — should read the file, not regenerate.
-        let second = Secrets::resolve(dir.path(), None, None).unwrap();
+        let second = Secrets::resolve(dir.path(), EnvKeys::default()).unwrap();
         assert_eq!(first.vault_key, second.vault_key);
         assert_eq!(first.hmac_key, second.hmac_key);
         // Both are valid base64 of 32 bytes.
@@ -271,7 +286,7 @@ mod tests {
         // accidentally uses the same RNG draw for both would still pass
         // size checks, so guard against it explicitly.
         let dir = TempDir::new().unwrap();
-        let secrets = Secrets::resolve(dir.path(), None, None).unwrap();
+        let secrets = Secrets::resolve(dir.path(), EnvKeys::default()).unwrap();
         assert_ne!(secrets.vault_key, secrets.hmac_key);
     }
 
@@ -279,7 +294,7 @@ mod tests {
     fn malformed_file_surfaces_clear_error() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join(SECRETS_FILENAME), "this is not a key file").unwrap();
-        let err = Secrets::resolve(dir.path(), None, None).unwrap_err();
+        let err = Secrets::resolve(dir.path(), EnvKeys::default()).unwrap_err();
         assert!(matches!(err, SecretsError::Malformed { .. }));
     }
 
@@ -288,7 +303,7 @@ mod tests {
     fn generated_file_is_0600() {
         use std::os::unix::fs::MetadataExt;
         let dir = TempDir::new().unwrap();
-        Secrets::resolve(dir.path(), None, None).unwrap();
+        Secrets::resolve(dir.path(), EnvKeys::default()).unwrap();
         let meta = std::fs::metadata(dir.path().join(SECRETS_FILENAME)).unwrap();
         // mode() returns the full st_mode; mask to permission bits.
         assert_eq!(meta.mode() & 0o777, 0o600);

@@ -1279,6 +1279,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "triggers",
+ "uuid",
 ]
 
 [[package]]
@@ -1286,6 +1287,7 @@ name = "coulisse-core"
 version = "0.3.0"
 dependencies = [
  "axum",
+ "futures",
  "semver",
  "serde",
  "serde_yaml",
@@ -2786,7 +2788,6 @@ dependencies = [
  "askama",
  "axum",
  "coulisse-core",
- "rand 0.10.1",
  "schemars 1.2.1",
  "serde",
  "serde_json",

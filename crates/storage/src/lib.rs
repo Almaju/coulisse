@@ -13,9 +13,9 @@ pub mod s3;
 pub mod store;
 
 pub use backend::{BlobBackend, FsBackend};
-pub use config::{BackendKind, QuotaConfig, S3Config, StorageYaml};
+pub use config::{BackendKind, EndpointUrl, QuotaConfig, S3Config, StorageYaml};
 pub use error::StorageError;
-pub use store::{FileObject, Store};
+pub use store::{FileId, FileObject, InvalidFileId, Store, Upload};
 
 #[cfg(feature = "s3")]
 pub use s3::S3Backend;

@@ -2,12 +2,13 @@
 //! `commands::*`. With no subcommand, defaults to running the server
 //! in the foreground (preserving the historical `./coulisse` behavior).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use coulisse::commands::{
-    check, init, reset, restart, schema, serve, skill, start, status, stop, studio, token, update,
+    CommandError, check, init, reset, restart, schema, serve, skill, start, status, stop, studio,
+    token, update,
 };
 
 const DEFAULT_CONFIG: &str = "coulisse.yaml";
@@ -94,49 +95,48 @@ enum Command {
     Update,
 }
 
+impl Command {
+    fn run(self, config: &Path) -> Result<(), CommandError> {
+        match self {
+            Self::Check => check::run(config)?,
+            Self::Init {
+                force,
+                from_example,
+            } => init::Options {
+                force,
+                from_example,
+            }
+            .run(config)?,
+            Self::Reset { yes } => reset::Options { yes }.run(config)?,
+            Self::Restart => restart::run(config)?,
+            Self::Schema => schema::run()?,
+            Self::Skill { global, tool } => skill::Options { global, tool }.run()?,
+            Self::Start {
+                detached_child,
+                foreground,
+            } => start::Options {
+                detached_child,
+                foreground,
+            }
+            .run(config)?,
+            Self::Status => status::run(config),
+            Self::Stop { force } => stop::Options { force }.run(config)?,
+            Self::Studio => studio::run(config)?,
+            Self::Token { action } => action.run(config)?,
+            Self::Update => update::run()?,
+        }
+        Ok(())
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let config = cli.config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG));
 
-    let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
+    let result = match cli.command {
         // NOTE: `coulisse` with no subcommand → run foreground.
-        None => run_foreground(&config),
-        Some(Command::Check) => check::run(&config),
-        Some(Command::Init {
-            force,
-            from_example,
-        }) => init::run(
-            &config,
-            &init::Options {
-                force,
-                from_example,
-            },
-        )
-        .map_err(std::convert::Into::into),
-        Some(Command::Reset { yes }) => reset::run(&config, &reset::Options { yes }),
-        Some(Command::Restart) => restart::run(&config),
-        Some(Command::Schema) => schema::run(),
-        Some(Command::Skill { global, tool }) => {
-            skill::run(&skill::Options { global, tool }).map_err(std::convert::Into::into)
-        }
-        Some(Command::Start {
-            detached_child,
-            foreground,
-        }) => start::run(
-            &config,
-            &start::Options {
-                detached_child,
-                foreground,
-            },
-        )
-        .map_err(std::convert::Into::into),
-        Some(Command::Status) => status::run(&config),
-        Some(Command::Stop { force }) => {
-            stop::run(&config, &stop::Options { force }).map_err(std::convert::Into::into)
-        }
-        Some(Command::Studio) => studio::run(&config).map_err(std::convert::Into::into),
-        Some(Command::Token { action }) => token::run(&config, &action),
-        Some(Command::Update) => update::run().map_err(std::convert::Into::into),
+        None => serve::run_blocking(&config, || {}).map_err(CommandError::from),
+        Some(command) => command.run(&config),
     };
 
     match result {
@@ -146,8 +146,4 @@ fn main() -> ExitCode {
         }
         Ok(()) => ExitCode::SUCCESS,
     }
-}
-
-fn run_foreground(config: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    serve::run_blocking(config, || {})
 }

@@ -9,10 +9,7 @@ use nix::unistd::Pid;
 
 use crate::paths::StatePaths;
 
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(config_path: &Path) {
     let paths = StatePaths::for_config(config_path);
     match read_pid(&paths.pid) {
         None => {
@@ -30,7 +27,6 @@ pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    Ok(())
 }
 
 #[must_use]

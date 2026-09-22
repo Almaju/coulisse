@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, Guard};
 use serde::{Deserialize, Serialize};
 
 /// One A/B test group. The `name` is addressable as a `model` value and
@@ -60,7 +60,7 @@ fn default_sticky_by_user() -> bool {
 }
 
 /// How requests are dispatched across an experiment's variants.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, schemars::JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Strategy {
     /// Epsilon-greedy: read recent mean scores per arm, exploit the
@@ -92,10 +92,30 @@ fn default_variant_weight() -> f32 {
 /// Hot-reloadable list of experiment configs for admin display.
 /// Routing (`ExperimentRouter`) currently still requires a restart to
 /// pick up changes — admin sees the live YAML state, in-flight requests
-/// keep their boot-time routing.
-pub type ExperimentList = Arc<ArcSwap<Vec<ExperimentConfig>>>;
+/// keep their boot-time routing. Clones share the same list.
+#[derive(Clone, Debug)]
+pub struct ExperimentList(Arc<ArcSwap<Vec<ExperimentConfig>>>);
 
-#[must_use]
-pub fn experiment_list(initial: Vec<ExperimentConfig>) -> ExperimentList {
-    Arc::new(ArcSwap::from_pointee(initial))
+impl ExperimentList {
+    #[must_use]
+    pub fn new(initial: Vec<ExperimentConfig>) -> Self {
+        Self(Arc::new(ArcSwap::from_pointee(initial)))
+    }
+
+    /// Lock-free snapshot of the current list. Cheap; hold it briefly.
+    #[must_use]
+    pub fn load(&self) -> Guard<Arc<Vec<ExperimentConfig>>> {
+        self.0.load()
+    }
+
+    #[must_use]
+    pub fn load_full(&self) -> Arc<Vec<ExperimentConfig>> {
+        self.0.load_full()
+    }
+
+    /// Atomically replace the list; readers holding a snapshot keep the
+    /// old one.
+    pub fn store(&self, configs: Vec<ExperimentConfig>) {
+        self.0.store(Arc::new(configs));
+    }
 }

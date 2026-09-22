@@ -9,11 +9,12 @@ mod tool;
 
 pub use chat::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
-    ChunkDelta, ContentPart, FinishReason, Message, MessageContent, Role, StreamOptions, Usage,
-    response_id,
+    ChunkDelta, CompletionId, ContentPart, ContentPartKind, FinishReason, Message, MessageContent,
+    Role, StreamOptions, TokenCounts, Usage,
 };
 pub use language::{LanguageTag, LanguageTagError};
 pub use response_format::{JsonSchemaSpec, ResponseFormat, ResponseFormatError};
 pub use tool::{
-    Tool, ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolChoiceMode, ToolFunction,
+    Tool, ToolCall, ToolCallFunction, ToolCallId, ToolChoice, ToolChoiceFunction, ToolChoiceMode,
+    ToolFunction, ToolKind,
 };

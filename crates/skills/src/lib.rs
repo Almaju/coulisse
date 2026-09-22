@@ -29,10 +29,10 @@ const MANIFEST: &str = "SKILL.md";
 /// — its body lives in `body`.
 #[derive(Clone, Debug)]
 pub struct Skill {
-    pub description: String,
-    pub name: String,
     body: String,
+    pub description: String,
     files: BTreeMap<String, String>,
+    pub name: String,
 }
 
 /// In-memory catalog of every skill under the configured directory.
@@ -104,17 +104,15 @@ impl SkillCatalog for Skills {
             .collect()
     }
 
-    fn read_file(&self, skill: &str, path: &str) -> Result<String, SkillReadError> {
+    fn read_file(&self, skill: &str, path: &Path) -> Result<String, SkillReadError> {
         let entry = self
             .skills
             .get(skill)
             .ok_or_else(|| SkillReadError::new(format!("no skill named '{skill}'")))?;
         let key = normalize(path);
-        entry
-            .files
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| SkillReadError::new(format!("skill '{skill}' has no file '{path}'")))
+        entry.files.get(&key).cloned().ok_or_else(|| {
+            SkillReadError::new(format!("skill '{skill}' has no file '{}'", path.display()))
+        })
     }
 }
 
@@ -125,12 +123,13 @@ impl Skill {
             path: manifest.display().to_string(),
             source,
         })?;
-        let (front, body) = parse_manifest(&raw, dir_name)?;
+        let manifest = Manifest::parse(&raw)?;
+        let front = LoadedFront::resolve(manifest.front, dir_name);
         let mut files = BTreeMap::new();
         collect_files(dir, dir, &mut files);
         files.remove(MANIFEST);
         Ok(Self {
-            body,
+            body: manifest.body,
             description: front.description,
             files,
             name: front.name,
@@ -141,41 +140,46 @@ impl Skill {
 /// Frontmatter fields. `name` defaults to the directory name and
 /// `description` to empty, so a bare `SKILL.md` with no frontmatter still
 /// loads.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Frontmatter {
     #[serde(default)]
     description: String,
     name: Option<String>,
 }
 
-/// Split a `SKILL.md` into frontmatter and body. The frontmatter is an
-/// optional leading `---` … `---` YAML block; without it the whole file is
-/// the body and the skill is named after its directory.
-fn parse_manifest(raw: &str, dir_name: &str) -> Result<(LoadedFront, String), SkillsError> {
-    let trimmed = raw.strip_prefix('\u{feff}').unwrap_or(raw);
-    if let Some(rest) = trimmed.strip_prefix("---") {
-        // The opening fence may be `---\n`; the body starts after the
-        // closing `\n---` line.
-        let rest = rest.trim_start_matches(['\r', '\n']);
-        if let Some(end) = rest.find("\n---") {
-            let yaml = &rest[..end];
-            let after = &rest[end + "\n---".len()..];
-            let body = after.trim_start_matches(['\r', '\n', '-']).to_string();
-            let front: Frontmatter =
-                serde_yaml::from_str(yaml).map_err(|source| SkillsError::Frontmatter { source })?;
-            return Ok((
-                LoadedFront::resolve(front, dir_name),
-                body.trim().to_string(),
-            ));
+/// A `SKILL.md` split into its frontmatter and body. The frontmatter is
+/// an optional leading `---` … `---` YAML block; without it the whole file
+/// is the body and the frontmatter is empty (so the skill is later named
+/// after its directory).
+struct Manifest {
+    body: String,
+    front: Frontmatter,
+}
+
+impl Manifest {
+    fn parse(raw: &str) -> Result<Self, SkillsError> {
+        let trimmed = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+        if let Some(rest) = trimmed.strip_prefix("---") {
+            // The opening fence may be `---\n`; the body starts after the
+            // closing `\n---` line.
+            let rest = rest.trim_start_matches(['\r', '\n']);
+            if let Some(end) = rest.find("\n---") {
+                let yaml = &rest[..end];
+                let after = &rest[end + "\n---".len()..];
+                let body = after.trim_start_matches(['\r', '\n', '-']);
+                let front: Frontmatter = serde_yaml::from_str(yaml)
+                    .map_err(|source| SkillsError::Frontmatter { source })?;
+                return Ok(Self {
+                    body: body.trim().to_string(),
+                    front,
+                });
+            }
         }
+        Ok(Self {
+            body: trimmed.trim().to_string(),
+            front: Frontmatter::default(),
+        })
     }
-    Ok((
-        LoadedFront {
-            description: String::new(),
-            name: dir_name.to_string(),
-        },
-        trimmed.trim().to_string(),
-    ))
 }
 
 struct LoadedFront {
@@ -217,8 +221,9 @@ fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
 
 /// Normalize a requested resource path to match the keys in `files`:
 /// drop a leading `./` or `/` and unify separators.
-fn normalize(path: &str) -> String {
-    path.replace('\\', "/")
+fn normalize(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
         .trim_start_matches("./")
         .trim_start_matches('/')
         .to_string()
@@ -304,14 +309,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            skills.read_file("coder", "refs/style.md").unwrap(),
+            skills
+                .read_file("coder", Path::new("refs/style.md"))
+                .unwrap(),
             "use tabs"
         );
         assert_eq!(
-            skills.read_file("coder", "./refs/style.md").unwrap(),
+            skills
+                .read_file("coder", Path::new("./refs/style.md"))
+                .unwrap(),
             "use tabs"
         );
-        assert!(skills.read_file("coder", "../../etc/passwd").is_err());
-        assert!(skills.read_file("coder", MANIFEST).is_err());
+        assert!(
+            skills
+                .read_file("coder", Path::new("../../etc/passwd"))
+                .is_err()
+        );
+        assert!(skills.read_file("coder", Path::new(MANIFEST)).is_err());
     }
 }

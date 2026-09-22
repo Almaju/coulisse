@@ -149,13 +149,13 @@ Then open <http://localhost:4421>.
 
 ## Contributing
 
-The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo fmt --check`, `cargo clippy`, `cargo sort-derives --check`, `cargo machete`, and `cargo test`. Enable it once per clone:
+The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo fmt --check`, `cargo clippy`, `rabot fmt --check`, `rabot check --strict`, `cargo machete`, and `cargo test`. Enable it once per clone:
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-Install the dev tools (cargo-watch, mdbook) with `just install`. The lint stack uses `cargo fmt`, `cargo clippy`, plus `cargo-sort-derives` and `cargo-machete` — install the latter two via `cargo install cargo-sort-derives cargo-machete --locked` if not already on your system.
+Install the dev tools (cargo-watch, mdbook, cargo-machete, rabot) with `just install`. [rabot](https://github.com/almaju/rabot) is the linter for the principles in `CLAUDE.md` (alphabetical order, method ownership, domain newtypes, errors as data): `rabot fmt` sorts fields, variants, derives and impl items; `rabot check --strict` reports everything else, and CI runs both. Every rule runs at its default level, and an exception is written next to the code it covers as `// rabot: allow(rule) reason`. `just lint` runs the whole stack.
 
 ## License
 

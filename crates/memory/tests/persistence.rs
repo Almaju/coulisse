@@ -18,7 +18,8 @@ async fn data_survives_process_restart() {
     let user = UserId::new();
 
     let store = Store::open(
-        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+        BackendConfig::Sqlite { path: db.clone() }
+            .open_pool()
             .await
             .unwrap(),
         config_at(db.clone()),
@@ -39,7 +40,8 @@ async fn data_survives_process_restart() {
     drop(store);
 
     let reopened = Store::open(
-        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+        BackendConfig::Sqlite { path: db.clone() }
+            .open_pool()
             .await
             .unwrap(),
         config_at(db),
@@ -62,7 +64,8 @@ async fn remember_if_novel_skips_duplicates() {
     let user = UserId::new();
 
     let store = Store::open(
-        memory::open_pool(&BackendConfig::Sqlite { path: db.clone() })
+        BackendConfig::Sqlite { path: db.clone() }
+            .open_pool()
             .await
             .unwrap(),
         config_at(db),
@@ -107,7 +110,7 @@ async fn recall_ignores_memories_from_different_embedder_model() {
         embedder: EmbedderConfig::Hash { dims: 32 },
         ..MemoryConfig::default()
     };
-    let pool_a = memory::open_pool(&cfg_a.backend).await.unwrap();
+    let pool_a = cfg_a.backend.open_pool().await.unwrap();
     let store_a = Store::open(pool_a, cfg_a, None).await.unwrap();
     store_a
         .for_user(user)
@@ -123,7 +126,7 @@ async fn recall_ignores_memories_from_different_embedder_model() {
         embedder: EmbedderConfig::Hash { dims: 64 },
         ..MemoryConfig::default()
     };
-    let pool_b = memory::open_pool(&cfg_b.backend).await.unwrap();
+    let pool_b = cfg_b.backend.open_pool().await.unwrap();
     let store_b = Store::open(pool_b, cfg_b, None).await.unwrap();
 
     let recalled = store_b.for_user(user).recall("anything", 10).await.unwrap();
