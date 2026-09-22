@@ -31,7 +31,7 @@ version = "0.3.0"
 
 [workspace.dependencies]
 agents = { path = "crates/agents" }
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 arc-swap = "1"
 askama = "0.15"
 async-stream = "0.3"
