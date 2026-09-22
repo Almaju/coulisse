@@ -11,6 +11,7 @@ use std::{fs, path::Path};
 
 use agents::AgentConfig;
 use auth::Config as AuthConfig;
+use coulisse_core::UserId;
 use experiments::{ExperimentConfig, Strategy};
 use judges::JudgeConfig;
 use mcp::McpServerConfig;
@@ -25,6 +26,41 @@ use storage::StorageYaml;
 use telemetry::Config as TelemetryConfig;
 use thiserror::Error;
 use triggers::TriggerConfig;
+
+/// A user as a client names it: the free-form `safety_identifier` string,
+/// or the `default_user_id` from YAML. Any non-blank string is accepted
+/// and mapped to a stable [`UserId`] by [`UserKey::user_id`].
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct UserKey(String);
+
+impl UserKey {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn user_id(&self) -> UserId {
+        UserId::from_string(&self.0)
+    }
+}
+
+/// The externally reachable base URL of this instance, as written in
+/// YAML. A trailing slash is tolerated on input and stripped on read.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct PublicBaseUrl(String);
+
+impl PublicBaseUrl {
+    /// The URL with no trailing slash, ready to have a path appended.
+    #[must_use]
+    pub fn trimmed(&self) -> &str {
+        self.0.trim_end_matches('/')
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 pub struct Config {
@@ -42,7 +78,7 @@ pub struct Config {
     /// local-dev setups so behavior stays identical whether or not the
     /// client bothers to send an id; the same memory bucket is used.
     #[serde(default)]
-    pub default_user_id: Option<String>,
+    pub default_user_id: Option<UserKey>,
     /// A/B test groups that wrap one or more agents under a single
     /// addressable name. Clients send the experiment name as the `model`
     /// field; the router picks a variant per request (sticky-by-user by
@@ -72,7 +108,7 @@ pub struct Config {
     /// when Coulisse is reachable on a different hostname (deployed,
     /// behind a tunnel, behind a reverse proxy).
     #[serde(default)]
-    pub public_base_url: Option<String>,
+    pub public_base_url: Option<PublicBaseUrl>,
     /// HTTP-server wiring: bind address, port (default 8421), tokio worker
     /// threads, and request body cap. Omit the block for sensible defaults
     /// (`0.0.0.0:8421`, CPU-sized thread pool, axum's default body limit).
@@ -264,7 +300,7 @@ impl Config {
             path: path.display().to_string(),
             source,
         })?;
-        Self::from_str(&raw, &path.display().to_string())
+        Self::from_str(&raw, path)
     }
 
     /// Load a config from a YAML string, using `path` only for error
@@ -275,50 +311,15 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if expansion, parsing, or validation fails.
-    pub fn from_str(raw: &str, path: &str) -> Result<Self, ConfigError> {
-        let env_expanded = expand_env_vars(raw).map_err(|e| {
-            let (line_number, line_content) = locate(raw, e.offset());
-            match e {
-                ExpandError::EnvVarNotSet { var, .. } => ConfigError::EnvVarNotSet {
-                    line_content,
-                    line_number,
-                    path: path.to_string(),
-                    var,
-                },
-                ExpandError::UnclosedEnvVar { .. } => ConfigError::UnclosedEnvVar {
-                    line_content,
-                    line_number,
-                    path: path.to_string(),
-                },
-                ExpandError::ConfigVarNotSet { .. } => {
-                    unreachable!("env-var pass cannot emit config-var errors")
-                }
-            }
-        })?;
+    pub fn from_str(raw: &str, path: &Path) -> Result<Self, ConfigError> {
+        let env_expanded = expand_env_vars(raw).map_err(|e| e.located_in(raw, path))?;
         let vars_only: VarsOnly =
             serde_yaml::from_str(&env_expanded).map_err(ConfigError::ParseConfig)?;
-        let contents = expand_config_vars(&env_expanded, &vars_only.vars).map_err(|e| {
-            // Locate against the env-expanded text — that's where the
-            // offset points. Multi-line env-var values may shift line
-            // numbers; the line content still shows the placeholder.
-            let (line_number, line_content) = locate(&env_expanded, e.offset());
-            match e {
-                ExpandError::ConfigVarNotSet { var, .. } => ConfigError::ConfigVarNotSet {
-                    line_content,
-                    line_number,
-                    path: path.to_string(),
-                    var,
-                },
-                ExpandError::UnclosedEnvVar { .. } => ConfigError::UnclosedEnvVar {
-                    line_content,
-                    line_number,
-                    path: path.to_string(),
-                },
-                ExpandError::EnvVarNotSet { .. } => {
-                    unreachable!("config-var pass cannot emit env-var errors")
-                }
-            }
-        })?;
+        // Locate against the env-expanded text — that's where the
+        // offset points. Multi-line env-var values may shift line
+        // numbers; the line content still shows the placeholder.
+        let contents = expand_config_vars(&env_expanded, &vars_only.vars)
+            .map_err(|e| e.located_in(&env_expanded, path))?;
         let config: Self = serde_yaml::from_str(&contents).map_err(ConfigError::ParseConfig)?;
         config.validate()?;
         Ok(config)
@@ -330,7 +331,7 @@ impl Config {
     #[must_use]
     pub fn effective_public_base_url(&self) -> String {
         if let Some(url) = &self.public_base_url {
-            return url.trim_end_matches('/').to_string();
+            return url.trimmed().to_string();
         }
         format!("http://localhost:{}", self.server.port)
     }
@@ -347,7 +348,7 @@ impl Config {
             return Err(ConfigError::NoAgents);
         }
         if let Some(id) = &self.default_user_id
-            && id.trim().is_empty()
+            && id.as_str().trim().is_empty()
         {
             return Err(ConfigError::BlankDefaultUserId);
         }
@@ -450,7 +451,7 @@ impl Config {
                     });
                 }
             }
-            validate_experiment_strategy_fields(self, experiment)?;
+            self.validate_experiment_strategy_fields(experiment)?;
         }
         Ok(experiment_names)
     }
@@ -689,164 +690,177 @@ impl Config {
     }
 }
 
-/// Strategy-specific field gating. Each strategy owns a small set of
-/// optional fields; the others must be unset. Keeps mistakes (a `metric:`
-/// hanging off a `split` experiment, say) loud at startup.
-fn validate_experiment_strategy_fields(
-    config: &Config,
-    experiment: &ExperimentConfig,
-) -> Result<(), ConfigError> {
-    match experiment.strategy {
-        Strategy::Bandit => validate_bandit_fields(config, experiment),
-        Strategy::Shadow => validate_shadow_fields(experiment),
-        Strategy::Split => validate_split_fields(experiment),
-    }
+/// An experiment field that only one strategy may set.
+struct StrategyField {
+    name: &'static str,
+    valid_for: &'static str,
 }
 
-fn validate_split_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
-    reject_shadow_fields(experiment)?;
-    reject_bandit_fields(experiment)?;
-    Ok(())
-}
+const SHADOW_ONLY: [StrategyField; 2] = [
+    StrategyField {
+        name: "primary",
+        valid_for: "shadow",
+    },
+    StrategyField {
+        name: "sampling_rate",
+        valid_for: "shadow",
+    },
+];
 
-fn validate_shadow_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
-    reject_bandit_fields(experiment)?;
-    let Some(primary) = experiment.primary.as_deref() else {
-        return Err(ConfigError::ShadowWithoutPrimary(experiment.name.clone()));
-    };
-    if !experiment.variants.iter().any(|v| v.agent == primary) {
-        return Err(ConfigError::ExperimentPrimaryNotVariant {
-            experiment: experiment.name.clone(),
-            primary: primary.to_string(),
-        });
-    }
-    if let Some(rate) = experiment.sampling_rate
-        && !(0.0..=1.0).contains(&rate)
-    {
-        return Err(ConfigError::ExperimentInvalidSamplingRate {
-            experiment: experiment.name.clone(),
-            value: rate,
-        });
-    }
-    Ok(())
-}
+const BANDIT_ONLY: [StrategyField; 4] = [
+    StrategyField {
+        name: "metric",
+        valid_for: "bandit",
+    },
+    StrategyField {
+        name: "epsilon",
+        valid_for: "bandit",
+    },
+    StrategyField {
+        name: "min_samples",
+        valid_for: "bandit",
+    },
+    StrategyField {
+        name: "bandit_window_seconds",
+        valid_for: "bandit",
+    },
+];
 
-fn validate_bandit_fields(
-    config: &Config,
-    experiment: &ExperimentConfig,
-) -> Result<(), ConfigError> {
-    reject_shadow_fields(experiment)?;
-    let Some(metric) = experiment.metric.as_deref() else {
-        return Err(ConfigError::BanditWithoutMetric(experiment.name.clone()));
-    };
-    let (judge_name, criterion) =
-        metric
-            .split_once('.')
-            .ok_or_else(|| ConfigError::ExperimentMetricMalformed {
-                experiment: experiment.name.clone(),
-                metric: metric.to_string(),
-            })?;
-    let judge = config
-        .judges
-        .iter()
-        .find(|j| j.name == judge_name)
-        .ok_or_else(|| ConfigError::ExperimentMetricUnknownJudge {
-            experiment: experiment.name.clone(),
-            judge: judge_name.to_string(),
-        })?;
-    if !judge.rubrics.contains_key(criterion) {
-        return Err(ConfigError::ExperimentMetricUnknownCriterion {
-            criterion: criterion.to_string(),
-            experiment: experiment.name.clone(),
-            judge: judge_name.to_string(),
-        });
-    }
-    for variant in &experiment.variants {
-        let agent = config
-            .agents
-            .iter()
-            .find(|a| a.name == variant.agent)
-            .expect("variant agent existence is validated upstream");
-        if !agent.judges.iter().any(|j| j == judge_name) {
-            return Err(ConfigError::ExperimentMetricVariantMissingJudge {
-                agent: variant.agent.clone(),
-                experiment: experiment.name.clone(),
-                judge: judge_name.to_string(),
-                metric: metric.to_string(),
-            });
+impl StrategyField {
+    fn is_set(&self, experiment: &ExperimentConfig) -> bool {
+        match self.name {
+            "bandit_window_seconds" => experiment.bandit_window_seconds.is_some(),
+            "epsilon" => experiment.epsilon.is_some(),
+            "metric" => experiment.metric.is_some(),
+            "min_samples" => experiment.min_samples.is_some(),
+            "primary" => experiment.primary.is_some(),
+            "sampling_rate" => experiment.sampling_rate.is_some(),
+            _ => false,
         }
     }
-    if let Some(epsilon) = experiment.epsilon
-        && !(0.0..=1.0).contains(&epsilon)
-    {
-        return Err(ConfigError::ExperimentInvalidEpsilon {
-            experiment: experiment.name.clone(),
-            value: epsilon,
-        });
+
+    /// Reject `experiment` when it sets this field while using another
+    /// strategy.
+    fn reject_on(&self, experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+        if self.is_set(experiment) {
+            return Err(ConfigError::ExperimentFieldStrategyMismatch {
+                experiment: experiment.name.clone(),
+                field: self.name,
+                strategy: match experiment.strategy {
+                    Strategy::Bandit => "bandit",
+                    Strategy::Shadow => "shadow",
+                    Strategy::Split => "split",
+                },
+                valid_for: self.valid_for,
+            });
+        }
+        Ok(())
     }
-    Ok(())
 }
 
-/// Reject fields that only apply to the `shadow` strategy.
-fn reject_shadow_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
-    reject_field(
-        experiment,
-        "primary",
-        experiment.primary.is_some(),
-        "shadow",
-    )?;
-    reject_field(
-        experiment,
-        "sampling_rate",
-        experiment.sampling_rate.is_some(),
-        "shadow",
-    )?;
-    Ok(())
-}
-
-/// Reject fields that only apply to the `bandit` strategy.
-fn reject_bandit_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
-    reject_field(experiment, "metric", experiment.metric.is_some(), "bandit")?;
-    reject_field(
-        experiment,
-        "epsilon",
-        experiment.epsilon.is_some(),
-        "bandit",
-    )?;
-    reject_field(
-        experiment,
-        "min_samples",
-        experiment.min_samples.is_some(),
-        "bandit",
-    )?;
-    reject_field(
-        experiment,
-        "bandit_window_seconds",
-        experiment.bandit_window_seconds.is_some(),
-        "bandit",
-    )?;
-    Ok(())
-}
-
-fn reject_field(
-    experiment: &ExperimentConfig,
-    field: &'static str,
-    present: bool,
-    valid_for: &'static str,
-) -> Result<(), ConfigError> {
-    if present {
-        return Err(ConfigError::ExperimentFieldStrategyMismatch {
-            experiment: experiment.name.clone(),
-            field,
-            strategy: match experiment.strategy {
-                Strategy::Bandit => "bandit",
-                Strategy::Shadow => "shadow",
-                Strategy::Split => "split",
-            },
-            valid_for,
-        });
+impl Config {
+    fn validate_bandit_fields(&self, experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+        for field in &SHADOW_ONLY {
+            field.reject_on(experiment)?;
+        }
+        let Some(metric) = experiment.metric.as_deref() else {
+            return Err(ConfigError::BanditWithoutMetric(experiment.name.clone()));
+        };
+        let (judge_name, criterion) =
+            metric
+                .split_once('.')
+                .ok_or_else(|| ConfigError::ExperimentMetricMalformed {
+                    experiment: experiment.name.clone(),
+                    metric: metric.to_string(),
+                })?;
+        let judge = self
+            .judges
+            .iter()
+            .find(|j| j.name == judge_name)
+            .ok_or_else(|| ConfigError::ExperimentMetricUnknownJudge {
+                experiment: experiment.name.clone(),
+                judge: judge_name.to_string(),
+            })?;
+        if !judge.rubrics.contains_key(criterion) {
+            return Err(ConfigError::ExperimentMetricUnknownCriterion {
+                criterion: criterion.to_string(),
+                experiment: experiment.name.clone(),
+                judge: judge_name.to_string(),
+            });
+        }
+        for variant in &experiment.variants {
+            let agent = self
+                .agents
+                .iter()
+                .find(|a| a.name == variant.agent)
+                .ok_or_else(|| ConfigError::ExperimentUnknownVariant {
+                    agent: variant.agent.clone(),
+                    experiment: experiment.name.clone(),
+                })?;
+            if !agent.judges.iter().any(|j| j == judge_name) {
+                return Err(ConfigError::ExperimentMetricVariantMissingJudge {
+                    agent: variant.agent.clone(),
+                    experiment: experiment.name.clone(),
+                    judge: judge_name.to_string(),
+                    metric: metric.to_string(),
+                });
+            }
+        }
+        if let Some(epsilon) = experiment.epsilon
+            && !(0.0..=1.0).contains(&epsilon)
+        {
+            return Err(ConfigError::ExperimentInvalidEpsilon {
+                experiment: experiment.name.clone(),
+                value: epsilon,
+            });
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Strategy-specific field gating. Each strategy owns a small set of
+    /// optional fields; the others must be unset. Keeps mistakes (a `metric:`
+    /// hanging off a `split` experiment, say) loud at startup.
+    fn validate_experiment_strategy_fields(
+        &self,
+        experiment: &ExperimentConfig,
+    ) -> Result<(), ConfigError> {
+        match experiment.strategy {
+            Strategy::Bandit => self.validate_bandit_fields(experiment),
+            Strategy::Shadow => Self::validate_shadow_fields(experiment),
+            Strategy::Split => Self::validate_split_fields(experiment),
+        }
+    }
+
+    fn validate_shadow_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+        for field in &BANDIT_ONLY {
+            field.reject_on(experiment)?;
+        }
+        let Some(primary) = experiment.primary.as_deref() else {
+            return Err(ConfigError::ShadowWithoutPrimary(experiment.name.clone()));
+        };
+        if !experiment.variants.iter().any(|v| v.agent == primary) {
+            return Err(ConfigError::ExperimentPrimaryNotVariant {
+                experiment: experiment.name.clone(),
+                primary: primary.to_string(),
+            });
+        }
+        if let Some(rate) = experiment.sampling_rate
+            && !(0.0..=1.0).contains(&rate)
+        {
+            return Err(ConfigError::ExperimentInvalidSamplingRate {
+                experiment: experiment.name.clone(),
+                value: rate,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_split_fields(experiment: &ExperimentConfig) -> Result<(), ConfigError> {
+        for field in SHADOW_ONLY.iter().chain(BANDIT_ONLY.iter()) {
+            field.reject_on(experiment)?;
+        }
+        Ok(())
+    }
 }
 
 /// Errors raised while loading and validating `coulisse.yaml`. Pure
@@ -1047,6 +1061,32 @@ enum ExpandError {
 }
 
 impl ExpandError {
+    /// The user-facing error for this expansion failure, with the line of
+    /// `source` (the text the offset points into) it happened on.
+    fn located_in(self, source: &str, path: &Path) -> ConfigError {
+        let (line_number, line_content) = locate(source, self.offset());
+        let path = path.display().to_string();
+        match self {
+            Self::ConfigVarNotSet { var, .. } => ConfigError::ConfigVarNotSet {
+                line_content,
+                line_number,
+                path,
+                var,
+            },
+            Self::EnvVarNotSet { var, .. } => ConfigError::EnvVarNotSet {
+                line_content,
+                line_number,
+                path,
+                var,
+            },
+            Self::UnclosedEnvVar { .. } => ConfigError::UnclosedEnvVar {
+                line_content,
+                line_number,
+                path,
+            },
+        }
+    }
+
     fn offset(&self) -> usize {
         match self {
             Self::ConfigVarNotSet { offset, .. }
@@ -1902,7 +1942,7 @@ agents:
       You are the PM.
       ${vars.team_footer}
 ";
-        let config = Config::from_str(yaml, "<test>").expect("valid config with vars");
+        let config = Config::from_str(yaml, Path::new("<test>")).expect("valid config with vars");
         let pm = config.agents.iter().find(|a| a.name == "pm").unwrap();
         assert!(
             pm.preamble.contains("Team: @pm, @coder, @qa"),
@@ -1923,7 +1963,7 @@ agents:
     model: gpt-4
     preamble: ${vars.ghost}
 ";
-        match Config::from_str(yaml, "<test>") {
+        match Config::from_str(yaml, Path::new("<test>")) {
             Err(ConfigError::ConfigVarNotSet {
                 line_content,
                 line_number,

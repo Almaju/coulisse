@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use coulisse_core::now_secs;
 
 use crate::merge::{AdminExperiment, AdminSource};
 use crate::{ExperimentConfig, Strategy};
@@ -76,10 +76,7 @@ impl ExperimentRow {
             Strategy::Bandit => exp.metric.as_deref().and_then(|metric| {
                 metric.split_once('.').map(|(judge, criterion)| {
                     let window = exp.bandit_window_seconds.unwrap_or(7 * 24 * 60 * 60);
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs());
-                    let since = now.saturating_sub(window);
+                    let since = now_secs().saturating_sub(window);
                     format!(
                         "/admin/scores/means?judge={}&criterion={}&since={}",
                         urlencode(judge),

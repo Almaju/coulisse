@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use coulisse_core::now_secs;
 
 use crate::merge::{AdminJudge, AdminSource};
 use crate::store::AgentCriterionCell;
@@ -190,52 +191,54 @@ impl ScoreRow {
     }
 }
 
-pub(super) fn build_matrix(cells: &[AgentCriterionCell]) -> AgentCriterionMatrix {
-    let mut criteria_set = BTreeSet::new();
-    let mut by_agent: BTreeMap<String, Vec<&AgentCriterionCell>> = BTreeMap::new();
-    for cell in cells {
-        criteria_set.insert(cell.criterion.clone());
-        by_agent
-            .entry(cell.agent_name.clone())
-            .or_default()
-            .push(cell);
-    }
-    let criteria: Vec<String> = criteria_set.into_iter().collect();
-    let rows = by_agent
-        .into_iter()
-        .map(|(agent_name, agent_cells)| {
-            let cell_map: HashMap<&str, &AgentCriterionCell> = agent_cells
-                .into_iter()
-                .map(|c| (c.criterion.as_str(), c))
-                .collect();
-            let cells = criteria
-                .iter()
-                .map(|crit| match cell_map.get(crit.as_str()) {
-                    None => MatrixCell {
-                        mean: "—".into(),
-                        samples: 0,
-                        tone: "none",
-                    },
-                    Some(c) => {
-                        let tone = if c.mean >= 7.0 {
-                            "good"
-                        } else if c.mean >= 4.0 {
-                            "mid"
-                        } else {
-                            "bad"
-                        };
-                        MatrixCell {
-                            mean: format!("{:.1}", c.mean),
-                            samples: c.samples,
-                            tone,
+impl AgentCriterionMatrix {
+    pub(super) fn build(cells: &[AgentCriterionCell]) -> Self {
+        let mut criteria_set = BTreeSet::new();
+        let mut by_agent: BTreeMap<String, Vec<&AgentCriterionCell>> = BTreeMap::new();
+        for cell in cells {
+            criteria_set.insert(cell.criterion.clone());
+            by_agent
+                .entry(cell.agent_name.clone())
+                .or_default()
+                .push(cell);
+        }
+        let criteria: Vec<String> = criteria_set.into_iter().collect();
+        let rows = by_agent
+            .into_iter()
+            .map(|(agent_name, agent_cells)| {
+                let cell_map: HashMap<&str, &AgentCriterionCell> = agent_cells
+                    .into_iter()
+                    .map(|c| (c.criterion.as_str(), c))
+                    .collect();
+                let cells = criteria
+                    .iter()
+                    .map(|crit| match cell_map.get(crit.as_str()) {
+                        None => MatrixCell {
+                            mean: "—".into(),
+                            samples: 0,
+                            tone: "none",
+                        },
+                        Some(c) => {
+                            let tone = if c.mean >= 7.0 {
+                                "good"
+                            } else if c.mean >= 4.0 {
+                                "mid"
+                            } else {
+                                "bad"
+                            };
+                            MatrixCell {
+                                mean: format!("{:.1}", c.mean),
+                                samples: c.samples,
+                                tone,
+                            }
                         }
-                    }
-                })
-                .collect();
-            MatrixRow { agent_name, cells }
-        })
-        .collect();
-    AgentCriterionMatrix { criteria, rows }
+                    })
+                    .collect();
+                MatrixRow { agent_name, cells }
+            })
+            .collect();
+        Self { criteria, rows }
+    }
 }
 
 fn average_by_criterion(scores: &[Score]) -> Vec<CriterionAverageRow> {
@@ -267,10 +270,7 @@ fn average_by_criterion(scores: &[Score]) -> Vec<CriterionAverageRow> {
 }
 
 fn relative_time(seconds: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(seconds, |d| d.as_secs());
-    let diff = now.saturating_sub(seconds);
+    let diff = now_secs().saturating_sub(seconds);
     if diff < 60 {
         return "just now".into();
     }

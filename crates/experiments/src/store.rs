@@ -1,10 +1,8 @@
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use coulisse_core::migrate::{self, SchemaMigrator};
+use coulisse_core::{now_secs, u64_to_i64};
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
 use thiserror::Error;
 
 use crate::merge::{MergeReport, merge};
@@ -16,14 +14,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "experiments";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("experiments has only one schema version")
-    }
 }
 
 /// One row in `dynamic_experiments`. `config` is `Some` for active rows
@@ -35,6 +25,30 @@ pub struct DynamicExperimentRow {
     pub disabled: bool,
     pub name: String,
     pub updated_at: i64,
+}
+
+impl DynamicExperimentRow {
+    fn from_row(row: &SqliteRow) -> Result<Self, ExperimentsError> {
+        let config_json: Option<String> = row.try_get("config_json")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let disabled: i64 = row.try_get("disabled")?;
+        let name: String = row.try_get("name")?;
+        let updated_at: i64 = row.try_get("updated_at")?;
+        let config = match config_json {
+            None => None,
+            Some(s) => Some(
+                serde_json::from_str::<ExperimentConfig>(&s)
+                    .map_err(|e| ExperimentsError::RowDecode(format!("config_json: {e}")))?,
+            ),
+        };
+        Ok(Self {
+            config,
+            created_at,
+            disabled: disabled != 0,
+            name,
+            updated_at,
+        })
+    }
 }
 
 /// Persistent storage for runtime-mutable experiment configs.
@@ -72,7 +86,7 @@ impl Experiments {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_dynamic_experiment).collect()
+        rows.iter().map(DynamicExperimentRow::from_row).collect()
     }
 
     /// # Errors
@@ -83,7 +97,7 @@ impl Experiments {
         name: &str,
         config: &ExperimentConfig,
     ) -> Result<(), ExperimentsError> {
-        let now = now_secs();
+        let now = u64_to_i64(now_secs());
         let json = serde_json::to_string(config)
             .map_err(|e| ExperimentsError::Serialize(e.to_string()))?;
         sqlx::query(
@@ -107,7 +121,7 @@ impl Experiments {
     ///
     /// Returns an error if the underlying operation fails.
     pub async fn put_tombstone_dynamic(&self, name: &str) -> Result<(), ExperimentsError> {
-        let now = now_secs();
+        let now = u64_to_i64(now_secs());
         sqlx::query(
             "INSERT INTO dynamic_experiments (config_json, created_at, disabled, name, updated_at) \
              VALUES (NULL, ?, 1, ?, ?) \
@@ -138,37 +152,9 @@ impl Experiments {
         let db = self.list_dynamic().await?;
         let (merged, report) = merge(yaml_experiments, &db);
         let configs: Vec<ExperimentConfig> = merged.into_iter().map(|m| m.config).collect();
-        list.store(Arc::new(configs));
+        list.store(configs);
         Ok(report)
     }
-}
-
-fn row_to_dynamic_experiment(row: &SqliteRow) -> Result<DynamicExperimentRow, ExperimentsError> {
-    let config_json: Option<String> = row.try_get("config_json")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let disabled: i64 = row.try_get("disabled")?;
-    let name: String = row.try_get("name")?;
-    let updated_at: i64 = row.try_get("updated_at")?;
-    let config = match config_json {
-        None => None,
-        Some(s) => Some(
-            serde_json::from_str::<ExperimentConfig>(&s)
-                .map_err(|e| ExperimentsError::RowDecode(format!("config_json: {e}")))?,
-        ),
-    };
-    Ok(DynamicExperimentRow {
-        config,
-        created_at,
-        disabled: disabled != 0,
-        name,
-        updated_at,
-    })
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| coulisse_core::u64_to_i64(d.as_secs()))
 }
 
 #[derive(Debug, Error)]

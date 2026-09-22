@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coulisse_core::TaskStatus;
+use coulisse_core::{TaskState, TaskStatus};
 use rig::completion::ToolDefinition;
 use rig::tool::{ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
@@ -48,14 +48,16 @@ impl ToolDyn for TasksStatusTool {
                 let state_filter = parsed
                     .get("state")
                     .and_then(Value::as_str)
-                    .map(str::to_string);
+                    .map(str::parse::<TaskState>)
+                    .transpose()
+                    .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
                 let summaries = status
                     .recent(limit)
                     .await
                     .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
                 let filtered: Vec<_> = summaries
                     .into_iter()
-                    .filter(|s| state_filter.as_ref().is_none_or(|want| s.state == *want))
+                    .filter(|s| state_filter.is_none_or(|want| s.state == want))
                     .map(|s| {
                         json!({
                             "agent": s.agent,
@@ -66,7 +68,7 @@ impl ToolDyn for TasksStatusTool {
                             "prompt": truncate(&s.prompt, 200),
                             "result": s.result.as_deref().map(|r| truncate(r, 200)),
                             "started_at": s.started_at,
-                            "state": s.state,
+                            "state": s.state.as_str(),
                         })
                     })
                     .collect();

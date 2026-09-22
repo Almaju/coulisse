@@ -11,6 +11,36 @@ the YAML schema, HTTP surface, or CLI. Patch bumps (0.x.y → 0.x.z) will not.
 
 ### Changed
 
+- **The codebase is linted by [rabot](https://github.com/almaju/rabot).**
+  `rabot fmt --check` and `rabot check --strict` run in CI and in the
+  pre-commit hook (replacing `cargo sort-derives`), with every rule at its
+  default level. Getting there reworked the code rather than silencing the
+  linter: free functions moved onto the types they operate on (`Store::admin_router`,
+  `Tasks::enqueue(TaskSubmission)`, `Triggers`, `Boot`), ids, secrets, tokens
+  and URLs became newtypes with redacted `Debug` (`TokenSecret`, `Password`,
+  `ClientSecret`, `AccessToken`, `FileId`, `CompletionId`, `ToolCallId`),
+  string-typed kinds became enums (`ToolKind`, `BudgetKind`, `TaskState` in
+  core), `Box<dyn Error>` and `String` errors became typed enums whose
+  variants carry their `#[source]`, every `unwrap`/`expect`/`unreachable!`
+  outside `main` and tests is gone (single-version schema migrators use the
+  new `SchemaMigrator::upgrade_from` default), the vendored pricing table is
+  a `PricingTable` value built at boot instead of a global, judge sampling
+  and non-sticky experiment picks are replayable (hash-derived, no global
+  RNG), and the integration tests wait on state instead of sleeping. The
+  five documented exceptions — symmetric `constant_time_eq`/`cosine_similarity`
+  arguments, cryptographic randomness for secrets and PKCE, the one real
+  wall clock (`now_secs`) and the telemetry `SystemClock` — carry a
+  `// rabot: allow(rule) reason` next to the code. See `CLAUDE.md` (Linting).
+- Small user-visible edges of that work: `tools[].type`, `tool_choice.type`
+  and `tool_calls[].type` on `/v1/chat/completions` must be `"function"`
+  (any other value is now a 400 instead of being accepted as free text);
+  `POST /mcp/{server}/connect-link` normalizes `user_id` the same way the
+  chat handler does; 400 bodies for a malformed `tokens_per_*` metadata
+  value, a bad `budget_usd`, or a malformed id now end with the parse
+  error; 500 bodies from the studio name the failing step and the cause is
+  logged; a malformed `COULISSE_HMAC_KEY` fails at boot with a clear error
+  instead of panicking on first use.
+
 - **Releases are now cut automatically on version bump.** Pushing to `main`
   with a new workspace version in `Cargo.toml` auto-tags `v<version>`, which
   triggers the existing cargo-dist (`release.yml`) and Docker (`docker.yml`)

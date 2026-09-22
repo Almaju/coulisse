@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use coulisse_core::UserId;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use serde_json::Value;
 
 use crate::language::{LanguageTag, LanguageTagError};
 use crate::response_format::ResponseFormat;
-use crate::{Tool, ToolCall, ToolChoice};
+use crate::{Tool, ToolCall, ToolCallId, ToolChoice};
 
 pub(crate) const METADATA_LANGUAGE: &str = "language";
 
@@ -99,7 +100,7 @@ impl ChatCompletionRequest {
                 message,
             }],
             created,
-            id: response_id(created),
+            id: CompletionId::from_created(created),
             model: self.model.clone(),
             object: "chat.completion".into(),
             usage,
@@ -135,16 +136,35 @@ impl ChatCompletionRequest {
     }
 }
 
-#[must_use]
-pub fn response_id(created: u64) -> String {
-    format!("chatcmpl-coulisse-{created}")
+/// Identifier of one chat completion (`chatcmpl-coulisse-<created>`), shared
+/// by the non-streaming response and every chunk of a streamed one.
+#[derive(Clone, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct CompletionId(String);
+
+impl CompletionId {
+    #[must_use]
+    pub fn from_created(created: u64) -> Self {
+        Self(format!("chatcmpl-coulisse-{created}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CompletionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatCompletionResponse {
     pub choices: Vec<Choice>,
     pub created: u64,
-    pub id: String,
+    pub id: CompletionId,
     pub model: String,
     pub object: String,
     pub usage: Usage,
@@ -174,9 +194,54 @@ pub struct ContentPart {
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: ContentPartKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// The `type` of a content part. The named variants are the ones `OpenAI`'s
+/// chat API documents; `Other` carries any other spelling verbatim so a part
+/// this proxy does not understand still reaches the upstream provider
+/// unchanged.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(from = "String", into = "String")]
+pub enum ContentPartKind {
+    File,
+    ImageUrl,
+    InputAudio,
+    Other(String),
+    Text,
+}
+
+impl ContentPartKind {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::File => "file",
+            Self::ImageUrl => "image_url",
+            Self::InputAudio => "input_audio",
+            Self::Other(raw) => raw,
+            Self::Text => "text",
+        }
+    }
+}
+
+impl From<String> for ContentPartKind {
+    fn from(raw: String) -> Self {
+        match raw.as_str() {
+            "file" => Self::File,
+            "image_url" => Self::ImageUrl,
+            "input_audio" => Self::InputAudio,
+            "text" => Self::Text,
+            _ => Self::Other(raw),
+        }
+    }
+}
+
+impl From<ContentPartKind> for String {
+    fn from(kind: ContentPartKind) -> Self {
+        kind.as_str().to_owned()
+    }
 }
 
 /// Message content: either a plain string (simple case) or an array of typed
@@ -212,7 +277,7 @@ pub struct Message {
     pub name: Option<String>,
     pub role: Role,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
+    pub tool_call_id: Option<ToolCallId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -242,13 +307,22 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
-impl Usage {
-    #[must_use]
-    pub fn new(prompt_tokens: u64, completion_tokens: u64, total_tokens: u64) -> Self {
+/// Token counts as providers report them (`u64`), before clamping into the
+/// `u32` fields `OpenAI` clients expect. Named fields so prompt and
+/// completion counts cannot be swapped at the call site.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TokenCounts {
+    pub completion: u64,
+    pub prompt: u64,
+    pub total: u64,
+}
+
+impl From<TokenCounts> for Usage {
+    fn from(counts: TokenCounts) -> Self {
         Self {
-            completion_tokens: clamp_u32(completion_tokens),
-            prompt_tokens: clamp_u32(prompt_tokens),
-            total_tokens: clamp_u32(total_tokens),
+            completion_tokens: clamp_u32(counts.completion),
+            prompt_tokens: clamp_u32(counts.prompt),
+            total_tokens: clamp_u32(counts.total),
         }
     }
 }
@@ -265,7 +339,7 @@ fn clamp_u32(n: u64) -> u32 {
 pub struct ChatCompletionChunk {
     pub choices: Vec<ChunkChoice>,
     pub created: u64,
-    pub id: String,
+    pub id: CompletionId,
     pub model: String,
     pub object: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -380,10 +454,70 @@ mod tests {
     fn content_part_round_trips_unknown_fields() {
         let raw = r#"{"type":"input_file","file_id":"file-1"}"#;
         let part: ContentPart = serde_json::from_str(raw).unwrap();
-        assert_eq!(part.kind, "input_file");
+        assert_eq!(part.kind, ContentPartKind::Other("input_file".into()));
         assert!(part.text.is_none());
         let reserialized = serde_json::to_value(&part).unwrap();
         assert_eq!(reserialized["type"], "input_file");
         assert_eq!(reserialized["file_id"], "file-1");
+    }
+
+    #[test]
+    fn content_part_kind_round_trips_known_and_unknown_values() {
+        for (raw, kind) in [
+            ("\"text\"", ContentPartKind::Text),
+            ("\"image_url\"", ContentPartKind::ImageUrl),
+            ("\"input_audio\"", ContentPartKind::InputAudio),
+            ("\"file\"", ContentPartKind::File),
+            ("\"refusal\"", ContentPartKind::Other("refusal".into())),
+        ] {
+            let parsed: ContentPartKind = serde_json::from_str(raw).unwrap();
+            assert_eq!(parsed, kind);
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), raw);
+            assert_eq!(format!("\"{}\"", parsed.as_str()), raw);
+        }
+    }
+
+    #[test]
+    fn tool_message_round_trips_tool_call_id() {
+        let raw = r#"{"content":"42","role":"tool","tool_call_id":"call_1"}"#;
+        let message: Message = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            message.tool_call_id.as_ref().map(ToolCallId::as_str),
+            Some("call_1")
+        );
+        assert_eq!(serde_json::to_string(&message).unwrap(), raw);
+    }
+
+    #[test]
+    fn usage_clamps_provider_counts() {
+        let usage = Usage::from(TokenCounts {
+            completion: 2,
+            prompt: 1,
+            total: u64::from(u32::MAX) + 1,
+        });
+        assert_eq!(usage.prompt_tokens, 1);
+        assert_eq!(usage.completion_tokens, 2);
+        assert_eq!(usage.total_tokens, u32::MAX);
+    }
+
+    #[test]
+    fn response_serializes_openai_shape() {
+        let response = request_with_metadata(HashMap::new()).response_with(
+            "hi".into(),
+            Usage::from(TokenCounts {
+                completion: 1,
+                prompt: 1,
+                total: 2,
+            }),
+        );
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["object"], "chat.completion");
+        assert_eq!(
+            value["id"],
+            format!("chatcmpl-coulisse-{}", response.created)
+        );
+        assert_eq!(value["choices"][0]["message"]["role"], "assistant");
+        assert_eq!(value["choices"][0]["message"]["content"], "hi");
+        assert_eq!(value["usage"]["total_tokens"], 2);
     }
 }

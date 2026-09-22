@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coulisse_core::{OneShotPrompt, UserId};
+use coulisse_core::{OneShotError, OneShotPrompt, OneShotRequest, UserId};
 use serde::Deserialize;
 
 use crate::{ExtractorConfig, MemoryKind, Store};
@@ -66,19 +66,10 @@ impl Extractor {
     /// Spawn a background task that extracts durable facts from the last
     /// exchange and writes any novel ones into the user's memory. Never
     /// blocks the response; failures are logged and swallowed.
-    pub fn spawn(
-        self: &Arc<Self>,
-        memory: Arc<Store>,
-        user_id: UserId,
-        user_message: String,
-        assistant_message: String,
-    ) {
+    pub fn spawn(self: &Arc<Self>, memory: Arc<Store>, user_id: UserId, exchange: Exchange) {
         let extractor = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(err) = extractor
-                .run(&memory, user_id, &user_message, &assistant_message)
-                .await
-            {
+            if let Err(err) = extractor.run(&memory, user_id, &exchange).await {
                 tracing::warn!(user = %user_id.0, error = %err, "memory extraction failed");
             }
         });
@@ -88,17 +79,18 @@ impl Extractor {
         &self,
         memory: &Store,
         user_id: UserId,
-        user_message: &str,
-        assistant_message: &str,
-    ) -> Result<(), String> {
-        let user_text = format!(
-            "User: {user_message}\n\nAssistant: {assistant_message}\n\nReturn the JSON array now."
-        );
+        exchange: &Exchange,
+    ) -> Result<(), ExtractError> {
+        let user_text = exchange.prompt_text();
         let raw_text = self
             .completer
-            .one_shot(&self.provider, &self.model, PREAMBLE, &user_text)
-            .await
-            .map_err(|e| format!("prompt: {e}"))?;
+            .one_shot(OneShotRequest {
+                model: &self.model,
+                preamble: PREAMBLE,
+                provider: &self.provider,
+                user_text: &user_text,
+            })
+            .await?;
 
         let facts = parse_facts(&raw_text)?;
         let scope = memory.for_user(user_id);
@@ -114,10 +106,60 @@ impl Extractor {
     }
 }
 
+/// One user turn and the assistant reply it produced — the unit the
+/// extractor mines for durable facts.
+#[derive(Clone, Debug)]
+pub struct Exchange {
+    pub assistant_message: String,
+    pub user_message: String,
+}
+
+impl Exchange {
+    fn prompt_text(&self) -> String {
+        format!(
+            "User: {}\n\nAssistant: {}\n\nReturn the JSON array now.",
+            self.user_message, self.assistant_message
+        )
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ExtractError {
+    #[error("extractor returned non-JSON output ({source}): {output:?}")]
+    NonJson {
+        output: String,
+        source: serde_json::Error,
+    },
+    #[error("prompt: {0}")]
+    Prompt(#[from] OneShotError),
+}
+
 #[derive(Debug, Deserialize)]
 struct RawFact {
     content: String,
-    kind: String,
+    kind: RawFactKind,
+}
+
+/// The `kind` values the extraction prompt asks for. Anything else the
+/// model invents lands in `Unknown` and is skipped, so one stray entry
+/// does not discard the whole array.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum RawFactKind {
+    Fact,
+    Preference,
+    #[serde(other)]
+    Unknown,
+}
+
+impl RawFactKind {
+    fn memory_kind(self) -> Option<MemoryKind> {
+        match self {
+            Self::Fact => Some(MemoryKind::Fact),
+            Self::Preference => Some(MemoryKind::Preference),
+            Self::Unknown => None,
+        }
+    }
 }
 
 struct ParsedFact {
@@ -125,22 +167,21 @@ struct ParsedFact {
     kind: MemoryKind,
 }
 
-fn parse_facts(text: &str) -> Result<Vec<ParsedFact>, String> {
+fn parse_facts(text: &str) -> Result<Vec<ParsedFact>, ExtractError> {
     let trimmed = strip_code_fence(text.trim()).trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    let raw: Vec<RawFact> = serde_json::from_str(trimmed)
-        .map_err(|e| format!("extractor returned non-JSON output ({e}): {trimmed:?}"))?;
+    let raw: Vec<RawFact> =
+        serde_json::from_str(trimmed).map_err(|source| ExtractError::NonJson {
+            output: trimmed.to_string(),
+            source,
+        })?;
     let mut out = Vec::with_capacity(raw.len());
     for r in raw {
-        let kind = match r.kind.as_str() {
-            "fact" => MemoryKind::Fact,
-            "preference" => MemoryKind::Preference,
-            other => {
-                tracing::debug!(kind = other, "skipping extracted entry with unknown kind");
-                continue;
-            }
+        let Some(kind) = r.kind.memory_kind() else {
+            tracing::debug!("skipping extracted entry with unknown kind");
+            continue;
         };
         let content = r.content.trim().to_string();
         if content.is_empty() {

@@ -11,10 +11,15 @@ use tokio::process::Command;
 
 use crate::config::{McpServerConfig, McpToolAccess, McpTransport};
 use crate::error::McpError;
-use crate::pool::{NotConnectedTool, UnreachableTool, UserMcpPool};
+use crate::pool::{NotConnectedTool, UnreachableReason, UnreachableTool, UserMcpPool};
 use crate::routes::ConnectLinkSigner;
 use crate::sanitize;
 use crate::vault::TokenVault;
+
+/// Tools handed to an agent runtime: one boxed rig tool per MCP tool the
+/// agent may call, plus any `NotConnectedTool` / `UnreachableTool`
+/// placeholders standing in for servers that could not be reached.
+pub type McpToolSet = Vec<Box<dyn ToolDyn>>;
 
 /// Pool of connected MCP servers for non-OAuth servers, keyed by YAML name.
 /// OAuth-enabled servers use `UserMcpPool` instead (per-user sessions).
@@ -110,8 +115,8 @@ impl McpServers {
         &self,
         agent: &str,
         accesses: &[McpToolAccess],
-    ) -> Result<Vec<Box<dyn ToolDyn>>, McpError> {
-        let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
+    ) -> Result<McpToolSet, McpError> {
+        let mut tools: McpToolSet = Vec::new();
         for access in accesses {
             let config =
                 self.configs
@@ -134,7 +139,7 @@ impl McpServers {
                         agent: agent.to_string(),
                         server: access.server.clone(),
                     })?;
-            let picked = pick_tools(agent, &access.server, access.only.as_deref(), &server.tools)?;
+            let picked = access.pick_tools(agent, &server.tools)?;
             for tool in picked {
                 tools.push(Box::new(McpTool::from_mcp_server(
                     tool,
@@ -157,128 +162,135 @@ impl McpServers {
         agent: &str,
         accesses: &[McpToolAccess],
         user_id: UserId,
-    ) -> Result<Vec<Box<dyn ToolDyn>>, McpError> {
-        let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
+    ) -> Result<McpToolSet, McpError> {
+        let mut tools: McpToolSet = Vec::new();
         // Per-server isolation: if one server is broken (network down,
         // crash, vault DB hiccup), the agent still gets every other
         // server's tools. One bad MCP must not deny the user every
         // other capability — that's what turned every Atlassian/Todoist
         // misconfiguration into a 502 wall for the whole chat.
         for access in accesses {
-            let Some(config) = self.configs.get(&access.server) else {
-                tracing::warn!(
-                    agent = %agent, server = %access.server,
-                    "agent references MCP server that is not in the `mcp:` config block"
-                );
-                tools.push(Box::new(UnreachableTool::new(
-                    &access.server,
-                    "server not configured",
-                )));
-                continue;
-            };
-
-            if config.oauth.is_some() {
-                let Some(pool) = self.user_pool.as_ref() else {
-                    tracing::warn!(
-                        agent = %agent, server = %access.server,
-                        "oauth server referenced but no user pool — vault is misconfigured"
-                    );
-                    tools.push(Box::new(UnreachableTool::new(
-                        &access.server,
-                        "no OAuth vault",
-                    )));
-                    continue;
-                };
-
-                match pool.get_or_spawn(&access.server, user_id).await {
-                    Ok(session) => {
-                        match pick_tools(
-                            agent,
-                            &access.server,
-                            access.only.as_deref(),
-                            &session.tools,
-                        ) {
-                            Ok(picked) => {
-                                for tool in picked {
-                                    tools.push(Box::new(McpTool::from_mcp_server(
-                                        tool,
-                                        session.sink.clone(),
-                                    )));
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    agent = %agent, server = %access.server, error = %e,
-                                    "could not pick tools from MCP session"
-                                );
-                                tools.push(Box::new(UnreachableTool::new(
-                                    &access.server,
-                                    &e.to_string(),
-                                )));
-                            }
-                        }
-                    }
-                    Err(McpError::NotConnected {
-                        server,
-                        user_id: uid,
-                    }) => {
-                        let placeholders: Vec<rmcp::model::Tool> = match &access.only {
-                            None => vec![sentinel_placeholder(&server)],
-                            Some(names) => names.iter().map(|n| named_placeholder(n)).collect(),
-                        };
-                        let signer = pool.signer();
-                        for tool in placeholders {
-                            tools
-                                .push(Box::new(NotConnectedTool::new(&server, tool, &uid, signer)));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            agent = %agent, server = %access.server, error = %e,
-                            "MCP session setup failed; exposing unreachable placeholder"
-                        );
-                        tools.push(Box::new(UnreachableTool::new(
-                            &access.server,
-                            &e.to_string(),
-                        )));
-                    }
-                }
-            } else {
-                let Some(server) = self.servers.get(&access.server) else {
-                    tracing::warn!(
-                        agent = %agent, server = %access.server,
-                        "non-OAuth MCP server is not in the connected pool \
-                         (boot connect failed?)"
-                    );
-                    tools.push(Box::new(UnreachableTool::new(
-                        &access.server,
-                        "server not connected at boot",
-                    )));
-                    continue;
-                };
-                match pick_tools(agent, &access.server, access.only.as_deref(), &server.tools) {
-                    Ok(picked) => {
-                        for tool in picked {
-                            tools.push(Box::new(McpTool::from_mcp_server(
-                                tool,
-                                server.sink.clone(),
-                            )));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            agent = %agent, server = %access.server, error = %e,
-                            "could not pick tools from MCP server"
-                        );
-                        tools.push(Box::new(UnreachableTool::new(
-                            &access.server,
-                            &e.to_string(),
-                        )));
-                    }
-                }
-            }
+            tools.extend(self.user_tools_for(agent, access, user_id).await);
         }
         Ok(sanitize::apply(tools))
+    }
+
+    async fn oauth_server_tools(
+        &self,
+        agent: &str,
+        access: &McpToolAccess,
+        user_id: UserId,
+    ) -> McpToolSet {
+        let Some(pool) = self.user_pool.as_ref() else {
+            tracing::warn!(
+                agent = %agent, server = %access.server,
+                "oauth server referenced but no user pool — vault is misconfigured"
+            );
+            return vec![Box::new(UnreachableTool::new(
+                &access.server,
+                &UnreachableReason::NoOAuthVault,
+            ))];
+        };
+        match pool.get_or_spawn(&access.server, user_id).await {
+            Ok(session) => match access.pick_tools(agent, &session.tools) {
+                Ok(picked) => picked
+                    .into_iter()
+                    .map(|tool| {
+                        Box::new(McpTool::from_mcp_server(tool, session.sink.clone()))
+                            as Box<dyn ToolDyn>
+                    })
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(
+                        agent = %agent, server = %access.server, error = %e,
+                        "could not pick tools from MCP session"
+                    );
+                    vec![Box::new(UnreachableTool::new(
+                        &access.server,
+                        &UnreachableReason::Failed(e),
+                    ))]
+                }
+            },
+            Err(McpError::NotConnected { server, .. }) => {
+                let signer = pool.signer();
+                access
+                    .placeholder_tools()
+                    .into_iter()
+                    .map(|tool| {
+                        Box::new(NotConnectedTool::new(&server, tool, user_id, signer))
+                            as Box<dyn ToolDyn>
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    agent = %agent, server = %access.server, error = %e,
+                    "MCP session setup failed; exposing unreachable placeholder"
+                );
+                vec![Box::new(UnreachableTool::new(
+                    &access.server,
+                    &UnreachableReason::Failed(e),
+                ))]
+            }
+        }
+    }
+
+    fn static_server_tools(&self, agent: &str, access: &McpToolAccess) -> McpToolSet {
+        let Some(server) = self.servers.get(&access.server) else {
+            tracing::warn!(
+                agent = %agent, server = %access.server,
+                "non-OAuth MCP server is not in the connected pool \
+                 (boot connect failed?)"
+            );
+            return vec![Box::new(UnreachableTool::new(
+                &access.server,
+                &UnreachableReason::NotConnectedAtBoot,
+            ))];
+        };
+        match access.pick_tools(agent, &server.tools) {
+            Ok(picked) => picked
+                .into_iter()
+                .map(|tool| {
+                    Box::new(McpTool::from_mcp_server(tool, server.sink.clone()))
+                        as Box<dyn ToolDyn>
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    agent = %agent, server = %access.server, error = %e,
+                    "could not pick tools from MCP server"
+                );
+                vec![Box::new(UnreachableTool::new(
+                    &access.server,
+                    &UnreachableReason::Failed(e),
+                ))]
+            }
+        }
+    }
+
+    /// Tools for one server on behalf of `user_id`; a placeholder when
+    /// the server is unavailable for any reason.
+    async fn user_tools_for(
+        &self,
+        agent: &str,
+        access: &McpToolAccess,
+        user_id: UserId,
+    ) -> McpToolSet {
+        let Some(config) = self.configs.get(&access.server) else {
+            tracing::warn!(
+                agent = %agent, server = %access.server,
+                "agent references MCP server that is not in the `mcp:` config block"
+            );
+            return vec![Box::new(UnreachableTool::new(
+                &access.server,
+                &UnreachableReason::NotConfigured,
+            ))];
+        };
+        if config.oauth.is_some() {
+            self.oauth_server_tools(agent, access, user_id).await
+        } else {
+            self.static_server_tools(agent, access)
+        }
     }
 }
 
@@ -298,48 +310,18 @@ fn empty_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     Arc::new(schema)
 }
 
-/// Single placeholder for an OAuth-pending server whose tool schema is
-/// unknown (no `only:` list and no user has authorised yet). The
-/// description makes it obvious to the LLM that this is the
-/// authorisation entry point, not a real tool, AND that the URL it
-/// returns must be relayed verbatim — LLMs given a structured URL with
-/// an `exp` field will sometimes "refresh" it in prose, producing a
-/// forged signature that fails HMAC validation.
-fn sentinel_placeholder(server: &str) -> rmcp::model::Tool {
-    rmcp::model::Tool::new_with_raw(
-        format!("connect_{server}"),
-        Some(
-            format!(
-                "Returns a one-time URL the user must open to authorize access to the \
-                 '{server}' MCP server. Call this whenever the user wants to use \
-                 {server} features or asks you to connect to {server}, INCLUDING when a \
-                 previous link has expired — always call the tool to get a fresh URL. \
-                 Copy the URL from the tool result into your reply verbatim; never edit \
-                 it, regenerate it, or invent a new one (the URL is HMAC-signed and any \
-                 modification makes it invalid)."
-            )
-            .into(),
-        ),
-        empty_object_schema(),
-    )
-}
-
-/// Placeholder tool that mirrors a name from the agent's `only:` list.
-/// The schema is a stand-in — calling the tool returns the connect URL
-/// rather than executing anything.
-fn named_placeholder(name: &str) -> rmcp::model::Tool {
-    rmcp::model::Tool::new_with_raw(name.to_string(), None, empty_object_schema())
-}
-
-fn pick_tools(
-    agent: &str,
-    server_name: &str,
-    only: Option<&[String]>,
-    available: &HashMap<String, rmcp::model::Tool>,
-) -> Result<Vec<rmcp::model::Tool>, McpError> {
-    match only {
-        None => Ok(available.values().cloned().collect()),
-        Some(names) => names
+impl McpToolAccess {
+    /// The tools this access grants out of what the server exposes: all
+    /// of them without `only:`, or exactly the listed names.
+    pub(crate) fn pick_tools(
+        &self,
+        agent: &str,
+        available: &HashMap<String, rmcp::model::Tool>,
+    ) -> Result<Vec<rmcp::model::Tool>, McpError> {
+        let Some(names) = &self.only else {
+            return Ok(available.values().cloned().collect());
+        };
+        names
             .iter()
             .map(|name| {
                 available
@@ -347,11 +329,50 @@ fn pick_tools(
                     .cloned()
                     .ok_or_else(|| McpError::ToolNotFound {
                         agent: agent.to_string(),
-                        server: server_name.to_string(),
+                        server: self.server.clone(),
                         tool: name.clone(),
                     })
             })
-            .collect::<Result<_, _>>(),
+            .collect::<Result<_, _>>()
+    }
+
+    /// Stand-ins offered while the user has not authorised this server
+    /// yet: one placeholder per name in the `only:` list, or a single
+    /// `connect_<server>` sentinel when the tool schema is unknown.
+    ///
+    /// The sentinel's description makes it obvious to the LLM that this
+    /// is the authorisation entry point, not a real tool, AND that the
+    /// URL it returns must be relayed verbatim — LLMs given a structured
+    /// URL with an `exp` field will sometimes "refresh" it in prose,
+    /// producing a forged signature that fails HMAC validation.
+    pub(crate) fn placeholder_tools(&self) -> Vec<rmcp::model::Tool> {
+        let Some(names) = &self.only else {
+            return vec![self.sentinel_placeholder()];
+        };
+        names
+            .iter()
+            .map(|name| rmcp::model::Tool::new_with_raw(name.clone(), None, empty_object_schema()))
+            .collect()
+    }
+
+    fn sentinel_placeholder(&self) -> rmcp::model::Tool {
+        let server = &self.server;
+        rmcp::model::Tool::new_with_raw(
+            format!("connect_{server}"),
+            Some(
+                format!(
+                    "Returns a one-time URL the user must open to authorize access to the \
+                     '{server}' MCP server. Call this whenever the user wants to use \
+                     {server} features or asks you to connect to {server}, INCLUDING when a \
+                     previous link has expired — always call the tool to get a fresh URL. \
+                     Copy the URL from the tool result into your reply verbatim; never edit \
+                     it, regenerate it, or invent a new one (the URL is HMAC-signed and any \
+                     modification makes it invalid)."
+                )
+                .into(),
+            ),
+            empty_object_schema(),
+        )
     }
 }
 
@@ -404,7 +425,7 @@ impl McpServer {
             .await
             .map_err(|source| McpError::ListTools {
                 server: name.to_string(),
-                source,
+                source: Box::new(source),
             })?;
         let tools = listed
             .tools
@@ -424,12 +445,25 @@ impl McpServer {
 mod tests {
     use super::*;
     use crate::config::McpOAuthConfig;
+    use crate::routes::PublicBaseUrl;
     use base64::Engine as _;
     use sqlx::sqlite::SqlitePoolOptions;
 
+    fn test_signer() -> ConnectLinkSigner {
+        let key =
+            base64::engine::general_purpose::STANDARD.encode(b"test-hmac-key-32bytes-padding!!!");
+        ConnectLinkSigner::new(&key, PublicBaseUrl::new("http://localhost:8421")).unwrap()
+    }
+
     #[test]
     fn sentinel_placeholder_advertises_connect_name_and_description() {
-        let tool = sentinel_placeholder("todoist");
+        let access = McpToolAccess {
+            only: None,
+            server: "todoist".to_string(),
+        };
+        let tools = access.placeholder_tools();
+        assert_eq!(tools.len(), 1);
+        let tool = &tools[0];
         assert_eq!(tool.name.as_ref(), "connect_todoist");
         let desc = tool
             .description
@@ -445,8 +479,13 @@ mod tests {
 
     #[test]
     fn named_placeholder_preserves_caller_supplied_name() {
-        let tool = named_placeholder("create_task");
-        assert_eq!(tool.name.as_ref(), "create_task");
+        let access = McpToolAccess {
+            only: Some(vec!["create_task".to_string()]),
+            server: "todoist".to_string(),
+        };
+        let tools = access.placeholder_tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_ref(), "create_task");
     }
 
     /// Without `only:` and without a stored token, the agent must still
@@ -489,10 +528,7 @@ mod tests {
         .unwrap();
         let key = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
         let vault = Arc::new(TokenVault::new(pool, &key).unwrap());
-        let signer = ConnectLinkSigner {
-            hmac_key: b"test-hmac-key-32bytes-padding!!!".to_vec(),
-            public_base_url: "http://localhost:8421".into(),
-        };
+        let signer = test_signer();
 
         let servers = McpServers::connect_with_vault(configs, Some(vault), Some(signer))
             .await
@@ -558,10 +594,7 @@ mod tests {
         .unwrap();
         let key = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
         let vault = Arc::new(TokenVault::new(pool, &key).unwrap());
-        let signer = ConnectLinkSigner {
-            hmac_key: b"test-hmac-key-32bytes-padding!!!".to_vec(),
-            public_base_url: "http://localhost:8421".into(),
-        };
+        let signer = test_signer();
 
         let servers = McpServers::connect_with_vault(configs, Some(vault), Some(signer))
             .await
@@ -596,7 +629,7 @@ mod tests {
         );
     }
 
-    fn names(tools: &[Box<dyn ToolDyn>]) -> Vec<String> {
+    fn names(tools: &McpToolSet) -> Vec<String> {
         tools.iter().map(|t| t.name()).collect()
     }
 }

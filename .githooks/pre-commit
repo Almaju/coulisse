@@ -10,8 +10,11 @@ cargo fmt --all -- --check
 echo "==> cargo clippy"
 cargo clippy --workspace --all-targets --locked
 
-echo "==> cargo sort-derives --check"
-cargo sort-derives --check
+echo "==> rabot fmt --check"
+rabot fmt --check
+
+echo "==> rabot check --strict"
+rabot check --strict
 
 echo "==> cargo machete"
 cargo machete --with-metadata

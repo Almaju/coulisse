@@ -18,7 +18,8 @@ mod merge;
 mod store;
 mod types;
 
-pub use config::{PersonaConfig, SmokeList, SmokeTestConfig, smoke_list};
+pub use admin::SmokeAdmin;
+pub use config::{PersonaConfig, SmokeList, SmokeTestConfig};
 pub use dispatcher::{DispatchError, RunDispatcher};
 pub use merge::{AdminSmoke, AdminSource, MergeReport, MergedSmoke, Source, admin_view, merge};
 pub use store::{DynamicSmokeRow, SmokeStore, SmokeStoreError};

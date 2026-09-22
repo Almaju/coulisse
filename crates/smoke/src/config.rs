@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, Guard};
 use serde::{Deserialize, Serialize};
 
 /// One smoke test: a synthetic-user persona that drives a conversation
@@ -50,10 +50,29 @@ fn default_repetitions() -> u32 {
 }
 
 /// Hot-reloadable list of smoke tests. Same `ArcSwap` shape used by
-/// the other feature crates.
-pub type SmokeList = Arc<ArcSwap<Vec<SmokeTestConfig>>>;
+/// the other feature crates: clones share the underlying list, so cli
+/// can hand one copy to the reload watcher and another to the admin
+/// router.
+#[derive(Clone, Debug)]
+pub struct SmokeList(Arc<ArcSwap<Vec<SmokeTestConfig>>>);
 
-#[must_use]
-pub fn smoke_list(initial: Vec<SmokeTestConfig>) -> SmokeList {
-    Arc::new(ArcSwap::from_pointee(initial))
+impl SmokeList {
+    #[must_use]
+    pub fn new(initial: Vec<SmokeTestConfig>) -> Self {
+        Self(Arc::new(ArcSwap::from_pointee(initial)))
+    }
+
+    #[must_use]
+    pub fn load(&self) -> Guard<Arc<Vec<SmokeTestConfig>>> {
+        self.0.load()
+    }
+
+    #[must_use]
+    pub fn load_full(&self) -> Arc<Vec<SmokeTestConfig>> {
+        self.0.load_full()
+    }
+
+    pub fn store(&self, configs: Arc<Vec<SmokeTestConfig>>) {
+        self.0.store(configs);
+    }
 }

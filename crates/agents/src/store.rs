@@ -3,8 +3,8 @@ use std::sync::Arc;
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{now_secs, u64_to_i64};
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{SqliteConnection, SqlitePool};
 use thiserror::Error;
 
 use crate::merge::{MergeReport, merge};
@@ -16,14 +16,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "agents";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("agents has only one schema version")
-    }
 }
 
 /// One row in `dynamic_agents`. `config` is `Some` for active rows
@@ -36,6 +28,30 @@ pub struct DynamicRow {
     pub disabled: bool,
     pub name: String,
     pub updated_at: i64,
+}
+
+impl DynamicRow {
+    fn from_row(row: &SqliteRow) -> Result<Self, DynamicAgentsError> {
+        let config_json: Option<String> = row.try_get("config_json")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let disabled: i64 = row.try_get("disabled")?;
+        let name: String = row.try_get("name")?;
+        let updated_at: i64 = row.try_get("updated_at")?;
+        let config = match config_json {
+            None => None,
+            Some(s) => Some(
+                serde_json::from_str::<AgentConfig>(&s)
+                    .map_err(|e| DynamicAgentsError::RowDecode(format!("config_json: {e}")))?,
+            ),
+        };
+        Ok(Self {
+            config,
+            created_at,
+            disabled: disabled != 0,
+            name,
+            updated_at,
+        })
+    }
 }
 
 /// Persistent storage for runtime-mutable agents. Each row either overrides
@@ -87,7 +103,7 @@ impl DynamicAgents {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_dynamic).collect()
+        rows.iter().map(DynamicRow::from_row).collect()
     }
 
     /// Upsert an active row (override or dynamic). `created_at` is preserved
@@ -165,28 +181,6 @@ impl DynamicAgents {
         list.store(Arc::new(configs));
         Ok(report)
     }
-}
-
-fn row_to_dynamic(row: &SqliteRow) -> Result<DynamicRow, DynamicAgentsError> {
-    let config_json: Option<String> = row.try_get("config_json")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let disabled: i64 = row.try_get("disabled")?;
-    let name: String = row.try_get("name")?;
-    let updated_at: i64 = row.try_get("updated_at")?;
-    let config = match config_json {
-        None => None,
-        Some(s) => Some(
-            serde_json::from_str::<AgentConfig>(&s)
-                .map_err(|e| DynamicAgentsError::RowDecode(format!("config_json: {e}")))?,
-        ),
-    };
-    Ok(DynamicRow {
-        config,
-        created_at,
-        disabled: disabled != 0,
-        name,
-        updated_at,
-    })
 }
 
 #[derive(Debug, Error)]

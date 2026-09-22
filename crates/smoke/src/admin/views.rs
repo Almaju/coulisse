@@ -1,5 +1,7 @@
+use coulisse_core::now_secs;
+
 use crate::merge::{AdminSmoke, AdminSource};
-use crate::types::{RunStatus, StoredMessage, StoredRun, TurnRole};
+use crate::types::{RunId, RunStatus, StoredMessage, StoredRun, TurnRole};
 
 pub(super) struct SourceLabel(pub &'static str);
 
@@ -50,10 +52,10 @@ pub(super) struct RunDetailView {
     pub agent_resolved: String,
     pub error: Option<String>,
     pub experiment: Option<String>,
-    pub id: String,
+    pub id: RunId,
     pub is_running: bool,
     pub started_at_label: String,
-    pub status: String,
+    pub status: RunStatus,
     pub test_name: String,
     pub total_turns: u32,
     pub turns: Vec<TurnView>,
@@ -125,10 +127,10 @@ impl RunDetailView {
             agent_resolved: run.agent_resolved.clone().unwrap_or_else(|| "—".into()),
             error: run.error.clone(),
             experiment: run.experiment.clone(),
-            id: run.id.0.to_string(),
+            id: run.id,
             is_running: run.status == RunStatus::Running,
             started_at_label: relative_time(run.started_at),
-            status: run.status.as_str().to_string(),
+            status: run.status,
             test_name: run.test_name.clone(),
             total_turns: run.total_turns,
             turns,
@@ -139,10 +141,7 @@ impl RunDetailView {
 /// Shorthand "5m ago" / "2h ago" / "3d ago" rendering. Avoids a chrono
 /// dep — this is a single use and unix-seconds arithmetic is enough.
 fn relative_time(unix_seconds: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let diff = now.saturating_sub(unix_seconds);
+    let diff = now_secs().saturating_sub(unix_seconds);
     if diff < 60 {
         return format!("{diff}s ago");
     }

@@ -1,18 +1,15 @@
-use std::path::Path;
-use std::str::FromStr;
-
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{UnknownRole, i64_to_u32, i64_to_u64, u64_to_i64};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{SqliteConnection, SqlitePool, sqlite::SqliteRow};
+use sqlx::{SqlitePool, sqlite::SqliteRow};
 use uuid::Uuid;
 
+use crate::embedder::cosine_similarity;
 use crate::types::UnknownMemoryKind;
 use crate::{
-    BackendConfig, BundledEmbedder, ConfigError, Memory, MemoryConfig, MemoryError, MemoryId,
-    MemoryKind, Message, MessageId, Role, StoredMessage, TokenCount, UserId,
+    BundledEmbedder, ConfigError, Memory, MemoryConfig, MemoryError, MemoryId, MemoryKind, Message,
+    MessageId, Role, StoredMessage, TokenCount, UserId,
 };
 
 struct Schema;
@@ -21,14 +18,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "memory";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("memory has only one schema version")
-    }
 }
 
 /// Top-level memory infrastructure. Owns the embedder and the `SQLite` pool
@@ -46,7 +35,7 @@ pub struct Store {
 
 impl Store {
     /// Open a Store against an externally-provided `SQLite` pool. Cli
-    /// owns the pool (via `memory::open_pool`) and hands clones to
+    /// owns the pool (via `BackendConfig::open_pool`) and hands clones to
     /// every persistent crate. Memory runs its own schema migrations
     /// against the pool — it owns only the `messages` and `memories`
     /// tables.
@@ -106,7 +95,9 @@ impl Store {
                 last_message_at: last_message_at.try_into().unwrap_or(0u64),
                 message_count: clamp_u32(message_count),
                 total_tokens: total_tokens.try_into().unwrap_or(0u64),
-                user_id: UserId(parse_uuid(&user_id, "user id")?),
+                user_id: user_id
+                    .parse()
+                    .map_err(MemoryError::invalid_id("user id"))?,
             });
         }
         Ok(out)
@@ -170,7 +161,9 @@ impl Store {
                 last_activity_at: i64_to_u64(last_activity_at),
                 memory_count: clamp_u32(memory_count),
                 message_count: clamp_u32(message_count),
-                user_id: UserId(parse_uuid(&user_id, "user id")?),
+                user_id: user_id
+                    .parse()
+                    .map_err(MemoryError::invalid_id("user id"))?,
             });
         }
         Ok(out)
@@ -252,7 +245,7 @@ impl UserMemory<'_> {
         // cannot overflow or sign-flip — only drops the fractional part.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let memory_budget = TokenCount(scaled.clamp(0.0, f64::from(u32::MAX)) as u32);
-        let memories = fit_memories(recalled, memory_budget);
+        let memories = memory_budget.fit_memories(recalled);
         let memories_used: TokenCount = memories
             .iter()
             .map(|m| TokenCount::estimate(&m.content))
@@ -260,7 +253,7 @@ impl UserMemory<'_> {
         let history_budget = budget.saturating_sub(memories_used);
 
         let stored = self.messages().await?;
-        let messages = fit_messages(&stored, history_budget);
+        let messages = history_budget.fit_messages(&stored);
 
         Ok(AssembledContext { memories, messages })
     }
@@ -309,7 +302,7 @@ impl UserMemory<'_> {
         .bind(self.user_id.0.to_string())
         .fetch_all(&self.store.pool)
         .await?;
-        rows.iter().map(row_to_stored_message).collect()
+        rows.iter().map(StoredMessage::from_row).collect()
     }
 
     /// Return top-`k` memories most relevant to `query` by cosine similarity.
@@ -410,7 +403,7 @@ impl UserMemory<'_> {
         .bind(&model_id)
         .fetch_all(&self.store.pool)
         .await?;
-        rows.iter().map(row_to_memory).collect()
+        rows.iter().map(Memory::from_row).collect()
     }
 }
 
@@ -442,53 +435,6 @@ pub struct UserSummary {
     pub user_id: UserId,
 }
 
-/// Open a `SQLite` pool from a `BackendConfig`. Public so cli can open
-/// one pool and hand clones to every persistent crate (memory, judge,
-/// telemetry, limits) instead of borrowing memory's. Each crate runs
-/// its own `CREATE TABLE IF NOT EXISTS` against the shared pool, so
-/// table ownership stays clear even though the connection is shared.
-///
-/// # Errors
-///
-/// Returns an error if the underlying operation fails.
-pub async fn open_pool(backend: &BackendConfig) -> Result<SqlitePool, ConfigError> {
-    let options = match backend {
-        BackendConfig::InMemory => SqliteConnectOptions::from_str("sqlite::memory:")
-            .map_err(ConfigError::from)?
-            .create_if_missing(true),
-        BackendConfig::Sqlite { path } => {
-            if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                ensure_dir(parent)?;
-            }
-            SqliteConnectOptions::new()
-                .filename(path)
-                .create_if_missing(true)
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Normal)
-                .foreign_keys(true)
-        }
-    };
-    let max_connections = if matches!(backend, BackendConfig::InMemory) {
-        1
-    } else {
-        5
-    };
-    let pool = SqlitePoolOptions::new()
-        .max_connections(max_connections)
-        .connect_with(options)
-        .await?;
-    Ok(pool)
-}
-
-fn ensure_dir(path: &Path) -> Result<(), ConfigError> {
-    std::fs::create_dir_all(path).map_err(|source| ConfigError::CreateDir {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
 fn check_dims(vector: &[f32], expected: usize) -> Result<(), MemoryError> {
     if vector.len() != expected {
         return Err(MemoryError::DimensionMismatch {
@@ -497,50 +443,6 @@ fn check_dims(vector: &[f32], expected: usize) -> Result<(), MemoryError> {
         });
     }
     Ok(())
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot = 0.0f32;
-    let mut na = 0.0f32;
-    let mut nb = 0.0f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    let denom = na.sqrt() * nb.sqrt();
-    if denom == 0.0 { 0.0 } else { dot / denom }
-}
-
-fn fit_memories(recalled: Vec<Memory>, budget: TokenCount) -> Vec<Memory> {
-    let mut used = TokenCount(0);
-    let mut out = Vec::new();
-    for m in recalled {
-        let cost = TokenCount::estimate(&m.content);
-        if used + cost > budget {
-            break;
-        }
-        used += cost;
-        out.push(m);
-    }
-    out
-}
-
-fn fit_messages(messages: &[StoredMessage], budget: TokenCount) -> Vec<Message> {
-    let mut used = TokenCount(0);
-    let mut taken: Vec<&StoredMessage> = Vec::new();
-    for m in messages.iter().rev() {
-        if used + m.token_count > budget {
-            break;
-        }
-        used += m.token_count;
-        taken.push(m);
-    }
-    taken.reverse();
-    taken.iter().map(|m| m.as_message()).collect()
 }
 
 fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
@@ -564,46 +466,52 @@ fn bytes_to_vec(bytes: &[u8]) -> Result<Vec<f32>, MemoryError> {
         .collect())
 }
 
-fn row_to_memory(row: &SqliteRow) -> Result<Memory, MemoryError> {
-    let content: String = row.try_get("content")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let embedding_blob: Vec<u8> = row.try_get("embedding")?;
-    let id: String = row.try_get("id")?;
-    let kind: String = row.try_get("kind")?;
-    let user_id: String = row.try_get("user_id")?;
-    Ok(Memory {
-        content,
-        created_at: i64_to_u64(created_at),
-        embedding: bytes_to_vec(&embedding_blob)?,
-        id: MemoryId(parse_uuid(&id, "memory id")?),
-        kind: kind
-            .parse()
-            .map_err(|e: UnknownMemoryKind| MemoryError::RowDecode(e.to_string()))?,
-        user_id: UserId(parse_uuid(&user_id, "user id")?),
-    })
+impl Memory {
+    fn from_row(row: &SqliteRow) -> Result<Self, MemoryError> {
+        let content: String = row.try_get("content")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let embedding_blob: Vec<u8> = row.try_get("embedding")?;
+        let id: String = row.try_get("id")?;
+        let kind: String = row.try_get("kind")?;
+        let user_id: String = row.try_get("user_id")?;
+        Ok(Self {
+            content,
+            created_at: i64_to_u64(created_at),
+            embedding: bytes_to_vec(&embedding_blob)?,
+            id: id.parse().map_err(MemoryError::invalid_id("memory id"))?,
+            kind: kind
+                .parse()
+                .map_err(|e: UnknownMemoryKind| MemoryError::RowDecode(e.to_string()))?,
+            user_id: user_id
+                .parse()
+                .map_err(MemoryError::invalid_id("user id"))?,
+        })
+    }
 }
 
-fn row_to_stored_message(row: &SqliteRow) -> Result<StoredMessage, MemoryError> {
-    let content: String = row.try_get("content")?;
-    let created_at: i64 = row.try_get("created_at")?;
-    let id: String = row.try_get("id")?;
-    let role: String = row.try_get("role")?;
-    let token_count: i64 = row.try_get("token_count")?;
-    let user_id: String = row.try_get("user_id")?;
-    Ok(StoredMessage {
-        content,
-        created_at: i64_to_u64(created_at),
-        id: MessageId(parse_uuid(&id, "message id")?),
-        role: role
-            .parse()
-            .map_err(|e: UnknownRole| MemoryError::RowDecode(e.to_string()))?,
-        token_count: TokenCount(i64_to_u32(token_count)),
-        user_id: UserId(parse_uuid(&user_id, "user id")?),
-    })
-}
-
-fn parse_uuid(s: &str, label: &str) -> Result<Uuid, MemoryError> {
-    Uuid::parse_str(s).map_err(|e| MemoryError::RowDecode(format!("invalid {label}: {e}")))
+impl StoredMessage {
+    fn from_row(row: &SqliteRow) -> Result<Self, MemoryError> {
+        let content: String = row.try_get("content")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let id: String = row.try_get("id")?;
+        let role: String = row.try_get("role")?;
+        let token_count: i64 = row.try_get("token_count")?;
+        let user_id: String = row.try_get("user_id")?;
+        Ok(Self {
+            content,
+            created_at: i64_to_u64(created_at),
+            id: Uuid::parse_str(&id)
+                .map(MessageId)
+                .map_err(MemoryError::invalid_id("message id"))?,
+            role: role
+                .parse()
+                .map_err(|e: UnknownRole| MemoryError::RowDecode(e.to_string()))?,
+            token_count: TokenCount(i64_to_u32(token_count)),
+            user_id: user_id
+                .parse()
+                .map_err(MemoryError::invalid_id("user id"))?,
+        })
+    }
 }
 
 fn clamp_u32(n: i64) -> u32 {

@@ -9,13 +9,16 @@
 //! handler reads the same top-to-bottom: check budget before the call, record
 //! spend after.
 
+use std::fmt;
+use std::str::FromStr;
+
 use base64::Engine;
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{now_secs, u64_to_i64};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 use thiserror::Error;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
@@ -26,14 +29,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "auth";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("auth has only one schema version")
-    }
 }
 
 /// Public, stable identity for a minted token. Distinct from the secret: the
@@ -41,7 +36,7 @@ impl SchemaMigrator for Schema {
 /// shown once and never persisted.
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-pub struct TokenId(pub Uuid);
+pub struct TokenId(Uuid);
 
 impl TokenId {
     #[must_use]
@@ -57,6 +52,11 @@ impl TokenId {
     pub fn parse(s: &str) -> Result<Self, uuid::Error> {
         Ok(Self(Uuid::parse_str(s)?))
     }
+
+    #[must_use]
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
 }
 
 impl Default for TokenId {
@@ -65,9 +65,87 @@ impl Default for TokenId {
     }
 }
 
-impl std::fmt::Display for TokenId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for TokenId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for TokenId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+/// The plaintext bearer secret of a minted token (`sk-coulisse-…`). Shown
+/// once at mint time and never persisted — only its digest is. `Debug`
+/// redacts it so it cannot leak through a log line.
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TokenSecret(String);
+
+impl TokenSecret {
+    /// `sk-coulisse-<43-char base64url>` — 256 bits of entropy, URL-safe so
+    /// it pastes cleanly into env files and headers.
+    fn generate() -> Self {
+        let mut raw = [0u8; 32];
+        // rabot: allow(ambient-randomness) cryptographic secret: a replayable generator would be a vulnerability
+        rand::rng().fill_bytes(&mut raw);
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+        Self(format!("sk-coulisse-{encoded}"))
+    }
+
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TokenSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TokenSecret([redacted])")
+    }
+}
+
+/// The three budget shapes a token can carry, as spelled in the studio
+/// form, the CLI flag, and the `budget_kind` column.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetKind {
+    Monthly,
+    Total,
+    #[default]
+    Unlimited,
+}
+
+impl BudgetKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Monthly => "monthly",
+            Self::Total => "total",
+            Self::Unlimited => "unlimited",
+        }
+    }
+}
+
+impl FromStr for BudgetKind {
+    type Err = BudgetParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "monthly" => Ok(Self::Monthly),
+            "total" => Ok(Self::Total),
+            "unlimited" => Ok(Self::Unlimited),
+            other => Err(BudgetParseError::UnknownKind(other.to_string())),
+        }
     }
 }
 
@@ -83,9 +161,9 @@ pub enum Budget {
 
 impl Budget {
     fn from_db(kind: &str, limit_micro_usd: Option<i64>) -> Self {
-        match (kind, limit_micro_usd) {
-            ("monthly", Some(limit_micro_usd)) => Self::Monthly { limit_micro_usd },
-            ("total", Some(limit_micro_usd)) => Self::Total { limit_micro_usd },
+        match (kind.parse::<BudgetKind>(), limit_micro_usd) {
+            (Ok(BudgetKind::Monthly), Some(limit_micro_usd)) => Self::Monthly { limit_micro_usd },
+            (Ok(BudgetKind::Total), Some(limit_micro_usd)) => Self::Total { limit_micro_usd },
             // WHY: an unrecognised kind or a capped kind with a NULL limit is
             // a corrupt row; fail open to `Unlimited` rather than blocking a
             // user behind unreadable budget state.
@@ -93,24 +171,23 @@ impl Budget {
         }
     }
 
-    /// Construct from an admin form: a kind string plus an optional dollar
-    /// amount. `unlimited` ignores the amount; `total`/`monthly` require a
-    /// positive amount.
+    /// Construct from an admin form: a kind plus an optional dollar amount.
+    /// `Unlimited` ignores the amount; `Total`/`Monthly` require a positive
+    /// amount.
     ///
     /// # Errors
     ///
-    /// Returns [`BudgetParseError`] for an unknown kind or a missing/
-    /// non-positive amount on a capped kind.
-    pub fn from_parts(kind: &str, limit_usd: Option<f64>) -> Result<Self, BudgetParseError> {
+    /// Returns [`BudgetParseError`] for a missing or non-positive amount on
+    /// a capped kind.
+    pub fn from_parts(kind: BudgetKind, limit_usd: Option<f64>) -> Result<Self, BudgetParseError> {
         match kind {
-            "monthly" => Ok(Self::Monthly {
+            BudgetKind::Monthly => Ok(Self::Monthly {
                 limit_micro_usd: require_positive(limit_usd)?,
             }),
-            "total" => Ok(Self::Total {
+            BudgetKind::Total => Ok(Self::Total {
                 limit_micro_usd: require_positive(limit_usd)?,
             }),
-            "unlimited" => Ok(Self::Unlimited),
-            other => Err(BudgetParseError::UnknownKind(other.to_string())),
+            BudgetKind::Unlimited => Ok(Self::Unlimited),
         }
     }
 
@@ -129,11 +206,11 @@ impl Budget {
         }
     }
 
-    fn to_db(self) -> (&'static str, Option<i64>) {
+    fn to_db(self) -> (BudgetKind, Option<i64>) {
         match self {
-            Self::Monthly { limit_micro_usd } => ("monthly", Some(limit_micro_usd)),
-            Self::Total { limit_micro_usd } => ("total", Some(limit_micro_usd)),
-            Self::Unlimited => ("unlimited", None),
+            Self::Monthly { limit_micro_usd } => (BudgetKind::Monthly, Some(limit_micro_usd)),
+            Self::Total { limit_micro_usd } => (BudgetKind::Total, Some(limit_micro_usd)),
+            Self::Unlimited => (BudgetKind::Unlimited, None),
         }
     }
 }
@@ -144,7 +221,16 @@ impl Budget {
 #[derive(Clone, Debug)]
 pub struct MintedToken {
     pub id: TokenId,
-    pub secret: String,
+    pub secret: TokenSecret,
+}
+
+/// What a caller asks [`TokenStore::mint`] to create: the budget, a label
+/// for the studio list, and the principal the token binds requests to.
+#[derive(Clone, Debug)]
+pub struct NewToken {
+    pub budget: Budget,
+    pub label: String,
+    pub principal: String,
 }
 
 /// The identity a presented secret resolved to. Returned by
@@ -240,27 +326,22 @@ impl TokenStore {
     /// # Errors
     ///
     /// Returns an error if the row cannot be written.
-    pub async fn mint(
-        &self,
-        label: &str,
-        principal: &str,
-        budget: Budget,
-    ) -> Result<MintedToken, StoreError> {
+    pub async fn mint(&self, token: NewToken) -> Result<MintedToken, StoreError> {
         let id = TokenId::new();
-        let secret = generate_secret();
-        let (kind, limit) = budget.to_db();
+        let secret = TokenSecret::generate();
+        let (kind, limit) = token.budget.to_db();
         sqlx::query(
             "INSERT INTO api_tokens \
                 (budget_kind, budget_micro_usd, created_at, id, label, principal, secret_hash) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(kind)
+        .bind(kind.as_str())
         .bind(limit)
         .bind(u64_to_i64(now_secs()))
-        .bind(id.0.to_string())
-        .bind(label)
-        .bind(principal)
-        .bind(hash_secret(&secret))
+        .bind(id.to_string())
+        .bind(token.label)
+        .bind(token.principal)
+        .bind(hash_secret(secret.expose()))
         .execute(&self.pool)
         .await?;
         Ok(MintedToken { id, secret })
@@ -288,7 +369,7 @@ impl TokenStore {
         let affected =
             sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
                 .bind(u64_to_i64(now_secs()))
-                .bind(id.0.to_string())
+                .bind(id.to_string())
                 .execute(&self.pool)
                 .await?
                 .rows_affected();
@@ -318,7 +399,7 @@ impl TokenStore {
             .bind(&id)
             .execute(&self.pool)
             .await?;
-        let id = TokenId(Uuid::parse_str(&id).map_err(|e| StoreError::CorruptId(e.to_string()))?);
+        let id = id.parse::<TokenId>().map_err(StoreError::CorruptId)?;
         Ok(Some(VerifiedToken { id, principal }))
     }
 
@@ -327,7 +408,7 @@ impl TokenStore {
             "SELECT budget_kind, budget_micro_usd FROM api_tokens \
              WHERE id = ? AND revoked_at IS NULL",
         )
-        .bind(id.0.to_string())
+        .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await
         .map_err(StoreError::Sqlx)?;
@@ -362,9 +443,7 @@ impl TokenStore {
         let month_start = month_start_secs(now);
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
-            let id = TokenId(
-                Uuid::parse_str(&row.id).map_err(|e| StoreError::CorruptId(e.to_string()))?,
-            );
+            let id = row.id.parse::<TokenId>().map_err(StoreError::CorruptId)?;
             let budget = Budget::from_db(&row.budget_kind, row.budget_micro_usd);
             let spend_micro_usd = self.spend_since(id, 0).await?;
             let period_spend_micro_usd = match budget {
@@ -402,7 +481,7 @@ impl TokenStore {
         .bind(micro_usd)
         .bind(u64_to_i64(at))
         .bind(Uuid::new_v4().to_string())
-        .bind(id.0.to_string())
+        .bind(id.to_string())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -413,7 +492,7 @@ impl TokenStore {
             "SELECT SUM(cost_micro_usd) FROM token_usage \
              WHERE token_id = ? AND created_at >= ?",
         )
-        .bind(id.0.to_string())
+        .bind(id.to_string())
         .bind(u64_to_i64(since))
         .fetch_one(&self.pool)
         .await?;
@@ -443,15 +522,6 @@ fn month_start_secs(now: u64) -> u64 {
         return 0;
     };
     coulisse_core::i64_to_u64(first.midnight().assume_utc().unix_timestamp())
-}
-
-/// `sk-coulisse-<43-char base64url>` — 256 bits of entropy, URL-safe so it
-/// pastes cleanly into env files and headers.
-fn generate_secret() -> String {
-    let mut raw = [0u8; 32];
-    rand::rng().fill_bytes(&mut raw);
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-    format!("sk-coulisse-{encoded}")
 }
 
 /// SHA-256 hex digest of a secret. The secret is high-entropy, so a fast
@@ -484,7 +554,7 @@ pub fn micro_to_usd(micro: i64) -> f64 {
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("stored token id is not a valid uuid: {0}")]
-    CorruptId(String),
+    CorruptId(#[source] uuid::Error),
     #[error("auth schema migration failed: {0}")]
     Migrate(#[from] migrate::MigrateError),
     #[error("auth database error: {0}")]
@@ -518,7 +588,14 @@ pub enum BudgetParseError {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqliteConnectOptions;
-    use std::str::FromStr;
+
+    fn new_token(label: &str, principal: &str, budget: Budget) -> NewToken {
+        NewToken {
+            budget,
+            label: label.to_string(),
+            principal: principal.to_string(),
+        }
+    }
 
     async fn store() -> TokenStore {
         let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
@@ -530,11 +607,11 @@ mod tests {
     async fn mint_then_verify_roundtrips_principal() {
         let store = store().await;
         let minted = store
-            .mint("laptop", "alice", Budget::Unlimited)
+            .mint(new_token("laptop", "alice", Budget::Unlimited))
             .await
             .unwrap();
-        assert!(minted.secret.starts_with("sk-coulisse-"));
-        let verified = store.verify(&minted.secret).await.unwrap().unwrap();
+        assert!(minted.secret.expose().starts_with("sk-coulisse-"));
+        let verified = store.verify(minted.secret.expose()).await.unwrap().unwrap();
         assert_eq!(verified.id, minted.id);
         assert_eq!(verified.principal, "alice");
     }
@@ -543,7 +620,7 @@ mod tests {
     async fn unknown_secret_does_not_verify() {
         let store = store().await;
         store
-            .mint("laptop", "alice", Budget::Unlimited)
+            .mint(new_token("laptop", "alice", Budget::Unlimited))
             .await
             .unwrap();
         assert!(store.verify("sk-coulisse-nope").await.unwrap().is_none());
@@ -553,11 +630,17 @@ mod tests {
     async fn revoked_token_stops_verifying() {
         let store = store().await;
         let minted = store
-            .mint("laptop", "alice", Budget::Unlimited)
+            .mint(new_token("laptop", "alice", Budget::Unlimited))
             .await
             .unwrap();
         assert!(store.revoke(minted.id).await.unwrap());
-        assert!(store.verify(&minted.secret).await.unwrap().is_none());
+        assert!(
+            store
+                .verify(minted.secret.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
         // Second revoke is a no-op.
         assert!(!store.revoke(minted.id).await.unwrap());
     }
@@ -566,7 +649,7 @@ mod tests {
     async fn unlimited_budget_never_blocks() {
         let store = store().await;
         let minted = store
-            .mint("laptop", "alice", Budget::Unlimited)
+            .mint(new_token("laptop", "alice", Budget::Unlimited))
             .await
             .unwrap();
         store.record_spend(minted.id, 999_000_000).await.unwrap();
@@ -577,13 +660,13 @@ mod tests {
     async fn total_budget_blocks_at_limit() {
         let store = store().await;
         let minted = store
-            .mint(
+            .mint(new_token(
                 "laptop",
                 "alice",
                 Budget::Total {
                     limit_micro_usd: 5_000_000,
                 },
-            )
+            ))
             .await
             .unwrap();
         store.record_spend(minted.id, 4_000_000).await.unwrap();
@@ -597,13 +680,13 @@ mod tests {
     async fn monthly_budget_only_counts_current_month() {
         let store = store().await;
         let minted = store
-            .mint(
+            .mint(new_token(
                 "laptop",
                 "alice",
                 Budget::Monthly {
                     limit_micro_usd: 5_000_000,
                 },
-            )
+            ))
             .await
             .unwrap();
         // 2024-06-15 12:00:00 UTC and a charge in the prior month.
@@ -626,8 +709,14 @@ mod tests {
     #[tokio::test]
     async fn list_reports_lifetime_spend_newest_first() {
         let store = store().await;
-        let a = store.mint("a", "alice", Budget::Unlimited).await.unwrap();
-        let b = store.mint("b", "bob", Budget::Unlimited).await.unwrap();
+        let a = store
+            .mint(new_token("a", "alice", Budget::Unlimited))
+            .await
+            .unwrap();
+        let b = store
+            .mint(new_token("b", "bob", Budget::Unlimited))
+            .await
+            .unwrap();
         store.record_spend(a.id, 2_500_000).await.unwrap();
         let records = store.list().await.unwrap();
         assert_eq!(records.len(), 2);

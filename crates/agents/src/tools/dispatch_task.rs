@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coulisse_core::{TaskQueue, UserId};
+use coulisse_core::{TaskQueue, TaskSubmission, UserId};
 use rig::completion::ToolDefinition;
 use rig::tool::{ToolDyn, ToolError};
 use rig::wasm_compat::WasmBoxedFuture;
@@ -53,7 +53,11 @@ impl ToolDyn for DispatchTaskTool {
                         ))
                     })?;
                 let task_id = queue
-                    .submit(agent, prompt, user_id)
+                    .submit(TaskSubmission {
+                        agent,
+                        prompt,
+                        user_id,
+                    })
                     .await
                     .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
                 let result = format!(

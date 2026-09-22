@@ -14,13 +14,12 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use coulisse_core::{ConfigPersistError, ConfigPersister};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use coulisse_core::{BoxFuture, ConfigPersistError, ConfigPersister};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::Mutex;
 
 use crate::config::Config;
@@ -30,8 +29,7 @@ use crate::config::Config;
 /// crates that need to read from the database (e.g. `agents` merging
 /// YAML with `dynamic_agents` overrides) can do so before publishing
 /// the new in-memory state.
-pub type OnReload =
-    Arc<dyn Fn(Config) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+pub type OnReload = Arc<dyn Fn(Config) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// Persists edits to the on-disk YAML and propagates reloads to
 /// in-memory feature state. Held behind `Arc` so it can be passed to
@@ -89,9 +87,9 @@ impl ConfigStore {
     ///
     /// Returns an error if the underlying operation fails.
     pub fn spawn_watcher(self: &Arc<Self>) -> Result<WatcherGuard, ConfigPersistError> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
         let mut watcher = RecommendedWatcher::new(
-            move |res: Result<Event, notify::Error>| {
+            move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
                     let _ = tx.send(event);
                 }
@@ -120,7 +118,7 @@ impl ConfigStore {
             // before reloading.
             const DEBOUNCE: Duration = Duration::from_millis(75);
             while let Some(event) = rx.recv().await {
-                if !is_relevant(&event, &target) {
+                if !Self::touches(&event, &target) {
                     continue;
                 }
                 tokio::time::sleep(DEBOUNCE).await;
@@ -175,6 +173,19 @@ impl ConfigStore {
         Ok(())
     }
 
+    /// True for a filesystem event that creates, modifies or removes
+    /// `target`; editors also emit access and metadata events, which
+    /// never mean the config changed.
+    fn touches(event: &notify::Event, target: &Path) -> bool {
+        if !matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+        ) {
+            return false;
+        }
+        event.paths.iter().any(|p| paths_equal(p, target))
+    }
+
     /// Validate and atomically write a serialized YAML mapping to disk.
     /// Returns the parsed [`Config`] on success so callers can also
     /// trigger an immediate in-memory reload without waiting for the
@@ -196,11 +207,7 @@ impl ConfigStore {
 }
 
 impl ConfigPersister for ConfigStore {
-    fn write_all<'a>(
-        &'a self,
-        value: serde_yaml::Value,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>
-    {
+    fn write_all(&self, value: serde_yaml::Value) -> BoxFuture<'_, Result<(), ConfigPersistError>> {
         Box::pin(async move {
             let _guard = self.write_lock.lock().await;
             let serde_yaml::Value::Mapping(root) = value else {
@@ -218,8 +225,7 @@ impl ConfigPersister for ConfigStore {
         &'a self,
         section: &'a str,
         value: serde_yaml::Value,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), ConfigPersistError>> + Send + 'a>>
-    {
+    ) -> BoxFuture<'a, Result<(), ConfigPersistError>> {
         Box::pin(async move {
             let _guard = self.write_lock.lock().await;
             let mut root = self.read_root()?;
@@ -237,16 +243,6 @@ impl ConfigPersister for ConfigStore {
 pub struct WatcherGuard {
     _handle: tokio::task::JoinHandle<()>,
     _watcher: RecommendedWatcher,
-}
-
-fn is_relevant(event: &Event, target: &Path) -> bool {
-    if !matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-    ) {
-        return false;
-    }
-    event.paths.iter().any(|p| paths_equal(p, target))
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {

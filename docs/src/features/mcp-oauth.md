@@ -252,7 +252,10 @@ Response `200`:
 { "url": "https://...provider.../authorize?client_id=...&state=<signed_token>" }
 ```
 
-Hand this URL to your end-user. Valid for 10 minutes.
+Hand this URL to your end-user. Valid for 10 minutes. `user_id` must be the
+same identifier the user's chat requests carry (`safety_identifier`); it is
+normalized the same way, so a well-formed UUID passes through and any other
+string maps to the same stable UUID the chat handler uses.
 
 **Error codes:**
 

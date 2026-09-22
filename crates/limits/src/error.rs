@@ -11,8 +11,13 @@ pub enum LimitError {
         used: u64,
         window: WindowKind,
     },
-    #[error("metadata key '{key}' must be a non-negative integer, got '{value}'")]
-    InvalidMetadata { key: String, value: String },
+    #[error("metadata key '{key}' must be a non-negative integer, got '{value}': {source}")]
+    InvalidMetadata {
+        key: String,
+        #[source]
+        source: std::num::ParseIntError,
+        value: String,
+    },
     #[error("schema migration failed: {0}")]
     Migrate(#[from] coulisse_core::migrate::MigrateError),
 }

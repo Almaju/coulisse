@@ -20,8 +20,9 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use coulisse_core::{ToolCallKind, TurnId, UserId, u64_to_i64};
 use sqlx::SqlitePool;
@@ -31,8 +32,27 @@ use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Subscriber, error};
 use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::registry::{LookupSpan, SpanRef};
 use uuid::Uuid;
+
+/// Wall clock the layer stamps rows with. Injected so a test (or a
+/// replayed scenario) can pin `created_at` and `duration_ms`.
+pub trait Clock: Send + Sync {
+    /// Milliseconds since the Unix epoch.
+    fn now_millis(&self) -> u64;
+}
+
+/// The process clock: the one place this crate reads wall-clock time.
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_millis(&self) -> u64 {
+        // rabot: allow(ambient-time) the one real Clock; tests inject their own via spawn_with_clock
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    }
+}
 
 /// One persisted row, dispatched from `on_close`. `Flush` is a sentinel
 /// for `SqliteLayerGuard::flush`: senders are still alive (the layer is
@@ -76,8 +96,42 @@ struct ToolCallRow {
 struct SpanExt {
     event_id: Uuid,
     fields: HashMap<&'static str, String>,
-    started_at: Instant,
     started_at_ms: u64,
+}
+
+impl SpanExt {
+    /// Build the JSON payload stored in `events.payload`. Shape mirrors the
+    /// pre-tracing `EventKind` payloads so studio rendering doesn't change.
+    fn payload(&self, name: &str) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        let interesting: &[&str] = match name {
+            "llm_call" => &[
+                "cost_usd", "error", "model", "prompt", "provider", "response", "usage",
+            ],
+            "tool_call" => &["args", "error", "kind", "result", "tool_name"],
+            "turn" => &["agent", "experiment", "user_message"],
+            _ => &[],
+        };
+        for &key in interesting {
+            if let Some(value) = self.fields.get(key).filter(|s| !s.is_empty()) {
+                let parsed = if let Ok(json) = serde_json::Value::from_str(value) {
+                    json
+                } else {
+                    serde_json::Value::String(value.clone())
+                };
+                obj.insert(key.to_string(), parsed);
+            }
+        }
+        serde_json::Value::Object(obj)
+    }
+
+    /// The `(user_id, turn_id)` a `turn` span carries in its fields, when
+    /// both parse.
+    fn turn_ids(&self) -> Option<(UserId, TurnId)> {
+        let user_id = self.fields.get("user_id")?.parse::<UserId>().ok()?;
+        let turn_id = self.fields.get("turn_id")?.parse::<TurnId>().ok()?;
+        Some((user_id, turn_id))
+    }
 }
 
 /// State attached only to `turn` spans: lets descendant `tool_call` spans
@@ -114,6 +168,7 @@ impl SqliteLayerGuard {
 /// to any subscriber stack.
 #[derive(Clone)]
 pub struct SqliteLayer {
+    clock: Arc<dyn Clock>,
     tx: UnboundedSender<WriteJob>,
 }
 
@@ -122,8 +177,16 @@ impl SqliteLayer {
     /// the layer paired with a guard. Caller installs the layer with
     /// `tracing_subscriber::registry().with(layer)` and keeps the guard
     /// alive for the process lifetime (or `flush()`es it in tests).
+    /// Rows are stamped with the process clock; see `spawn_with_clock`
+    /// to pin it.
     #[must_use]
     pub fn spawn(pool: SqlitePool) -> (Self, SqliteLayerGuard) {
+        Self::spawn_with_clock(pool, Arc::new(SystemClock))
+    }
+
+    /// `spawn`, stamping rows with `clock` instead of the process clock.
+    #[must_use]
+    pub fn spawn_with_clock(pool: SqlitePool, clock: Arc<dyn Clock>) -> (Self, SqliteLayerGuard) {
         let (tx, mut rx) = mpsc::unbounded_channel::<WriteJob>();
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
@@ -132,14 +195,20 @@ impl SqliteLayer {
                         let _ = notify.send(());
                     }
                     other => {
-                        if let Err(err) = write_job(&pool, &other).await {
+                        if let Err(err) = other.write(&pool).await {
                             error!(error = %err, "telemetry sqlite write failed");
                         }
                     }
                 }
             }
         });
-        (Self { tx: tx.clone() }, SqliteLayerGuard { tx })
+        (
+            Self {
+                clock,
+                tx: tx.clone(),
+            },
+            SqliteLayerGuard { tx },
+        )
     }
 }
 
@@ -159,47 +228,26 @@ where
         let Some(span_ext) = extensions.get::<SpanExt>() else {
             return;
         };
-        let duration_ms =
-            u64::try_from(span_ext.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let event_id = span_ext.event_id;
         let started_at_ms = span_ext.started_at_ms;
+        let duration_ms = self.clock.now_millis().saturating_sub(started_at_ms);
+        let event_id = span_ext.event_id;
         let fields = &span_ext.fields;
 
-        // NOTE: walk to the parent we recorded; tracing already skips spans
-        // we don't care about.
-        let parent_event_id = span
-            .scope()
-            .skip(1)
-            .find_map(|s| s.extensions().get::<SpanExt>().map(|e| e.event_id));
-
-        // NOTE: walk to the root `turn` span to inherit user/turn ids and
-        // bump the shared ordinal counter for tool_calls.
-        let turn_ctx = span.scope().find_map(|s| {
-            s.extensions()
-                .get::<TurnExt>()
-                .map(|t| (t.user_id, t.turn_id, &raw const t.ordinal))
-        });
+        let parent_event_id = recorded_parent(&span);
+        let turn_ctx = turn_context(&span);
 
         let (user_id, turn_id) = match (turn_ctx, name) {
             // WHY: a `turn` span carries its ids in fields, but TurnExt wasn't
             // installed because parsing failed. Recover from fields.
-            (None, "turn") => {
-                let user_id = fields
-                    .get("user_id")
-                    .and_then(|s| Uuid::parse_str(s).ok().map(UserId::from));
-                let turn_id = fields
-                    .get("turn_id")
-                    .and_then(|s| Uuid::parse_str(s).ok().map(TurnId));
-                match (user_id, turn_id) {
-                    (Some(u), Some(t)) => (u, t),
-                    _ => return,
-                }
-            }
+            (None, "turn") => match span_ext.turn_ids() {
+                Some(ids) => ids,
+                None => return,
+            },
             (None, _) => return,
             (Some((u, t, _)), _) => (u, t),
         };
 
-        let payload = build_payload(name, fields);
+        let payload = span_ext.payload(name);
         let kind = match name {
             "turn" => "turn_start",
             other => other,
@@ -255,34 +303,22 @@ where
         };
         let mut visitor = FieldVisitor::default();
         attrs.record(&mut visitor);
-        span.extensions_mut().insert(SpanExt {
+        let span_ext = SpanExt {
             event_id: Uuid::new_v4(),
             fields: visitor.fields,
-            started_at: Instant::now(),
-            started_at_ms: now_millis(),
-        });
+            started_at_ms: self.clock.now_millis(),
+        };
+        let turn_ids = (span.name() == "turn")
+            .then(|| span_ext.turn_ids())
+            .flatten();
+        span.extensions_mut().insert(span_ext);
 
-        if span.name() == "turn" {
-            let extensions = span.extensions();
-            let Some(span_ext) = extensions.get::<SpanExt>() else {
-                return;
-            };
-            let user_id = span_ext
-                .fields
-                .get("user_id")
-                .and_then(|s| Uuid::parse_str(s).ok().map(UserId::from));
-            let turn_id = span_ext
-                .fields
-                .get("turn_id")
-                .and_then(|s| Uuid::parse_str(s).ok().map(TurnId));
-            drop(extensions);
-            if let (Some(user_id), Some(turn_id)) = (user_id, turn_id) {
-                span.extensions_mut().insert(TurnExt {
-                    ordinal: AtomicU32::new(0),
-                    turn_id,
-                    user_id,
-                });
-            }
+        if let Some((user_id, turn_id)) = turn_ids {
+            span.extensions_mut().insert(TurnExt {
+                ordinal: AtomicU32::new(0),
+                turn_id,
+                user_id,
+            });
         }
     }
 
@@ -306,75 +342,73 @@ fn is_recorded_span(name: &str) -> bool {
     matches!(name, "turn" | "tool_call" | "llm_call")
 }
 
-/// Build the JSON payload stored in `events.payload`. Shape mirrors the
-/// pre-tracing `EventKind` payloads so studio rendering doesn't change.
-fn build_payload(name: &str, fields: &HashMap<&'static str, String>) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    let interesting: &[&str] = match name {
-        "llm_call" => &[
-            "cost_usd", "error", "model", "prompt", "provider", "response", "usage",
-        ],
-        "tool_call" => &["args", "error", "kind", "result", "tool_name"],
-        "turn" => &["agent", "experiment", "user_message"],
-        _ => &[],
-    };
-    for &key in interesting {
-        if let Some(value) = fields.get(key).filter(|s| !s.is_empty()) {
-            let parsed = serde_json::Value::from_str(value)
-                .unwrap_or_else(|_| serde_json::Value::String(value.clone()));
-            obj.insert(key.to_string(), parsed);
-        }
-    }
-    serde_json::Value::Object(obj)
+/// The closest ancestor this layer also recorded. tracing already skips
+/// spans we don't care about, so the first `SpanExt` up the scope is it.
+fn recorded_parent<S>(span: &SpanRef<'_, S>) -> Option<Uuid>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    span.scope()
+        .skip(1)
+        .find_map(|s| s.extensions().get::<SpanExt>().map(|e| e.event_id))
 }
 
-async fn write_job(pool: &SqlitePool, job: &WriteJob) -> Result<(), sqlx::Error> {
-    match job {
-        WriteJob::Event(row) => {
-            sqlx::query(
-                "INSERT INTO events (correlation_id, created_at, duration_ms, id, kind, \
+/// The enclosing `turn` span's ids plus its shared ordinal counter, which
+/// closing `tool_call` spans bump.
+fn turn_context<S>(span: &SpanRef<'_, S>) -> Option<(UserId, TurnId, *const AtomicU32)>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    span.scope().find_map(|s| {
+        s.extensions()
+            .get::<TurnExt>()
+            .map(|t| (t.user_id, t.turn_id, &raw const t.ordinal))
+    })
+}
+
+impl WriteJob {
+    async fn write(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        match self {
+            Self::Event(row) => {
+                sqlx::query(
+                    "INSERT INTO events (correlation_id, created_at, duration_ms, id, kind, \
                  parent_id, payload, user_id) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&row.correlation_id)
-            .bind(u64_to_i64(row.created_at_ms))
-            .bind(u64_to_i64(row.duration_ms))
-            .bind(&row.id)
-            .bind(row.kind)
-            .bind(row.parent_id.as_deref())
-            .bind(&row.payload)
-            .bind(&row.user_id)
-            .execute(pool)
-            .await?;
-        }
-        WriteJob::Flush(_) => {}
-        WriteJob::ToolCall(row) => {
-            sqlx::query(
-                "INSERT INTO tool_calls (args, created_at, error, id, kind, ordinal, result, \
+                )
+                .bind(&row.correlation_id)
+                .bind(u64_to_i64(row.created_at_ms))
+                .bind(u64_to_i64(row.duration_ms))
+                .bind(&row.id)
+                .bind(row.kind)
+                .bind(row.parent_id.as_deref())
+                .bind(&row.payload)
+                .bind(&row.user_id)
+                .execute(pool)
+                .await?;
+            }
+            Self::Flush(_) => {}
+            Self::ToolCall(row) => {
+                sqlx::query(
+                    "INSERT INTO tool_calls (args, created_at, error, id, kind, ordinal, result, \
                  tool_name, turn_id, user_id) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&row.args)
-            .bind(u64_to_i64(row.created_at_secs))
-            .bind(row.error.as_deref())
-            .bind(&row.id)
-            .bind(row.kind)
-            .bind(i64::from(row.ordinal))
-            .bind(row.result.as_deref())
-            .bind(&row.tool_name)
-            .bind(&row.turn_id)
-            .bind(&row.user_id)
-            .execute(pool)
-            .await?;
+                )
+                .bind(&row.args)
+                .bind(u64_to_i64(row.created_at_secs))
+                .bind(row.error.as_deref())
+                .bind(&row.id)
+                .bind(row.kind)
+                .bind(i64::from(row.ordinal))
+                .bind(row.result.as_deref())
+                .bind(&row.tool_name)
+                .bind(&row.turn_id)
+                .bind(&row.user_id)
+                .execute(pool)
+                .await?;
+            }
         }
+        Ok(())
     }
-    Ok(())
-}
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Visitor that flattens `tracing` field values into a string map. Captures
@@ -419,6 +453,7 @@ mod tests {
     use super::*;
     use crate::Sink;
     use sqlx::sqlite::SqliteConnectOptions;
+    use std::sync::atomic::AtomicU64;
     use tracing::{Instrument, info_span};
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -428,6 +463,49 @@ mod tests {
         let pool = SqlitePool::connect_with(options).await.unwrap();
         Sink::open(pool.clone()).await.unwrap();
         pool
+    }
+
+    /// Advances by one second on every read, so a span's duration is
+    /// exactly the number of reads between its open and close.
+    struct SteppingClock {
+        millis: AtomicU64,
+    }
+
+    impl Clock for SteppingClock {
+        fn now_millis(&self) -> u64 {
+            self.millis.fetch_add(1_000, Ordering::Relaxed)
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_are_stamped_from_the_injected_clock() {
+        let pool = fresh_pool().await;
+        let user = UserId::new();
+        let turn = TurnId::new();
+        let clock = Arc::new(SteppingClock {
+            millis: AtomicU64::new(1_700_000_000_000),
+        });
+        let (layer, guard) = SqliteLayer::spawn_with_clock(pool.clone(), clock);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _default = subscriber.set_default();
+
+        {
+            let _span = info_span!(
+                "turn",
+                agent = "hello-agent",
+                turn_id = %turn.0,
+                user_id = %user.0,
+                user_message = "hi",
+            )
+            .entered();
+        }
+
+        guard.flush().await;
+        let sink = Sink::open(pool).await.unwrap();
+        let events = sink.fetch_turn(user, turn).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].created_at, 1_700_000_000_000);
+        assert_eq!(events[0].duration_ms, Some(1_000));
     }
 
     #[tokio::test]

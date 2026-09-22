@@ -19,8 +19,8 @@ mod merge;
 mod store;
 mod types;
 
-pub use config::{JudgeConfig, JudgeList, judge_list};
-pub use judge::{Judge, JudgeBuildError, spawn_score};
+pub use config::{JudgeConfig, JudgeList};
+pub use judge::{Judge, JudgeBuildError};
 pub use merge::{AdminJudge, AdminSource, MergeReport, MergedJudge, Source, admin_view, merge};
 pub use store::{AgentCriterionCell, DynamicJudgeRow, JudgeStoreError, JudgeVolume, Judges};
 pub use types::{Score, ScoreId, ScoredExchange};

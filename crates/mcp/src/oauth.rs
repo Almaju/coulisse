@@ -12,11 +12,167 @@
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+use coulisse_core::UserId;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::McpError;
+use crate::vault::StoredToken;
+
+/// Lifetime of a state token, in seconds.
+const STATE_TTL_SECS: u64 = 600;
+
+macro_rules! secret_newtype {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            #[must_use]
+            pub fn new(raw: impl Into<String>) -> Self {
+                Self(raw.into())
+            }
+
+            #[must_use]
+            pub fn expose(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(concat!(stringify!($name), "([redacted])"))
+            }
+        }
+    };
+}
+
+macro_rules! public_newtype {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            #[must_use]
+            pub fn new(raw: impl Into<String>) -> Self {
+                Self(raw.into())
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+    };
+}
+
+secret_newtype!(
+    /// Bearer token an MCP endpoint accepts on behalf of one user.
+    AccessToken
+);
+secret_newtype!(
+    /// Secret issued to Coulisse as a confidential OAuth client. Absent for
+    /// public (PKCE-only) clients.
+    ClientSecret
+);
+secret_newtype!(
+    /// PKCE verifier (RFC 7636): proves at the token endpoint that the
+    /// same party started the authorize request.
+    CodeVerifier
+);
+secret_newtype!(
+    /// Long-lived credential exchanged for a fresh `AccessToken` once the
+    /// current one expires.
+    RefreshToken
+);
+
+public_newtype!(
+    /// Identifier the authorization server assigned to this Coulisse
+    /// instance.
+    ClientId
+);
+public_newtype!(
+    /// PKCE challenge (RFC 7636): base64url(SHA-256(verifier)), sent in
+    /// the authorize URL.
+    CodeChallenge
+);
+public_newtype!(
+    /// Where the authorization server sends the browser back after the
+    /// user consents. Must match what Coulisse registered.
+    RedirectUri
+);
+
+/// PKCE keypair (RFC 7636): random verifier + SHA-256 challenge. Both
+/// base64url-encoded without padding. The verifier MUST be passed back
+/// in the token exchange; the challenge goes in the authorize URL.
+pub struct PkcePair {
+    pub challenge: CodeChallenge,
+    pub verifier: CodeVerifier,
+}
+
+impl PkcePair {
+    #[must_use]
+    pub fn generate() -> Self {
+        let mut verifier_bytes = [0u8; 32];
+        // rabot: allow(ambient-randomness) cryptographic secret: a replayable generator would be a vulnerability
+        rand::rng().fill_bytes(&mut verifier_bytes);
+        let verifier = B64URL.encode(verifier_bytes);
+        let challenge = B64URL.encode(Sha256::digest(verifier.as_bytes()));
+        Self {
+            challenge: CodeChallenge::new(challenge),
+            verifier: CodeVerifier::new(verifier),
+        }
+    }
+}
+
+/// AES-256 key that seals connect links and OAuth `state` parameters.
+///
+/// Note: the config plumbing calls this material `hmac_key`
+/// (`COULISSE_HMAC_KEY` / `auth.mcp_consumer_secret`) for backwards
+/// compatibility — 32 random bytes are suitable as either an HMAC key or
+/// an AES-256 key, and this type uses them as the latter.
+#[derive(Clone)]
+pub struct StateKey(Aes256Gcm);
+
+impl StateKey {
+    /// Decode a base64-encoded 32-byte key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::StateKeyInvalid` if the key is not valid base64
+    /// or not exactly 32 bytes after decoding.
+    pub fn from_base64(key_b64: &str) -> Result<Self, McpError> {
+        let key_bytes = B64
+            .decode(key_b64.trim())
+            .map_err(|source| McpError::StateKeyInvalid {
+                source: Box::new(source),
+            })?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key_bytes).map_err(|source| McpError::StateKeyInvalid {
+                source: Box::new(source),
+            })?;
+        Ok(Self(cipher))
+    }
+}
+
+impl std::fmt::Debug for StateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StateKey([redacted])")
+    }
+}
 
 /// Wire format: `base64url(nonce[12] || ciphertext || gcm_tag[16])`.
 /// Expires after 600 seconds.
@@ -27,124 +183,122 @@ pub struct StateToken {
     /// the authorize redirect; absent on the simpler "the user clicked
     /// the connect link" state token, which doesn't need PKCE because
     /// it never reaches the OAuth provider.
-    pub code_verifier: Option<String>,
+    pub code_verifier: Option<CodeVerifier>,
     pub server: String,
-    pub user_id: String,
+    pub user_id: UserId,
 }
 
-/// PKCE keypair (RFC 7636): random verifier + SHA-256 challenge. Both
-/// base64url-encoded without padding. The verifier MUST be passed back
-/// in the token exchange; the challenge goes in the authorize URL.
-#[must_use]
-pub fn pkce_pair() -> (String, String) {
-    let mut verifier_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut verifier_bytes);
-    let verifier = B64URL.encode(verifier_bytes);
-    let challenge = B64URL.encode(Sha256::digest(verifier.as_bytes()));
-    (verifier, challenge)
+#[derive(Deserialize, Serialize)]
+struct StatePayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code_verifier: Option<CodeVerifier>,
+    exp: u64,
+    server: String,
+    user_id: UserId,
 }
 
-/// Note: the parameter name says `hmac_key` for backwards compatibility
-/// with `COULISSE_HMAC_KEY` / `auth.mcp_consumer_secret` plumbing — the
-/// key itself (32 random bytes) is suitable as either an HMAC key or an
-/// AES-256 key. The function uses it as the latter.
-///
-/// # Panics
-///
-/// Panics if `hmac_key` is not exactly 32 bytes. The caller (Coulisse's
-/// secrets loader) only invokes this with `COULISSE_HMAC_KEY` material,
-/// which is validated to 32 bytes at startup, so this is an invariant
-/// violation rather than a runtime concern.
-#[must_use]
-pub fn generate_state(hmac_key: &[u8], server: &str, user_id: &str) -> String {
-    encrypt_state(hmac_key, server, user_id, None)
-}
-
-/// Variant that bundles a PKCE verifier into the encrypted payload, used
-/// for the `state` parameter that round-trips through the OAuth
-/// authorization server. The verifier is needed at the token-exchange
-/// step (RFC 7636 §4.5); stashing it in the AES-GCM ciphertext keeps it
-/// off the wire as cleartext and avoids needing a server-side store.
-#[must_use]
-pub fn generate_state_with_pkce(
-    hmac_key: &[u8],
-    server: &str,
-    user_id: &str,
-    code_verifier: &str,
-) -> String {
-    encrypt_state(hmac_key, server, user_id, Some(code_verifier))
-}
-
-fn encrypt_state(
-    hmac_key: &[u8],
-    server: &str,
-    user_id: &str,
-    code_verifier: Option<&str>,
-) -> String {
-    let exp = coulisse_core::now_secs() + 600;
-    let mut payload = serde_json::json!({
-        "exp": exp,
-        "server": server,
-        "user_id": user_id,
-    });
-    if let Some(v) = code_verifier {
-        payload["code_verifier"] = serde_json::Value::String(v.to_string());
+impl StateToken {
+    /// Decrypt and validate a state token. Returns `McpError::StateInvalid`
+    /// if the token doesn't decrypt cleanly (wrong key, mutated bytes, bad
+    /// shape), `McpError::StateExpired` if it decrypts but is past its
+    /// `exp`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state token is invalid or expired.
+    pub fn decrypt(key: &StateKey, token: &str) -> Result<Self, McpError> {
+        let blob = B64URL
+            .decode(token)
+            .map_err(|source| McpError::StateInvalid {
+                source: Box::new(source),
+            })?;
+        let nonce_arr: [u8; 12] =
+            blob.get(..12)
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| McpError::StateInvalid {
+                    source: "token shorter than the 12-byte nonce".into(),
+                })?;
+        let ciphertext = &blob[12..];
+        #[allow(deprecated)]
+        let nonce = aes_gcm::aead::generic_array::GenericArray::from(nonce_arr);
+        let plaintext =
+            key.0
+                .decrypt(&nonce, ciphertext)
+                .map_err(|source| McpError::StateInvalid {
+                    source: Box::new(source),
+                })?;
+        let payload: StatePayload =
+            serde_json::from_slice(&plaintext).map_err(|source| McpError::StateInvalid {
+                source: Box::new(source),
+            })?;
+        if coulisse_core::now_secs() > payload.exp {
+            return Err(McpError::StateExpired);
+        }
+        Ok(Self {
+            code_verifier: payload.code_verifier,
+            server: payload.server,
+            user_id: payload.user_id,
+        })
     }
-    let cipher = Aes256Gcm::new_from_slice(hmac_key).expect("AES-256 requires a 32-byte key");
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ciphertext = cipher
-        .encrypt(&nonce, payload.to_string().as_bytes())
-        .expect("AES-GCM encrypt never fails for plaintext < 64 GiB");
-    let mut blob = nonce.to_vec();
-    blob.extend_from_slice(&ciphertext);
-    B64URL.encode(&blob)
+
+    /// Seal this token under `key`, stamping it with a 600-second expiry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpError::Encrypt` if AES-GCM refuses the payload.
+    pub fn encrypt(&self, key: &StateKey) -> Result<String, McpError> {
+        let payload = StatePayload {
+            code_verifier: self.code_verifier.clone(),
+            exp: coulisse_core::now_secs() + STATE_TTL_SECS,
+            server: self.server.clone(),
+            user_id: self.user_id,
+        };
+        let plaintext = serde_json::to_vec(&payload).map_err(|source| McpError::StateInvalid {
+            source: Box::new(source),
+        })?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ciphertext =
+            key.0
+                .encrypt(&nonce, plaintext.as_slice())
+                .map_err(|err| McpError::Encrypt {
+                    err,
+                    server: self.server.clone(),
+                })?;
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ciphertext);
+        Ok(B64URL.encode(&blob))
+    }
 }
 
-/// Decrypt and validate a state token. Returns `McpError::StateInvalid`
-/// if the token doesn't decrypt cleanly (wrong key, mutated bytes, bad
-/// shape), `McpError::StateExpired` if it decrypts but is past its
-/// `exp`.
-///
-/// # Errors
-///
-/// Returns an error if the state token is invalid or expired.
-pub fn validate_state(hmac_key: &[u8], token: &str) -> Result<StateToken, McpError> {
-    let blob = B64URL.decode(token).map_err(|_| McpError::StateInvalid)?;
-    if blob.len() < 12 {
-        return Err(McpError::StateInvalid);
+/// Successful reply from an OAuth token endpoint (RFC 6749 §5.1), for
+/// both the authorization-code exchange and the refresh-token grant.
+#[derive(Deserialize)]
+pub(crate) struct TokenResponse {
+    access_token: String,
+    #[serde(default)]
+    expires_in: Option<u64>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+impl TokenResponse {
+    /// Convert `expires_in` (relative) to an absolute `expires_at`. RFC
+    /// 6749 §6: on refresh the AS MAY issue a new refresh token. If it
+    /// does (rotation), use it; if not, keep `fallback_refresh` — the
+    /// one that just succeeded.
+    pub(crate) fn into_stored_token(self, fallback_refresh: Option<RefreshToken>) -> StoredToken {
+        let expires_at = self
+            .expires_in
+            .map(|secs| coulisse_core::u64_to_i64(coulisse_core::now_secs() + secs));
+        StoredToken {
+            access_token: AccessToken::new(self.access_token),
+            expires_at,
+            refresh_token: self
+                .refresh_token
+                .map(RefreshToken::new)
+                .or(fallback_refresh),
+        }
     }
-    let mut nonce_arr = [0u8; 12];
-    nonce_arr.copy_from_slice(&blob[..12]);
-    let ciphertext = &blob[12..];
-    #[allow(deprecated)]
-    let nonce = aes_gcm::aead::generic_array::GenericArray::from(nonce_arr);
-    let cipher = Aes256Gcm::new_from_slice(hmac_key).map_err(|_| McpError::StateInvalid)?;
-    let plaintext = cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|_| McpError::StateInvalid)?;
-    let payload: serde_json::Value =
-        serde_json::from_slice(&plaintext).map_err(|_| McpError::StateInvalid)?;
-    let exp = payload["exp"].as_u64().ok_or(McpError::StateInvalid)?;
-    if coulisse_core::now_secs() > exp {
-        return Err(McpError::StateExpired);
-    }
-    let server = payload["server"]
-        .as_str()
-        .ok_or(McpError::StateInvalid)?
-        .to_string();
-    let user_id = payload["user_id"]
-        .as_str()
-        .ok_or(McpError::StateInvalid)?
-        .to_string();
-    let code_verifier = payload
-        .get("code_verifier")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    Ok(StateToken {
-        code_verifier,
-        server,
-        user_id,
-    })
 }
 
 #[cfg(test)]
@@ -153,15 +307,28 @@ mod tests {
 
     const KEY: &[u8] = b"test-hmac-key-32-bytes-padding!!";
 
+    fn key() -> StateKey {
+        StateKey::from_base64(&B64.encode(KEY)).unwrap()
+    }
+
+    fn state_for(user_id: UserId) -> StateToken {
+        StateToken {
+            code_verifier: None,
+            server: "github".to_string(),
+            user_id,
+        }
+    }
+
     #[test]
     fn round_trip_valid_token() {
-        let token = generate_state(KEY, "github", "user-42");
-        let state = validate_state(KEY, &token).unwrap();
+        let user_id = UserId::new();
+        let token = state_for(user_id).encrypt(&key()).unwrap();
+        let state = StateToken::decrypt(&key(), &token).unwrap();
         assert_eq!(state.server, "github");
-        assert_eq!(state.user_id, "user-42");
+        assert_eq!(state.user_id, user_id);
         assert!(
             state.code_verifier.is_none(),
-            "no PKCE expected from generate_state"
+            "no PKCE expected without a verifier"
         );
     }
 
@@ -171,9 +338,16 @@ mod tests {
     /// verifier mid-flow and fail.
     #[test]
     fn round_trip_state_carries_pkce_verifier() {
-        let token = generate_state_with_pkce(KEY, "github", "user-42", "the-verifier-xyz");
-        let state = validate_state(KEY, &token).unwrap();
-        assert_eq!(state.code_verifier.as_deref(), Some("the-verifier-xyz"));
+        let state = StateToken {
+            code_verifier: Some(CodeVerifier::new("the-verifier-xyz")),
+            ..state_for(UserId::new())
+        };
+        let token = state.encrypt(&key()).unwrap();
+        let state = StateToken::decrypt(&key(), &token).unwrap();
+        assert_eq!(
+            state.code_verifier.as_ref().map(CodeVerifier::expose),
+            Some("the-verifier-xyz")
+        );
     }
 
     /// Any modification to the ciphertext breaks the GCM tag — this is
@@ -181,11 +355,11 @@ mod tests {
     /// the payload was visible in cleartext).
     #[test]
     fn appended_bytes_rejected() {
-        let token = generate_state(KEY, "github", "user-42");
+        let token = state_for(UserId::new()).encrypt(&key()).unwrap();
         let tampered = format!("{token}AB");
         assert!(matches!(
-            validate_state(KEY, &tampered),
-            Err(McpError::StateInvalid)
+            StateToken::decrypt(&key(), &tampered),
+            Err(McpError::StateInvalid { .. })
         ));
     }
 
@@ -196,15 +370,15 @@ mod tests {
     /// affordance.
     #[test]
     fn substituted_char_rejected() {
-        let token = generate_state(KEY, "github", "user-42");
+        let token = state_for(UserId::new()).encrypt(&key()).unwrap();
         // Flip one character in the middle of the token.
         let mut chars: Vec<char> = token.chars().collect();
         let mid = chars.len() / 2;
         chars[mid] = if chars[mid] == 'A' { 'B' } else { 'A' };
         let tampered: String = chars.into_iter().collect();
         assert!(matches!(
-            validate_state(KEY, &tampered),
-            Err(McpError::StateInvalid)
+            StateToken::decrypt(&key(), &tampered),
+            Err(McpError::StateInvalid { .. })
         ));
     }
 
@@ -212,11 +386,12 @@ mod tests {
     /// not decrypt with this one.
     #[test]
     fn wrong_key_rejected() {
-        let other_key: &[u8] = b"other-test-key-32-bytes-padding!";
-        let token = generate_state(other_key, "github", "user-42");
+        let other_key =
+            StateKey::from_base64(&B64.encode(b"other-test-key-32-bytes-padding!")).unwrap();
+        let token = state_for(UserId::new()).encrypt(&other_key).unwrap();
         assert!(matches!(
-            validate_state(KEY, &token),
-            Err(McpError::StateInvalid)
+            StateToken::decrypt(&key(), &token),
+            Err(McpError::StateInvalid { .. })
         ));
     }
 
@@ -225,8 +400,8 @@ mod tests {
     #[test]
     fn garbage_input_rejected() {
         assert!(matches!(
-            validate_state(KEY, "!!!not base64!!!"),
-            Err(McpError::StateInvalid)
+            StateToken::decrypt(&key(), "!!!not base64!!!"),
+            Err(McpError::StateInvalid { .. })
         ));
     }
 
@@ -235,8 +410,8 @@ mod tests {
     fn short_input_rejected() {
         let tiny = B64URL.encode(b"abc");
         assert!(matches!(
-            validate_state(KEY, &tiny),
-            Err(McpError::StateInvalid)
+            StateToken::decrypt(&key(), &tiny),
+            Err(McpError::StateInvalid { .. })
         ));
     }
 
@@ -245,8 +420,34 @@ mod tests {
     /// users who happen to share `(server, user_id, exp)`.
     #[test]
     fn each_token_uses_a_fresh_nonce() {
-        let a = generate_state(KEY, "github", "user-42");
-        let b = generate_state(KEY, "github", "user-42");
+        let user_id = UserId::new();
+        let a = state_for(user_id).encrypt(&key()).unwrap();
+        let b = state_for(user_id).encrypt(&key()).unwrap();
         assert_ne!(a, b);
+    }
+
+    /// A key of the wrong length is rejected up front, not at the first
+    /// encrypt.
+    #[test]
+    fn short_key_rejected() {
+        assert!(matches!(
+            StateKey::from_base64(&B64.encode([0u8; 16])),
+            Err(McpError::StateKeyInvalid { .. })
+        ));
+    }
+
+    /// `PkcePair::generate` must produce a verifier whose SHA-256
+    /// base64url-encodes to the returned challenge. RFC 7636 §4.2.
+    #[test]
+    fn pkce_pair_challenge_is_sha256_of_verifier() {
+        let pair = PkcePair::generate();
+        let expected = B64URL.encode(Sha256::digest(pair.verifier.expose().as_bytes()));
+        assert_eq!(pair.challenge.as_str(), expected);
+        // Verifier must satisfy RFC 7636 length requirement: 43–128 chars.
+        assert!(
+            (43..=128).contains(&pair.verifier.expose().len()),
+            "verifier length out of RFC 7636 range: {}",
+            pair.verifier.expose().len()
+        );
     }
 }

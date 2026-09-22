@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-aes-gcm.workspace = true
+aes-gcm = { workspace = true, features = ["std"] }
 axum.workspace = true
 base64.workspace = true
 coulisse-core.workspace = true

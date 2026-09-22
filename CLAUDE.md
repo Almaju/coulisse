@@ -46,9 +46,15 @@ Pure internal refactors (renames, module restructuring, non-observable changes) 
 
 Preview the book locally with `mdbook serve docs --port 4421`. Port 3000 is avoided because it collides with too many other dev servers; 4421 pairs with the main Coulisse port (8421) and is unlikely to clash.
 
+# Linting
+
+[rabot](https://github.com/almaju/rabot) enforces the code principles below mechanically: `rabot fmt` sorts fields, variants, derives, impl items, struct literals and patterns; `rabot check --strict` reports free functions that belong on a type, primitives that deserve a newtype, stringly-typed fields, dropped error context, `Box<dyn Error>` and `String` errors, escape-hatch error variants, panics outside `main` and tests, ambient clock/randomness/environment reads, sleeps in tests, and narrated functions. Every rule runs at its default level (`rabot.toml` carries no overrides), warnings fail the build, and `just lint` runs the full stack.
+
+Fix what rabot reports; do not silence it. The only sanctioned exceptions are symmetric-argument functions (`constant_time_eq(a, b)`), cryptographic randomness (a replayable generator would be a vulnerability), and the single real implementation of an injected clock. Each one is written next to the code it covers as `// rabot: allow(rule) reason` — a bare allow without a reason is itself an error. Run `rabot explain <rule>` for a rule's do/don't.
+
 # Pre-commit hook
 
-The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo fmt --check`, `cargo clippy`, `cargo sort-derives --check`, `cargo machete`, and `cargo test`. A commit fails if any of them does.
+The repo ships a pre-commit hook at `.githooks/pre-commit` that runs `cargo fmt --check`, `cargo clippy`, `rabot fmt --check`, `rabot check --strict`, `cargo machete`, and `cargo test`. A commit fails if any of them does.
 
 Enable it in each clone with:
 

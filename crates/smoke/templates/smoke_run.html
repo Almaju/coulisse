@@ -11,12 +11,13 @@
     <div>
       <div style="display: flex; align-items: center; gap: 10px">
         <h1 class="page-title">Smoke run</h1>
-        {% if run.status == "completed" %}
-          <span class="pill pill-live"><span class="dot"></span>{{ run.status }}</span>
-        {% else if run.status == "failed" %}
-          <span class="pill pill-error">{{ run.status }}</span>
+        {% let status = run.status.as_str() %}
+        {% if status == "completed" %}
+          <span class="pill pill-live"><span class="dot"></span>{{ status }}</span>
+        {% else if status == "failed" %}
+          <span class="pill pill-error">{{ status }}</span>
         {% else %}
-          <span class="pill pill-progress">{{ run.status }}</span>
+          <span class="pill pill-progress">{{ status }}</span>
         {% endif %}
         {% if run.is_running %}
           <span class="live-dot">live</span>

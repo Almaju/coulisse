@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::pin::Pin;
 
+use coulisse_core::BoxFuture;
 use tokio::fs;
 use tokio::io::AsyncWriteExt as _;
 
@@ -9,28 +9,16 @@ use crate::error::StorageError;
 /// Blob storage backend abstraction. Object-safe so backends can be
 /// tested independently without the full `Store`.
 pub trait Backend: Send + Sync {
-    fn delete<'a>(
-        &'a self,
-        key: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>;
+    fn delete<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), StorageError>>;
 
-    fn get<'a>(
-        &'a self,
-        key: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, StorageError>> + Send + 'a>>;
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Vec<u8>, StorageError>>;
 
     /// List all blob keys present in physical storage. Used at boot to
     /// reconcile the `SQLite` index against the filesystem. Implementations
     /// that can't enumerate (S3) return `Ok(vec![])`.
-    fn list_keys<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>>;
+    fn list_keys(&self) -> BoxFuture<'_, Result<Vec<String>, StorageError>>;
 
-    fn put<'a>(
-        &'a self,
-        key: &'a str,
-        data: &'a [u8],
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>;
+    fn put<'a>(&'a self, key: &'a str, data: &'a [u8]) -> BoxFuture<'a, Result<(), StorageError>>;
 }
 
 /// Concrete enum over the supported blob backends. Avoids boxing futures
@@ -118,10 +106,7 @@ impl FsBackend {
 }
 
 impl Backend for FsBackend {
-    fn delete<'a>(
-        &'a self,
-        key: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>> {
+    fn delete<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), StorageError>> {
         Box::pin(async move {
             let path = self.path_for(key);
             match fs::remove_file(&path).await {
@@ -135,10 +120,7 @@ impl Backend for FsBackend {
         })
     }
 
-    fn get<'a>(
-        &'a self,
-        key: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, StorageError>> + Send + 'a>> {
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Vec<u8>, StorageError>> {
         Box::pin(async move {
             let path = self.path_for(key);
             fs::read(&path).await.map_err(|e| {
@@ -151,10 +133,7 @@ impl Backend for FsBackend {
         })
     }
 
-    fn list_keys<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>>
-    {
+    fn list_keys(&self) -> BoxFuture<'_, Result<Vec<String>, StorageError>> {
         Box::pin(async move {
             let mut keys = Vec::new();
             let mut dir = fs::read_dir(&self.root).await.map_err(|e| {
@@ -171,11 +150,7 @@ impl Backend for FsBackend {
         })
     }
 
-    fn put<'a>(
-        &'a self,
-        key: &'a str,
-        data: &'a [u8],
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>> {
+    fn put<'a>(&'a self, key: &'a str, data: &'a [u8]) -> BoxFuture<'a, Result<(), StorageError>> {
         Box::pin(async move {
             let path = self.path_for(key);
             let mut file = fs::File::create(&path)

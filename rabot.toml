@@ -1,0 +1,9 @@
+# rabot enforces the principles in CLAUDE.md (sorting, method ownership,
+# domain newtypes, errors as data, injected dependencies) mechanically.
+# Every rule runs at its default level: the code follows the standard
+# rules rather than a house variant, so anything the linter reports is
+# fixed in the code, and the rare exception is written down next to the
+# code it covers as `// rabot: allow(rule) reason`.
+
+[files]
+exclude = ["target"]

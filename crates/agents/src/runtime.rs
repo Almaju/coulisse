@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
 use std::sync::Arc;
 
 use coulisse_core::{
-    AgentResolver, OneShotError, OneShotPrompt, SkillCatalog, TaskQueue, TaskStatus, UserId,
+    AgentResolver, BoxFuture, OneShotError, OneShotPrompt, OneShotRequest, SkillCatalog, TaskQueue,
+    TaskStatus, UserId,
 };
 use futures::StreamExt as _;
 use mcp::McpServers;
@@ -107,15 +107,22 @@ pub trait Agents: Send + Sync {
     ) -> impl std::future::Future<Output = Result<CompletionStream, AgentsError>> + Send;
 
     /// One-off prompt bypassing agent-config lookup. No MCP tools, no
-    /// preamble merging — just `provider`, `model`, the supplied preamble
+    /// preamble merging — just the request's `provider`, `model`, preamble
     /// and messages. Used for internal tasks like memory fact extraction.
     fn prompt_with(
         &self,
-        provider: ProviderKind,
-        model: &str,
-        preamble: &str,
-        messages: Vec<Message>,
+        request: PromptRequest<'_>,
     ) -> impl std::future::Future<Output = Result<Completion, AgentsError>> + Send;
+}
+
+/// Inputs for [`Agents::prompt_with`]: a bare provider call with no agent
+/// config behind it.
+#[derive(Clone, Debug)]
+pub struct PromptRequest<'a> {
+    pub messages: Vec<Message>,
+    pub model: &'a str,
+    pub preamble: &'a str,
+    pub provider: ProviderKind,
 }
 
 /// Bundled inputs for `RigAgents::new`. Grouped into one struct so cli
@@ -206,67 +213,34 @@ impl Agents for RigAgents {
             user_id,
         )
         .await?;
-        // Merge the handoff receiver into the stream. We use `select!` so a
-        // handoff signal emitted by SubagentTool while the inner stream is
-        // blocked is forwarded immediately — without waiting for the next
-        // inner item to unblock the unfold loop.
-        let combined = futures::stream::unfold(
-            (inner_stream, handoff_rx),
-            |(mut inner, mut rx)| async move {
-                tokio::select! {
-                    biased;
-                    // Prefer pending handoff signals — they should arrive
-                    // first so the SSE client sees HandoffStarted before the
-                    // subagent result.
-                    agent = rx.recv() => {
-                        match agent {
-                            Some(agent) => Some((
-                                Ok(StreamEvent::HandoffStarted { agent }),
-                                (inner, rx),
-                            )),
-                            // Sender dropped: channel closed, just drain inner.
-                            None => inner.next().await.map(|item| (item, (inner, rx))),
-                        }
-                    }
-                    item = inner.next() => {
-                        item.map(|item| (item, (inner, rx)))
-                    }
-                }
-            },
-        );
-        Ok(Box::pin(combined))
+        Ok(AgentsInner::with_handoffs(inner_stream, handoff_rx))
     }
 
-    async fn prompt_with(
-        &self,
-        provider: ProviderKind,
-        model: &str,
-        preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
-        self.inner
-            .prompt_with(provider, model, preamble, messages)
-            .await
+    async fn prompt_with(&self, request: PromptRequest<'_>) -> Result<Completion, AgentsError> {
+        self.inner.prompt_with(request).await
     }
 }
 
 impl OneShotPrompt for RigAgents {
     fn one_shot<'a>(
         &'a self,
-        provider: &'a str,
-        model: &'a str,
-        preamble: &'a str,
-        user_text: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
+        request: OneShotRequest<'a>,
+    ) -> BoxFuture<'a, Result<String, OneShotError>> {
         Box::pin(async move {
-            let provider_kind = ProviderKind::parse(provider)
-                .ok_or_else(|| OneShotError::new(format!("unknown provider '{provider}'")))?;
+            let provider = ProviderKind::parse(request.provider).ok_or_else(|| {
+                OneShotError::new(format!("unknown provider '{}'", request.provider))
+            })?;
             let messages = vec![Message {
-                content: user_text.to_string(),
+                content: request.user_text.to_string(),
                 role: Role::User,
             }];
             self.inner
-                .prompt_with(provider_kind, model, preamble, messages)
+                .prompt_with(PromptRequest {
+                    messages,
+                    model: request.model,
+                    preamble: request.preamble,
+                    provider,
+                })
                 .await
                 .map(|c| c.text)
                 .map_err(|e| OneShotError::new(e.to_string()))
@@ -424,23 +398,17 @@ impl AgentsInner {
         self.agents.load().iter().find(|a| a.name == name).cloned()
     }
 
-    async fn prompt_with(
-        &self,
-        provider: ProviderKind,
-        model: &str,
-        preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
-        let provider = self
-            .providers
-            .get(provider)
-            .ok_or(AgentsError::ProviderNotConfigured {
-                agent: "<internal>".into(),
-                provider,
-            })?;
-        let conversation = Conversation::from_messages(messages, preamble)?;
+    async fn prompt_with(&self, request: PromptRequest<'_>) -> Result<Completion, AgentsError> {
+        let provider =
+            self.providers
+                .get(request.provider)
+                .ok_or(AgentsError::ProviderNotConfigured {
+                    agent: "<internal>".into(),
+                    provider: request.provider,
+                })?;
+        let conversation = Conversation::from_messages(request.messages, request.preamble)?;
         provider
-            .send(conversation, MAX_TURNS, model, vec![])
+            .send(conversation, MAX_TURNS, request.model, vec![])
             .await
             .map_err(AgentsError::from)
     }
@@ -459,5 +427,38 @@ impl AgentsInner {
         self.resolver
             .purpose(name)
             .unwrap_or_else(|| format!("Invoke the '{name}' subagent."))
+    }
+
+    /// Merge the handoff receiver into the stream. `select!` is used so a
+    /// handoff signal emitted by `SubagentTool` while the inner stream is
+    /// blocked is forwarded immediately — without waiting for the next
+    /// inner item to unblock the unfold loop.
+    fn with_handoffs(
+        inner: CompletionStream,
+        handoff_rx: mpsc::Receiver<String>,
+    ) -> CompletionStream {
+        let combined =
+            futures::stream::unfold((inner, handoff_rx), |(mut inner, mut rx)| async move {
+                tokio::select! {
+                    biased;
+                    // Prefer pending handoff signals — they should arrive
+                    // first so the SSE client sees HandoffStarted before the
+                    // subagent result.
+                    agent = rx.recv() => {
+                        match agent {
+                            Some(agent) => Some((
+                                Ok(StreamEvent::HandoffStarted { agent }),
+                                (inner, rx),
+                            )),
+                            // Sender dropped: channel closed, just drain inner.
+                            None => inner.next().await.map(|item| (item, (inner, rx))),
+                        }
+                    }
+                    item = inner.next() => {
+                        item.map(|item| (item, (inner, rx)))
+                    }
+                }
+            });
+        Box::pin(combined)
     }
 }

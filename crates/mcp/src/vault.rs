@@ -7,19 +7,22 @@ use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use coulisse_core::migrate::SchemaMigrator;
+use coulisse_core::UserId;
+use coulisse_core::migrate::{SchemaMigrator, UpgradeError};
 use sqlx::{Executor, SqliteConnection, SqlitePool};
 
+use crate::discovery::AuthMetadata;
 use crate::error::McpError;
+use crate::oauth::{AccessToken, ClientId, ClientSecret, RedirectUri, RefreshToken};
 
 pub const SCHEMA: &str = include_str!("../migrations/schema.sql");
 
 /// Encrypted token pair stored per `(server_name, user_id)`.
 #[derive(Debug)]
 pub struct StoredToken {
-    pub access_token: String,
+    pub access_token: AccessToken,
     pub expires_at: Option<i64>,
-    pub refresh_token: Option<String>,
+    pub refresh_token: Option<RefreshToken>,
 }
 
 /// Cached OAuth client registration for a `discover` mode MCP server.
@@ -27,10 +30,10 @@ pub struct StoredToken {
 /// that server. `client_secret` is `None` for public clients.
 #[derive(Debug)]
 pub struct StoredClient {
-    pub client_id: String,
-    pub client_secret: Option<String>,
-    pub metadata_json: String,
-    pub redirect_uri: String,
+    pub client_id: ClientId,
+    pub client_secret: Option<ClientSecret>,
+    pub(crate) metadata: AuthMetadata,
+    pub redirect_uri: RedirectUri,
 }
 
 /// Token vault backed by the shared `SQLite` pool. Tokens are stored
@@ -54,7 +57,7 @@ impl SchemaMigrator for VaultMigrator {
         &self,
         from_version: &str,
         conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
+    ) -> Result<(), UpgradeError> {
         match from_version {
             "0.1.0" => {
                 conn.execute(
@@ -70,7 +73,10 @@ impl SchemaMigrator for VaultMigrator {
                 .await?;
                 Ok(())
             }
-            _ => unreachable!("unknown mcp schema version: {from_version}"),
+            other => Err(UpgradeError::UnknownStep {
+                from: other.to_string(),
+                name: Self::NAME,
+            }),
         }
     }
 }
@@ -85,9 +91,13 @@ impl TokenVault {
     pub fn new(pool: SqlitePool, key_b64: &str) -> Result<Self, McpError> {
         let key_bytes = B64
             .decode(key_b64.trim())
-            .map_err(|_| McpError::VaultKeyInvalid)?;
+            .map_err(|source| McpError::VaultKeyInvalid {
+                source: Box::new(source),
+            })?;
         let cipher =
-            Aes256Gcm::new_from_slice(&key_bytes).map_err(|_| McpError::VaultKeyInvalid)?;
+            Aes256Gcm::new_from_slice(&key_bytes).map_err(|source| McpError::VaultKeyInvalid {
+                source: Box::new(source),
+            })?;
         Ok(Self { cipher, pool })
     }
 
@@ -99,10 +109,10 @@ impl TokenVault {
     /// # Errors
     ///
     /// Returns an error if the database write fails.
-    pub async fn delete_token(&self, server_name: &str, user_id: &str) -> Result<(), McpError> {
+    pub async fn delete_token(&self, server_name: &str, user_id: UserId) -> Result<(), McpError> {
         sqlx::query("DELETE FROM mcp_oauth_tokens WHERE server_name = ? AND user_id = ?")
             .bind(server_name)
-            .bind(user_id)
+            .bind(user_id.0.to_string())
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -115,7 +125,8 @@ impl TokenVault {
     ///
     /// # Errors
     ///
-    /// Returns an error if the database read or decryption fails.
+    /// Returns an error if the database read, decryption, or metadata
+    /// parsing fails.
     pub async fn get_client(&self, server_name: &str) -> Result<Option<StoredClient>, McpError> {
         type ClientRow = (String, Option<Vec<u8>>, String, String);
         let row: Option<ClientRow> = sqlx::query_as(
@@ -133,13 +144,19 @@ impl TokenVault {
 
         let client_secret = secret_enc
             .map(|b| self.decrypt(server_name, &b))
-            .transpose()?;
+            .transpose()?
+            .map(ClientSecret::new);
+        let metadata =
+            serde_json::from_str(&metadata_json).map_err(|source| McpError::ClientMetadata {
+                server: server_name.to_string(),
+                source,
+            })?;
 
         Ok(Some(StoredClient {
-            client_id,
+            client_id: ClientId::new(client_id),
             client_secret,
-            metadata_json,
-            redirect_uri,
+            metadata,
+            redirect_uri: RedirectUri::new(redirect_uri),
         }))
     }
 
@@ -152,7 +169,7 @@ impl TokenVault {
     pub async fn get_token(
         &self,
         server_name: &str,
-        user_id: &str,
+        user_id: UserId,
     ) -> Result<Option<StoredToken>, McpError> {
         type TokenRow = (Vec<u8>, Option<i64>, Option<Vec<u8>>);
         let row: Option<TokenRow> = sqlx::query_as(
@@ -161,7 +178,7 @@ impl TokenVault {
              WHERE server_name = ? AND user_id = ?",
         )
         .bind(server_name)
-        .bind(user_id)
+        .bind(user_id.0.to_string())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -169,10 +186,11 @@ impl TokenVault {
             return Ok(None);
         };
 
-        let access_token = self.decrypt(server_name, &access_enc)?;
+        let access_token = AccessToken::new(self.decrypt(server_name, &access_enc)?);
         let refresh_token = refresh_enc
             .map(|r| self.decrypt(server_name, &r))
-            .transpose()?;
+            .transpose()?
+            .map(RefreshToken::new);
 
         Ok(Some(StoredToken {
             access_token,
@@ -188,19 +206,24 @@ impl TokenVault {
     ///
     /// # Errors
     ///
-    /// Returns an error if encryption or the database write fails.
+    /// Returns an error if encryption, metadata serialization, or the
+    /// database write fails.
     pub async fn upsert_client(
         &self,
         server_name: &str,
-        client_id: &str,
-        client_secret: Option<&str>,
-        metadata_json: &str,
-        redirect_uri: &str,
+        client: &StoredClient,
     ) -> Result<(), McpError> {
         let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
-        let secret_enc = client_secret
-            .map(|s| self.encrypt(server_name, s))
+        let secret_enc = client
+            .client_secret
+            .as_ref()
+            .map(|s| self.encrypt(server_name, s.expose().as_bytes()))
             .transpose()?;
+        let metadata_json =
+            serde_json::to_string(&client.metadata).map_err(|source| McpError::ClientMetadata {
+                server: server_name.to_string(),
+                source,
+            })?;
 
         sqlx::query(
             "INSERT INTO mcp_oauth_clients \
@@ -213,10 +236,10 @@ impl TokenVault {
                redirect_uri = excluded.redirect_uri, \
                registered_at = excluded.registered_at",
         )
-        .bind(client_id)
+        .bind(client.client_id.as_str())
         .bind(secret_enc)
         .bind(metadata_json)
-        .bind(redirect_uri)
+        .bind(client.redirect_uri.as_str())
         .bind(now)
         .bind(server_name)
         .execute(&self.pool)
@@ -233,15 +256,15 @@ impl TokenVault {
     pub async fn upsert_token(
         &self,
         server_name: &str,
-        user_id: &str,
-        access_token: &str,
-        expires_at: Option<i64>,
-        refresh_token: Option<&str>,
+        user_id: UserId,
+        token: &StoredToken,
     ) -> Result<(), McpError> {
         let now = coulisse_core::u64_to_i64(coulisse_core::now_secs());
-        let access_enc = self.encrypt(server_name, access_token)?;
-        let refresh_enc = refresh_token
-            .map(|rt| self.encrypt(server_name, rt))
+        let access_enc = self.encrypt(server_name, token.access_token.expose().as_bytes())?;
+        let refresh_enc = token
+            .refresh_token
+            .as_ref()
+            .map(|rt| self.encrypt(server_name, rt.expose().as_bytes()))
             .transpose()?;
 
         sqlx::query(
@@ -256,11 +279,11 @@ impl TokenVault {
         )
         .bind(access_enc)
         .bind(now)
-        .bind(expires_at)
+        .bind(token.expires_at)
         .bind(refresh_enc)
         .bind(server_name)
         .bind(now)
-        .bind(user_id)
+        .bind(user_id.0.to_string())
         .execute(&self.pool)
         .await?;
 
@@ -285,21 +308,21 @@ impl TokenVault {
                     err,
                     server: server.to_string(),
                 })?;
-        String::from_utf8(plaintext).map_err(|_| McpError::Decrypt {
-            err: aes_gcm::Error,
+        String::from_utf8(plaintext).map_err(|source| McpError::DecryptedNotUtf8 {
             server: server.to_string(),
+            source,
         })
     }
 
-    fn encrypt(&self, server: &str, plaintext: &str) -> Result<Vec<u8>, McpError> {
+    fn encrypt(&self, server: &str, plaintext: &[u8]) -> Result<Vec<u8>, McpError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let ciphertext = self
-            .cipher
-            .encrypt(&nonce, plaintext.as_bytes())
-            .map_err(|err| McpError::Encrypt {
-                err,
-                server: server.to_string(),
-            })?;
+        let ciphertext =
+            self.cipher
+                .encrypt(&nonce, plaintext)
+                .map_err(|err| McpError::Encrypt {
+                    err,
+                    server: server.to_string(),
+                })?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&ciphertext);
         Ok(out)
@@ -330,97 +353,119 @@ mod tests {
         TokenVault::new(pool, &key).unwrap()
     }
 
+    fn token(access: &str, expires_at: Option<i64>, refresh: Option<&str>) -> StoredToken {
+        StoredToken {
+            access_token: AccessToken::new(access),
+            expires_at,
+            refresh_token: refresh.map(RefreshToken::new),
+        }
+    }
+
+    fn metadata(issuer: &str) -> AuthMetadata {
+        AuthMetadata {
+            authorization_endpoint: format!("{issuer}/authorize"),
+            registration_endpoint: None,
+            scopes_supported: vec![],
+            token_endpoint: format!("{issuer}/token"),
+            token_endpoint_auth_methods_supported: vec![],
+        }
+    }
+
+    fn client(client_id: &str, secret: Option<&str>) -> StoredClient {
+        StoredClient {
+            client_id: ClientId::new(client_id),
+            client_secret: secret.map(ClientSecret::new),
+            metadata: metadata("https://todoist.com"),
+            redirect_uri: RedirectUri::new("http://localhost:8421/mcp/todoist/oauth/callback"),
+        }
+    }
+
     #[tokio::test]
     async fn encrypt_decrypt_round_trip() {
         let vault = make_vault().await;
+        let user = UserId::new();
         vault
             .upsert_token(
                 "github",
-                "user-1",
-                "access-abc",
-                Some(9999),
-                Some("refresh-xyz"),
+                user,
+                &token("access-abc", Some(9999), Some("refresh-xyz")),
             )
             .await
             .unwrap();
 
-        let token = vault.get_token("github", "user-1").await.unwrap().unwrap();
-        assert_eq!(token.access_token, "access-abc");
-        assert_eq!(token.expires_at, Some(9999));
-        assert_eq!(token.refresh_token.as_deref(), Some("refresh-xyz"));
+        let stored = vault.get_token("github", user).await.unwrap().unwrap();
+        assert_eq!(stored.access_token.expose(), "access-abc");
+        assert_eq!(stored.expires_at, Some(9999));
+        assert_eq!(
+            stored.refresh_token.as_ref().map(RefreshToken::expose),
+            Some("refresh-xyz")
+        );
     }
 
     #[tokio::test]
     async fn missing_token_returns_none() {
         let vault = make_vault().await;
-        let result = vault.get_token("github", "nobody").await.unwrap();
+        let result = vault.get_token("github", UserId::new()).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn upsert_updates_existing_token() {
         let vault = make_vault().await;
+        let user = UserId::new();
         vault
-            .upsert_token("github", "user-1", "old-access", None, None)
+            .upsert_token("github", user, &token("old-access", None, None))
             .await
             .unwrap();
         vault
             .upsert_token(
                 "github",
-                "user-1",
-                "new-access",
-                Some(42),
-                Some("new-refresh"),
+                user,
+                &token("new-access", Some(42), Some("new-refresh")),
             )
             .await
             .unwrap();
 
-        let token = vault.get_token("github", "user-1").await.unwrap().unwrap();
-        assert_eq!(token.access_token, "new-access");
-        assert_eq!(token.expires_at, Some(42));
-        assert_eq!(token.refresh_token.as_deref(), Some("new-refresh"));
+        let stored = vault.get_token("github", user).await.unwrap().unwrap();
+        assert_eq!(stored.access_token.expose(), "new-access");
+        assert_eq!(stored.expires_at, Some(42));
+        assert_eq!(
+            stored.refresh_token.as_ref().map(RefreshToken::expose),
+            Some("new-refresh")
+        );
     }
 
     #[tokio::test]
     async fn client_round_trip() {
         let vault = make_vault().await;
         vault
-            .upsert_client(
-                "todoist",
-                "client-abc",
-                Some("secret-xyz"),
-                r#"{"issuer":"https://todoist.com"}"#,
-                "http://localhost:8421/mcp/todoist/oauth/callback",
-            )
+            .upsert_client("todoist", &client("client-abc", Some("secret-xyz")))
             .await
             .unwrap();
 
         let stored = vault.get_client("todoist").await.unwrap().unwrap();
-        assert_eq!(stored.client_id, "client-abc");
-        assert_eq!(stored.client_secret.as_deref(), Some("secret-xyz"));
+        assert_eq!(stored.client_id.as_str(), "client-abc");
         assert_eq!(
-            stored.redirect_uri,
+            stored.client_secret.as_ref().map(ClientSecret::expose),
+            Some("secret-xyz")
+        );
+        assert_eq!(
+            stored.redirect_uri.as_str(),
             "http://localhost:8421/mcp/todoist/oauth/callback"
         );
-        assert!(stored.metadata_json.contains("todoist.com"));
+        assert_eq!(stored.metadata.token_endpoint, "https://todoist.com/token");
     }
 
     #[tokio::test]
     async fn client_without_secret_round_trip() {
         let vault = make_vault().await;
         vault
-            .upsert_client(
-                "todoist",
-                "public-client",
-                None,
-                "{}",
-                "http://localhost:8421/mcp/todoist/oauth/callback",
-            )
+            .upsert_client("todoist", &client("public-client", None))
             .await
             .unwrap();
 
         let stored = vault.get_client("todoist").await.unwrap().unwrap();
-        assert_eq!(stored.client_id, "public-client");
+        assert_eq!(stored.client_id.as_str(), "public-client");
         assert!(stored.client_secret.is_none());
     }
 
@@ -440,7 +485,7 @@ mod tests {
         // Only 16 bytes, not 32
         let short_key = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
         let result = TokenVault::new(pool, &short_key);
-        assert!(matches!(result, Err(McpError::VaultKeyInvalid)));
+        assert!(matches!(result, Err(McpError::VaultKeyInvalid { .. })));
     }
 
     #[tokio::test]
@@ -451,26 +496,28 @@ mod tests {
             .await
             .unwrap();
         let result = TokenVault::new(pool, "!!!not-base64!!!");
-        assert!(matches!(result, Err(McpError::VaultKeyInvalid)));
+        assert!(matches!(result, Err(McpError::VaultKeyInvalid { .. })));
     }
 
     #[tokio::test]
     async fn user_cannot_read_another_users_token() {
         let vault = make_vault().await;
+        let user1 = UserId::new();
+        let user2 = UserId::new();
         vault
-            .upsert_token("github", "user-1", "secret-token-1", None, None)
+            .upsert_token("github", user1, &token("secret-token-1", None, None))
             .await
             .unwrap();
         vault
-            .upsert_token("github", "user-2", "secret-token-2", None, None)
+            .upsert_token("github", user2, &token("secret-token-2", None, None))
             .await
             .unwrap();
 
-        let token1 = vault.get_token("github", "user-1").await.unwrap().unwrap();
-        let token2 = vault.get_token("github", "user-2").await.unwrap().unwrap();
+        let token1 = vault.get_token("github", user1).await.unwrap().unwrap();
+        let token2 = vault.get_token("github", user2).await.unwrap().unwrap();
 
-        assert_eq!(token1.access_token, "secret-token-1");
-        assert_eq!(token2.access_token, "secret-token-2");
+        assert_eq!(token1.access_token.expose(), "secret-token-1");
+        assert_eq!(token2.access_token.expose(), "secret-token-2");
         assert_ne!(token1.access_token, token2.access_token);
     }
 }

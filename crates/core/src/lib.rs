@@ -455,8 +455,7 @@ pub trait TaskStatus: Send + Sync {
     ) -> BoxFuture<'a, Result<u64, TaskStatusError>>;
 
     /// Most recent tasks, newest first.
-    fn recent<'a>(&'a self, limit: u32)
-    -> BoxFuture<'a, Result<Vec<TaskSummary>, TaskStatusError>>;
+    fn recent(&self, limit: u32) -> BoxFuture<'_, Result<Vec<TaskSummary>, TaskStatusError>>;
 }
 
 #[derive(Debug, thiserror::Error)]

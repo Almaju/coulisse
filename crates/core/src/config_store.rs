@@ -19,10 +19,7 @@ use futures::future::BoxFuture;
 /// writes. Use [`Self::write_all`] for the `PUT /admin/config` endpoint
 /// where the whole file is replaced atomically.
 pub trait ConfigPersister: Send + Sync {
-    fn write_all<'a>(
-        &'a self,
-        value: serde_yaml::Value,
-    ) -> BoxFuture<'a, Result<(), ConfigPersistError>>;
+    fn write_all(&self, value: serde_yaml::Value) -> BoxFuture<'_, Result<(), ConfigPersistError>>;
 
     fn write_section<'a>(
         &'a self,

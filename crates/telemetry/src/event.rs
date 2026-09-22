@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use coulisse_core::{TurnId, UserId};
 use serde::{Deserialize, Serialize};
 
@@ -44,3 +46,33 @@ pub enum EventKind {
     /// Turn arrived from the client.
     TurnStart,
 }
+
+impl EventKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LlmCall => "llm_call",
+            Self::ToolCall => "tool_call",
+            Self::TurnFinish => "turn_finish",
+            Self::TurnStart => "turn_start",
+        }
+    }
+}
+
+impl FromStr for EventKind {
+    type Err = UnknownEventKind;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "llm_call" => Ok(Self::LlmCall),
+            "tool_call" => Ok(Self::ToolCall),
+            "turn_finish" => Ok(Self::TurnFinish),
+            "turn_start" => Ok(Self::TurnStart),
+            other => Err(UnknownEventKind(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown event kind '{0}'")]
+pub struct UnknownEventKind(pub String);

@@ -1,11 +1,8 @@
 //! Display-oriented view models built from `Sink` records.
 
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::{HashMap, HashSet};
 
-use coulisse_core::ToolCallKind;
-
-use crate::{Event, EventId, EventKind, ToolCall, ToolCallStats};
+use crate::{Event, EventId, ToolCall, ToolCallStats};
 
 pub(super) struct ToolCallRow {
     pub args: String,
@@ -18,7 +15,6 @@ pub(super) struct ToolCallRow {
 
 impl From<ToolCall> for ToolCallRow {
     fn from(t: ToolCall) -> Self {
-        let kind_label = kind_display(t.kind);
         let outcome_label = if t.error.is_some() {
             "error"
         } else if t.result.is_some() {
@@ -29,16 +25,12 @@ impl From<ToolCall> for ToolCallRow {
         Self {
             args: t.args,
             error: t.error,
-            kind_label,
+            kind_label: t.kind.as_str(),
             outcome_label,
             result: t.result,
             tool_name: t.tool_name,
         }
     }
-}
-
-pub(super) fn tool_call_rows(calls: Vec<ToolCall>) -> Vec<ToolCallRow> {
-    calls.into_iter().map(Into::into).collect()
 }
 
 pub(super) struct EventRow {
@@ -54,52 +46,75 @@ pub(super) struct EventRow {
     pub payload_pretty: String,
 }
 
-/// Flatten the causal tree into depth-tagged rows in DFS order. Events
-/// whose parent isn't in the current set attach to the root so we don't
-/// silently swallow orphans.
-pub(super) fn event_rows(events: Vec<Event>) -> Vec<EventRow> {
-    let ids: std::collections::HashSet<_> = events.iter().map(|e| e.id).collect();
-    let mut children_of: HashMap<Option<EventId>, Vec<Event>> = HashMap::new();
-    for e in events {
-        let key = match e.parent_id {
-            Some(p) if ids.contains(&p) => Some(p),
-            _ => None,
+impl EventRow {
+    fn new(event: &Event, depth: usize) -> Self {
+        let payload_pretty = match serde_json::to_string_pretty(&event.payload) {
+            Ok(pretty) => pretty,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    event_id = %event.id.0,
+                    "event payload could not be pretty-printed; showing it compact"
+                );
+                event.payload.to_string()
+            }
         };
-        children_of.entry(key).or_default().push(e);
-    }
-    for list in children_of.values_mut() {
-        list.sort_by_key(|e| e.created_at);
-    }
-    let mut out = Vec::new();
-    walk(None, 0, &mut children_of, &mut out);
-    out
-}
-
-fn walk(
-    parent: Option<EventId>,
-    depth: usize,
-    children_of: &mut HashMap<Option<EventId>, Vec<Event>>,
-    out: &mut Vec<EventRow>,
-) {
-    let Some(siblings) = children_of.remove(&parent) else {
-        return;
-    };
-    for e in siblings {
-        let id = e.id;
-        let payload_pretty =
-            serde_json::to_string_pretty(&e.payload).unwrap_or_else(|_| e.payload.to_string());
-        let kind = event_kind_str(e.kind);
-        let label = label_for(kind, &e.payload);
-        let cost = format_cost(&e.payload);
-        out.push(EventRow {
-            cost,
-            duration: e.duration_ms.map(|d| format!("{d}ms")).unwrap_or_default(),
+        let kind = event.kind.as_str();
+        Self {
+            cost: format_cost(&event.payload),
+            duration: event
+                .duration_ms
+                .map(|d| format!("{d}ms"))
+                .unwrap_or_default(),
             indent_px: depth.saturating_mul(12),
             kind,
-            label,
+            label: label_for(kind, &event.payload),
             payload_pretty,
-        });
-        walk(Some(id), depth + 1, children_of, out);
+        }
+    }
+}
+
+/// The causal tree of one turn, keyed by parent. Events whose parent
+/// isn't in the set attach to the root so we don't silently swallow
+/// orphans.
+pub(super) struct EventTree {
+    children_of: HashMap<Option<EventId>, Vec<Event>>,
+}
+
+impl EventTree {
+    /// Flatten the tree into depth-tagged rows in DFS order.
+    pub(super) fn into_rows(mut self) -> Vec<EventRow> {
+        let mut out = Vec::new();
+        self.walk(None, 0, &mut out);
+        out
+    }
+
+    fn walk(&mut self, parent: Option<EventId>, depth: usize, out: &mut Vec<EventRow>) {
+        let Some(siblings) = self.children_of.remove(&parent) else {
+            return;
+        };
+        for event in siblings {
+            out.push(EventRow::new(&event, depth));
+            self.walk(Some(event.id), depth + 1, out);
+        }
+    }
+}
+
+impl From<Vec<Event>> for EventTree {
+    fn from(events: Vec<Event>) -> Self {
+        let ids: HashSet<_> = events.iter().map(|e| e.id).collect();
+        let mut children_of: HashMap<Option<EventId>, Vec<Event>> = HashMap::new();
+        for e in events {
+            let key = match e.parent_id {
+                Some(p) if ids.contains(&p) => Some(p),
+                _ => None,
+            };
+            children_of.entry(key).or_default().push(e);
+        }
+        for list in children_of.values_mut() {
+            list.sort_by_key(|e| e.created_at);
+        }
+        Self { children_of }
     }
 }
 
@@ -143,27 +158,9 @@ fn format_cost(payload: &serde_json::Value) -> String {
     }
 }
 
-fn event_kind_str(kind: EventKind) -> &'static str {
-    match kind {
-        EventKind::LlmCall => "llm_call",
-        EventKind::ToolCall => "tool_call",
-        EventKind::TurnFinish => "turn_finish",
-        EventKind::TurnStart => "turn_start",
-    }
-}
-
-fn kind_display(kind: ToolCallKind) -> &'static str {
-    match kind {
-        ToolCallKind::Mcp => "mcp",
-        ToolCallKind::Subagent => "subagent",
-    }
-}
-
-fn relative_time(seconds: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(seconds, |d| d.as_secs());
-    let diff = now.saturating_sub(seconds);
+/// "just now" / "5m ago" / "3h ago" / "2d ago" for something `age_secs`
+/// old.
+fn relative_time(diff: u64) -> String {
     if diff < 60 {
         return "just now".into();
     }
@@ -184,6 +181,20 @@ pub(super) struct RecentToolCallRow {
     pub user_id: String,
 }
 
+impl RecentToolCallRow {
+    /// `now` is the Unix-seconds instant the page is rendered at, so the
+    /// "5m ago" column is relative to it.
+    pub(super) fn new(call: ToolCall, now: u64) -> Self {
+        Self {
+            args: call.args,
+            created_at: relative_time(now.saturating_sub(call.created_at)),
+            error: call.error,
+            result: call.result,
+            user_id: call.user_id.0.to_string(),
+        }
+    }
+}
+
 pub(super) struct ToolDetailRow {
     pub call_count: u32,
     pub error_count: u32,
@@ -191,6 +202,19 @@ pub(super) struct ToolDetailRow {
     pub kind_label: &'static str,
     pub tool_name: String,
     pub user_count: u32,
+}
+
+impl From<&ToolCallStats> for ToolDetailRow {
+    fn from(stats: &ToolCallStats) -> Self {
+        Self {
+            call_count: stats.call_count,
+            error_count: stats.error_count,
+            error_rate: stats.error_rate_label(),
+            kind_label: stats.kind.as_str(),
+            tool_name: stats.tool_name.clone(),
+            user_count: stats.user_count,
+        }
+    }
 }
 
 pub(super) struct ToolListRow {
@@ -203,62 +227,37 @@ pub(super) struct ToolListRow {
     pub user_count: u32,
 }
 
-fn format_error_rate(error_count: u32, call_count: u32) -> String {
-    if call_count == 0 {
-        return "0%".into();
-    }
-    let pct = (f64::from(error_count) / f64::from(call_count)) * 100.0;
-    if pct == 0.0 {
-        "0%".into()
-    } else if pct < 0.1 {
-        "<0.1%".into()
-    } else {
-        format!("{pct:.1}%")
-    }
-}
-
-pub(super) fn recent_tool_call_rows(calls: Vec<ToolCall>) -> Vec<RecentToolCallRow> {
-    calls
-        .into_iter()
-        .map(|c| RecentToolCallRow {
-            args: c.args,
-            created_at: relative_time(c.created_at),
-            error: c.error,
-            result: c.result,
-            user_id: c.user_id.0.to_string(),
-        })
-        .collect()
-}
-
-pub(super) fn tool_detail_row(stats: &ToolCallStats) -> ToolDetailRow {
-    let kind_label = kind_display(stats.kind);
-    ToolDetailRow {
-        call_count: stats.call_count,
-        error_count: stats.error_count,
-        error_rate: format_error_rate(stats.error_count, stats.call_count),
-        kind_label,
-        tool_name: stats.tool_name.clone(),
-        user_count: stats.user_count,
+impl From<ToolCallStats> for ToolListRow {
+    fn from(stats: ToolCallStats) -> Self {
+        Self {
+            call_count: stats.call_count,
+            error_count: stats.error_count,
+            error_rate: stats.error_rate_label(),
+            error_rate_high: stats.error_rate() > 0.1,
+            kind_label: stats.kind.as_str(),
+            tool_name: stats.tool_name,
+            user_count: stats.user_count,
+        }
     }
 }
 
-pub(super) fn tool_list_rows(stats: Vec<ToolCallStats>) -> Vec<ToolListRow> {
-    stats
-        .into_iter()
-        .map(|s| {
-            let kind_label = kind_display(s.kind);
-            let error_rate = format_error_rate(s.error_count, s.call_count);
-            let error_rate_high =
-                s.call_count > 0 && (f64::from(s.error_count) / f64::from(s.call_count)) > 0.1;
-            ToolListRow {
-                call_count: s.call_count,
-                error_count: s.error_count,
-                error_rate,
-                error_rate_high,
-                kind_label,
-                tool_name: s.tool_name,
-                user_count: s.user_count,
-            }
-        })
-        .collect()
+impl ToolCallStats {
+    /// Fraction of calls that errored, `0.0` when nothing was called.
+    fn error_rate(&self) -> f64 {
+        if self.call_count == 0 {
+            return 0.0;
+        }
+        f64::from(self.error_count) / f64::from(self.call_count)
+    }
+
+    fn error_rate_label(&self) -> String {
+        let pct = self.error_rate() * 100.0;
+        if pct == 0.0 {
+            "0%".into()
+        } else if pct < 0.1 {
+            "<0.1%".into()
+        } else {
+            format!("{pct:.1}%")
+        }
+    }
 }

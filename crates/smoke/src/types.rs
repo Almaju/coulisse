@@ -1,3 +1,6 @@
+use std::fmt;
+use std::str::FromStr;
+
 use coulisse_core::MessageId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -19,6 +22,20 @@ impl RunId {
 impl Default for RunId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl fmt::Display for RunId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl FromStr for RunId {
+    type Err = uuid::Error;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(raw).map(Self)
     }
 }
 

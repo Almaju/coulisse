@@ -1,7 +1,9 @@
+use std::str::FromStr;
+
 use coulisse_core::migrate::{self, SchemaMigrator};
-use coulisse_core::{i64_to_u64, now_secs, u64_to_i64};
+use coulisse_core::{UserId, i64_to_u64, now_secs, u64_to_i64};
 use sha2::{Digest, Sha256};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{Executor, Sqlite, SqlitePool};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -16,14 +18,55 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "storage";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
+}
 
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("storage has only one schema version")
+/// Stable `file-<uuid>` identifier of a stored file, in the form the
+/// `OpenAI` Files API exposes it.
+#[derive(Clone, Debug, serde::Deserialize, Hash, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub struct FileId(String);
+
+impl FileId {
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(format!("file-{}", Uuid::new_v4().simple()))
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for FileId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Strict parse: `file-` followed by a UUID, as [`FileId::generate`]
+/// produces it. Anything else cannot name a stored file.
+impl FromStr for FileId {
+    type Err = InvalidFileId;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let uuid = s
+            .strip_prefix("file-")
+            .ok_or_else(|| InvalidFileId::MissingPrefix(s.to_string()))?;
+        Uuid::parse_str(uuid).map_err(|source| InvalidFileId::Uuid {
+            raw: s.to_string(),
+            source,
+        })?;
+        Ok(Self(s.to_string()))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidFileId {
+    #[error("file id '{0}' does not start with 'file-'")]
+    MissingPrefix(String),
+    #[error("file id '{raw}' is not 'file-' followed by a UUID: {source}")]
+    Uuid { raw: String, source: uuid::Error },
 }
 
 /// Metadata row returned for every file, matching the `OpenAI` Files API shape.
@@ -38,11 +81,54 @@ pub struct FileObject {
     /// Original filename provided at upload.
     pub filename: String,
     /// Stable `file-<uuid>` identifier.
-    pub id: String,
+    pub id: FileId,
     /// Always `"file"` for compatibility with the `OpenAI` Files API.
     pub object: &'static str,
     /// Purpose string provided at upload (e.g. `"assistants"`).
     pub purpose: String,
+}
+
+/// Everything a caller hands to [`Store::upload`]: the file content plus
+/// the metadata the `OpenAI` Files API records with it.
+#[derive(Clone, Debug)]
+pub struct Upload {
+    pub bytes: Vec<u8>,
+    /// Declared MIME type, as sent by the client (may carry parameters
+    /// such as `; charset=utf-8`).
+    pub content_type: String,
+    pub filename: String,
+    pub purpose: String,
+    pub user_id: UserId,
+}
+
+impl Upload {
+    /// Reject content that is not on the MIME allow-list.
+    ///
+    /// The type inferred from the magic bytes is checked first, not just
+    /// the declared header: this prevents MIME-spoofing executables
+    /// through to LLM backends. The declared content-type is then
+    /// checked as well so callers get honest feedback even when the
+    /// magic check would pass.
+    fn check_content_type(&self) -> Result<(), StorageError> {
+        let inferred = mime::infer_mime(&self.bytes);
+        if !mime::is_allowed(inferred) {
+            return Err(StorageError::UnsupportedContentType(inferred.to_string()));
+        }
+        let declared = self
+            .content_type
+            .split(';')
+            .next()
+            .unwrap_or(&self.content_type)
+            .trim();
+        if !mime::is_allowed(declared) {
+            return Err(StorageError::UnsupportedContentType(declared.to_string()));
+        }
+        Ok(())
+    }
+
+    fn size(&self) -> u64 {
+        u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
+    }
 }
 
 /// Core storage handle. Owns a `SQLite` pool (for the metadata index) and a
@@ -88,8 +174,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns a database or backend error.
-    pub async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let blob_key = match blob_key_for_id(&self.pool, id).await {
+    pub async fn delete(&self, id: &FileId) -> Result<(), StorageError> {
+        let blob_key = match Self::blob_key_for(&self.pool, id).await {
             Ok(k) => k,
             Err(StorageError::NotFound(_)) => return Ok(()),
             Err(e) => return Err(e),
@@ -98,7 +184,7 @@ impl Store {
         // orphaned index row, which is cleaned at the next boot reconciliation.
         self.backend.delete(&blob_key).await?;
         sqlx::query("DELETE FROM storage_files WHERE id = ?")
-            .bind(id)
+            .bind(id.as_str())
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -113,16 +199,16 @@ impl Store {
     ///
     /// Returns `StorageError::NotFound` if the file has been evicted or
     /// never uploaded.
-    pub async fn get_content(&self, id: &str) -> Result<(FileObject, Vec<u8>), StorageError> {
+    pub async fn get_content(&self, id: &FileId) -> Result<(FileObject, Vec<u8>), StorageError> {
         let meta = self.get_metadata(id).await?;
-        let blob_key = blob_key_for_id(&self.pool, id).await?;
+        let blob_key = Self::blob_key_for(&self.pool, id).await?;
         match self.backend.get(&blob_key).await {
             Ok(data) => Ok((meta, data)),
             Err(StorageError::NotFound(_)) => {
                 // Lazy reconciliation: the blob is gone (e.g. evicted on S3
                 // externally). Remove the stale index row.
                 let _ = sqlx::query("DELETE FROM storage_files WHERE id = ?")
-                    .bind(id)
+                    .bind(id.as_str())
                     .execute(&self.pool)
                     .await;
                 Err(StorageError::NotFound(id.to_string()))
@@ -136,12 +222,12 @@ impl Store {
     /// # Errors
     ///
     /// Returns `StorageError::NotFound` if no such file exists.
-    pub async fn get_metadata(&self, id: &str) -> Result<FileObject, StorageError> {
+    pub async fn get_metadata(&self, id: &FileId) -> Result<FileObject, StorageError> {
         let row = sqlx::query_as::<_, FileRow>(
             "SELECT bytes, content_type, created_at, filename, id, purpose \
              FROM storage_files WHERE id = ?",
         )
-        .bind(id)
+        .bind(id.as_str())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -179,65 +265,31 @@ impl Store {
     ///
     /// Returns `StorageError::FileTooLarge`, `StorageError::UnsupportedContentType`,
     /// or a database / backend error.
-    pub async fn upload(
-        &self,
-        filename: &str,
-        content_type: &str,
-        purpose: &str,
-        user_id: &str,
-        bytes: Vec<u8>,
-    ) -> Result<FileObject, StorageError> {
-        // Validate MIME via magic-bytes inference, not just the declared header.
-        // This prevents MIME-spoofing executables through to LLM backends.
-        let inferred = mime::infer_mime(&bytes);
-        if !mime::is_allowed(inferred) {
-            return Err(StorageError::UnsupportedContentType(inferred.to_string()));
-        }
-        // Also validate the declared content-type so callers get honest feedback
-        // even when the magic check would pass.
-        let declared_ct = content_type
-            .split(';')
-            .next()
-            .unwrap_or(content_type)
-            .trim();
-        if !mime::is_allowed(declared_ct) {
-            return Err(StorageError::UnsupportedContentType(
-                declared_ct.to_string(),
-            ));
-        }
+    pub async fn upload(&self, upload: Upload) -> Result<FileObject, StorageError> {
+        upload.check_content_type()?;
+        let size = upload.size();
+        self.quota.check_file_size(size)?;
 
-        let size = bytes.len() as u64;
-
-        if let Some(max_file) = self.quota.max_file_bytes
-            && size > max_file
-        {
-            return Err(StorageError::FileTooLarge {
-                limit: max_file,
-                size,
-            });
-        }
-
-        let sha256 = hex_sha256(&bytes);
+        let sha256 = hex_sha256(&upload.bytes);
         let blob_key = Uuid::new_v4().to_string();
 
         // Write blob before touching SQLite — if the process dies between
         // these two steps, the orphan blob is collected at the next boot.
-        self.backend.put(&blob_key, &bytes).await?;
+        self.backend.put(&blob_key, &upload.bytes).await?;
 
         let mut tx = self.pool.begin().await?;
 
         // Dedup: if a file with the same SHA-256 already exists, return it
         // and discard the blob we just wrote.
-        if let Some(existing) = find_by_sha256(&mut tx, &sha256).await? {
+        if let Some(existing) = Self::find_by_sha256(&mut tx, &sha256).await? {
             drop(tx);
             self.backend.delete(&blob_key).await?;
             return Ok(existing);
         }
 
-        // Evict FIFO until the new file fits (or quota is unset).
         self.evict_for_size(&mut tx, size).await?;
 
-        let id = format!("file-{}", Uuid::new_v4().simple());
+        let id = FileId::generate();
         let now = u64_to_i64(now_secs());
 
         sqlx::query(
@@ -246,14 +298,14 @@ impl Store {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(u64_to_i64(size))
-        .bind(content_type)
+        .bind(&upload.content_type)
         .bind(now)
-        .bind(filename)
-        .bind(&id)
-        .bind(purpose)
+        .bind(&upload.filename)
+        .bind(id.as_str())
+        .bind(&upload.purpose)
         .bind(&sha256)
         .bind(&blob_key)
-        .bind(user_id)
+        .bind(upload.user_id.0.to_string())
         .execute(&mut *tx)
         .await?;
 
@@ -261,13 +313,26 @@ impl Store {
 
         Ok(FileObject {
             bytes: size,
-            content_type: content_type.to_string(),
+            content_type: upload.content_type,
             created_at: i64_to_u64(now),
-            filename: filename.to_string(),
+            filename: upload.filename,
             id,
             object: "file",
-            purpose: purpose.to_string(),
+            purpose: upload.purpose,
         })
+    }
+
+    async fn blob_key_for<'e>(
+        executor: impl Executor<'e, Database = Sqlite>,
+        id: &FileId,
+    ) -> Result<String, StorageError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT storage_key FROM storage_files WHERE id = ?")
+                .bind(id.as_str())
+                .fetch_optional(executor)
+                .await?;
+        row.map(|(k,)| k)
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))
     }
 
     /// Evict the oldest files until the total stored bytes + `incoming` is
@@ -281,7 +346,7 @@ impl Store {
     /// serialises writes via the connection pool's write lock.
     async fn evict_for_size(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         incoming: u64,
     ) -> Result<(), StorageError> {
         let Some(max_total) = self.quota.max_total_bytes else {
@@ -311,18 +376,33 @@ impl Store {
             if freed >= needed {
                 break;
             }
-            let blob_key = blob_key_for_id_tx(tx, &row.id).await?;
+            let id = FileId(row.id);
+            let blob_key = Self::blob_key_for(&mut **tx, &id).await?;
             if let Err(e) = self.backend.delete(&blob_key).await {
-                warn!("eviction: failed to delete blob {}: {e}", row.id);
+                warn!("eviction: failed to delete blob {id}: {e}");
             }
             sqlx::query("DELETE FROM storage_files WHERE id = ?")
-                .bind(&row.id)
+                .bind(id.as_str())
                 .execute(&mut **tx)
                 .await?;
             freed += u64::try_from(row.bytes.max(0)).unwrap_or(0);
         }
 
         Ok(())
+    }
+
+    async fn find_by_sha256(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        sha256: &str,
+    ) -> Result<Option<FileObject>, StorageError> {
+        let row = sqlx::query_as::<_, FileRow>(
+            "SELECT bytes, content_type, created_at, filename, id, purpose \
+             FROM storage_files WHERE sha256 = ? LIMIT 1",
+        )
+        .bind(sha256)
+        .fetch_optional(&mut **tx)
+        .await?;
+        Ok(row.map(FileRow::into_object))
     }
 
     /// At boot, scan the fs backend and remove `SQLite` rows whose blob key no
@@ -366,43 +446,6 @@ fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-async fn find_by_sha256(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    sha256: &str,
-) -> Result<Option<FileObject>, StorageError> {
-    let row = sqlx::query_as::<_, FileRow>(
-        "SELECT bytes, content_type, created_at, filename, id, purpose \
-         FROM storage_files WHERE sha256 = ? LIMIT 1",
-    )
-    .bind(sha256)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(row.map(FileRow::into_object))
-}
-
-async fn blob_key_for_id(pool: &SqlitePool, id: &str) -> Result<String, StorageError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT storage_key FROM storage_files WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-    row.map(|(k,)| k)
-        .ok_or_else(|| StorageError::NotFound(id.to_string()))
-}
-
-async fn blob_key_for_id_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    id: &str,
-) -> Result<String, StorageError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT storage_key FROM storage_files WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?;
-    row.map(|(k,)| k)
-        .ok_or_else(|| StorageError::NotFound(id.to_string()))
-}
-
 #[derive(sqlx::FromRow)]
 struct FileRow {
     bytes: i64,
@@ -420,7 +463,7 @@ impl FileRow {
             content_type: self.content_type,
             created_at: i64_to_u64(self.created_at),
             filename: self.filename,
-            id: self.id,
+            id: FileId(self.id),
             object: "file",
             purpose: self.purpose,
         }
@@ -435,12 +478,20 @@ struct EvictRow {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use sqlx::sqlite::SqliteConnectOptions;
 
     use super::*;
     use crate::backend::FsBackend;
+
+    fn upload(filename: &str, content_type: &str, purpose: &str, bytes: Vec<u8>) -> Upload {
+        Upload {
+            bytes,
+            content_type: content_type.to_string(),
+            filename: filename.to_string(),
+            purpose: purpose.to_string(),
+            user_id: UserId::from_string("u"),
+        }
+    }
 
     async fn pool() -> SqlitePool {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
@@ -478,17 +529,16 @@ mod tests {
         let store = fs_store(&dir).await;
 
         let meta = store
-            .upload(
+            .upload(upload(
                 "hello.txt",
                 "text/plain",
                 "assistants",
-                "user1",
                 b"hello world".to_vec(),
-            )
+            ))
             .await
             .unwrap();
 
-        assert!(meta.id.starts_with("file-"));
+        assert!(meta.id.as_str().starts_with("file-"));
         assert_eq!(meta.bytes, 11);
         assert_eq!(meta.filename, "hello.txt");
         assert_eq!(meta.purpose, "assistants");
@@ -505,11 +555,16 @@ mod tests {
         let store = fs_store(&dir).await;
 
         let first = store
-            .upload("a.txt", "text/plain", "assistants", "u", b"same".to_vec())
+            .upload(upload(
+                "a.txt",
+                "text/plain",
+                "assistants",
+                b"same".to_vec(),
+            ))
             .await
             .unwrap();
         let second = store
-            .upload("b.txt", "text/plain", "fine-tune", "u", b"same".to_vec())
+            .upload(upload("b.txt", "text/plain", "fine-tune", b"same".to_vec()))
             .await
             .unwrap();
 
@@ -524,20 +579,20 @@ mod tests {
         let store = fs_store_with_quota(&dir, 15).await;
 
         let f1 = store
-            .upload("a.txt", "text/plain", "x", "u", b"11111".to_vec())
+            .upload(upload("a.txt", "text/plain", "x", b"11111".to_vec()))
             .await
             .unwrap();
         let _f2 = store
-            .upload("b.txt", "text/plain", "x", "u", b"22222".to_vec())
+            .upload(upload("b.txt", "text/plain", "x", b"22222".to_vec()))
             .await
             .unwrap();
         let _f3 = store
-            .upload("c.txt", "text/plain", "x", "u", b"33333".to_vec())
+            .upload(upload("c.txt", "text/plain", "x", b"33333".to_vec()))
             .await
             .unwrap();
         // This upload should evict f1 (oldest).
         let _f4 = store
-            .upload("d.txt", "text/plain", "x", "u", b"44444".to_vec())
+            .upload(upload("d.txt", "text/plain", "x", b"44444".to_vec()))
             .await
             .unwrap();
 
@@ -554,7 +609,7 @@ mod tests {
 
         for i in 0..10u8 {
             store
-                .upload(&format!("{i}.txt"), "text/plain", "x", "u", vec![i; 5])
+                .upload(upload(&format!("{i}.txt"), "text/plain", "x", vec![i; 5]))
                 .await
                 .unwrap();
         }
@@ -570,13 +625,12 @@ mod tests {
         let store = fs_store(&dir).await;
 
         let err = store
-            .upload(
+            .upload(upload(
                 "virus.exe",
                 "application/x-msdownload",
                 "assistants",
-                "u",
                 b"MZ\x90\x00".to_vec(),
-            )
+            ))
             .await
             .unwrap_err();
 
@@ -599,7 +653,7 @@ mod tests {
         .unwrap();
 
         let err = store
-            .upload("big.txt", "text/plain", "x", "u", b"123456".to_vec())
+            .upload(upload("big.txt", "text/plain", "x", b"123456".to_vec()))
             .await
             .unwrap_err();
 
@@ -612,7 +666,7 @@ mod tests {
         let store = fs_store(&dir).await;
 
         let meta = store
-            .upload("x.txt", "text/plain", "x", "u", b"data".to_vec())
+            .upload(upload("x.txt", "text/plain", "x", b"data".to_vec()))
             .await
             .unwrap();
         store.delete(&meta.id).await.unwrap();
@@ -625,8 +679,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fs_store(&dir).await;
 
-        let err = store.get_metadata("file-does-not-exist").await.unwrap_err();
+        let err = store.get_metadata(&FileId::generate()).await.unwrap_err();
         assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    #[test]
+    fn file_id_round_trips_through_its_string_form() {
+        let id = FileId::generate();
+        assert_eq!(id.as_str().parse::<FileId>().unwrap(), id);
+        assert!(matches!(
+            "does-not-exist".parse::<FileId>().unwrap_err(),
+            InvalidFileId::MissingPrefix(_)
+        ));
+        assert!(matches!(
+            "file-nope".parse::<FileId>().unwrap_err(),
+            InvalidFileId::Uuid { .. }
+        ));
     }
 
     #[test]

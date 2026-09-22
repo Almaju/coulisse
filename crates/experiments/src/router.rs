@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use coulisse_core::{AgentScoreSummary, UserId};
+use coulisse_core::{AgentScoreSummary, ScoreQuery, UserId, now_secs};
 
 use crate::{ExperimentConfig, Strategy, Variant};
 
@@ -34,6 +35,10 @@ pub struct Resolved<'a> {
 /// caller holds it inside the prompter and never mutates it.
 pub struct ExperimentRouter {
     by_name: HashMap<String, ExperimentConfig>,
+    /// Counts every pick. A non-sticky pick hashes the count in, so
+    /// consecutive requests from one user spread across variants without
+    /// the router reading a clock, and a given sequence of picks replays.
+    draws: AtomicU64,
 }
 
 impl ExperimentRouter {
@@ -43,15 +48,18 @@ impl ExperimentRouter {
             .into_iter()
             .map(|exp| (exp.name.clone(), exp))
             .collect();
-        Self { by_name }
+        Self {
+            by_name,
+            draws: AtomicU64::new(0),
+        }
     }
 
-    /// For a bandit experiment, return the score-query inputs the
-    /// caller needs to fetch from memory before resolving:
-    /// `(judge, criterion, since_seconds)`. Returns `None` for
+    /// For a bandit experiment, the score query the caller needs to run
+    /// before resolving: the metric's judge and criterion, with `since`
+    /// set to the start of the experiment's window. Returns `None` for
     /// non-bandit strategies, which don't read scores.
     #[must_use]
-    pub fn bandit_query(&self, name: &str) -> Option<(String, String, u64)> {
+    pub fn bandit_query(&self, name: &str) -> Option<ScoreQuery<'_>> {
         let exp = self.by_name.get(name)?;
         if !matches!(exp.strategy, Strategy::Bandit) {
             return None;
@@ -61,11 +69,11 @@ impl ExperimentRouter {
         let window = exp
             .bandit_window_seconds
             .unwrap_or(BANDIT_DEFAULT_WINDOW_SECONDS);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let since = now.saturating_sub(window);
-        Some((judge.to_string(), criterion.to_string(), since))
+        Some(ScoreQuery {
+            criterion,
+            judge,
+            since: now_secs().saturating_sub(window),
+        })
     }
 
     pub fn experiments(&self) -> impl Iterator<Item = &ExperimentConfig> {
@@ -94,6 +102,10 @@ impl ExperimentRouter {
     /// each entry is the recent mean for a candidate variant agent.
     /// For non-bandit strategies the slice is ignored, so callers may
     /// pass an empty slice when they don't have data on hand.
+    ///
+    /// An experiment that yields no variant (declared without any, which
+    /// config validation rejects) resolves to its own name so the failure
+    /// surfaces downstream as an unknown agent instead of a panic.
     #[must_use]
     pub fn resolve_with_scores<'a>(
         &'a self,
@@ -101,18 +113,19 @@ impl ExperimentRouter {
         user_id: UserId,
         scores: &[AgentScoreSummary],
     ) -> Resolved<'a> {
-        match self.by_name.get(name) {
-            None => Resolved {
+        let Some(experiment) = self.by_name.get(name) else {
+            return Resolved {
                 agent: Cow::Borrowed(name),
                 experiment: None,
-            },
-            Some(experiment) => {
-                let variant = pick_variant(experiment, user_id, scores);
-                Resolved {
-                    agent: Cow::Owned(variant.agent.clone()),
-                    experiment: Some(experiment.name.as_str()),
-                }
-            }
+            };
+        };
+        let agent = match experiment.pick_variant(scores, self.next_seed(user_id)) {
+            None => Cow::Borrowed(name),
+            Some(variant) => Cow::Owned(variant.agent.clone()),
+        };
+        Resolved {
+            agent,
+            experiment: Some(experiment.name.as_str()),
         }
     }
 
@@ -135,7 +148,7 @@ impl ExperimentRouter {
         // WHY: avoid pulling in `rand` for what is effectively a coin flip
         // on the request hot path — hash a per-turn seed and compare against
         // the rate.
-        let seed = per_request_seed(user_id, &experiment.name);
+        let seed = self.next_seed(user_id).per_request(&experiment.name);
         seed_to_unit_f32(seed) < rate
     }
 
@@ -155,80 +168,42 @@ impl ExperimentRouter {
             .iter()
             .filter(move |v| Some(v.agent.as_str()) != primary)
     }
-}
 
-/// Map a u64 hash output to a uniform f32 in [0, 1). The precision and
-/// truncation losses are intrinsic to producing a ratio — bandit/shadow
-/// rollouts only need ~24 bits of randomness anyway.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-fn seed_to_unit_f32(seed: u64) -> f32 {
-    (seed as f64 / u64::MAX as f64) as f32
-}
-
-fn pick_variant<'a>(
-    experiment: &'a ExperimentConfig,
-    user_id: UserId,
-    scores: &[AgentScoreSummary],
-) -> &'a Variant {
-    match experiment.strategy {
-        Strategy::Bandit => bandit_pick(experiment, user_id, scores),
-        Strategy::Shadow => shadow_pick(experiment),
-        Strategy::Split => weighted_pick(experiment, user_id),
+    fn next_seed(&self, user_id: UserId) -> PickSeed {
+        PickSeed {
+            draw: self.draws.fetch_add(1, Ordering::Relaxed),
+            user_id,
+        }
     }
 }
 
-fn shadow_pick(experiment: &ExperimentConfig) -> &Variant {
-    // NOTE: validation guarantees `primary` is present and references one
-    // of the variants for shadow strategy.
-    let primary = experiment
-        .primary
-        .as_deref()
-        .expect("validation guarantees shadow has primary");
-    experiment
-        .variants
-        .iter()
-        .find(|v| v.agent == primary)
-        .expect("validation guarantees primary is a variant")
-}
-
-/// Epsilon-greedy bandit pick. Arms below `min_samples` are forced; if
-/// any arm is forced, exploration consumes that turn. Otherwise with
-/// probability `epsilon` we pick a hash-stable random arm, else the
-/// arm with the highest mean. Ties go to the first arm by declaration
-/// order, which makes the choice deterministic on ties.
-fn bandit_pick<'a>(
-    experiment: &'a ExperimentConfig,
-    user_id: UserId,
-    scores: &[AgentScoreSummary],
-) -> &'a Variant {
-    let min_samples = experiment.min_samples.unwrap_or(BANDIT_DEFAULT_MIN_SAMPLES);
-    let forced: Vec<&Variant> = experiment
-        .variants
-        .iter()
-        .filter(|v| {
-            scores
-                .iter()
-                .find(|s| s.agent_name == v.agent)
-                .is_none_or(|s| s.samples < min_samples)
-        })
-        .collect();
-    if !forced.is_empty() {
-        return uniform_hash_pick(&forced, user_id, &experiment.name);
-    }
-    let epsilon = experiment.epsilon.unwrap_or(BANDIT_DEFAULT_EPSILON);
-    let seed = if experiment.sticky_by_user {
-        sticky_seed(user_id, &experiment.name)
-    } else {
-        per_request_seed(user_id, &experiment.name)
-    };
-    if seed_to_unit_f32(seed) < epsilon {
-        let arms: Vec<&Variant> = experiment.variants.iter().collect();
-        return uniform_hash_pick(&arms, user_id, &experiment.name);
-    }
-    experiment
-        .variants
-        .iter()
-        .max_by(|a, b| {
+impl ExperimentConfig {
+    /// Epsilon-greedy bandit pick. Arms below `min_samples` are forced; if
+    /// any arm is forced, exploration consumes that turn. Otherwise with
+    /// probability `epsilon` we pick a hash-stable random arm, else the
+    /// arm with the highest mean. Ties go to the first arm by declaration
+    /// order, which makes the choice deterministic on ties.
+    fn bandit_pick(&self, scores: &[AgentScoreSummary], seed: PickSeed) -> Option<&Variant> {
+        let min_samples = self.min_samples.unwrap_or(BANDIT_DEFAULT_MIN_SAMPLES);
+        let forced: Vec<&Variant> = self
+            .variants
+            .iter()
+            .filter(|v| {
+                scores
+                    .iter()
+                    .find(|s| s.agent_name == v.agent)
+                    .is_none_or(|s| s.samples < min_samples)
+            })
+            .collect();
+        if !forced.is_empty() {
+            return Variant::uniform_pick(&forced, seed.sticky(&self.name));
+        }
+        let epsilon = self.epsilon.unwrap_or(BANDIT_DEFAULT_EPSILON);
+        if seed_to_unit_f32(self.routing_seed(seed)) < epsilon {
+            let arms: Vec<&Variant> = self.variants.iter().collect();
+            return Variant::uniform_pick(&arms, seed.sticky(&self.name));
+        }
+        self.variants.iter().max_by(|a, b| {
             let mean_a = scores
                 .iter()
                 .find(|s| s.agent_name == a.agent)
@@ -241,58 +216,99 @@ fn bandit_pick<'a>(
                 .partial_cmp(&mean_b)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .expect("validation rejects experiments with no variants")
-}
+    }
 
-fn uniform_hash_pick<'a>(arms: &[&'a Variant], user_id: UserId, name: &str) -> &'a Variant {
-    let seed = sticky_seed(user_id, name);
-    // WHY: `seed % arms.len()` is bounded by `arms.len()` (a usize), so the
-    // narrowing is exact on every platform.
-    #[allow(clippy::cast_possible_truncation)]
-    let idx = (seed % arms.len() as u64) as usize;
-    arms[idx]
-}
-
-fn weighted_pick(experiment: &ExperimentConfig, user_id: UserId) -> &Variant {
-    // NOTE: validation guarantees at least one variant with strictly
-    // positive weight, so the cumulative total is finite and `> 0.0` and
-    // the index lookup below cannot fall off the end.
-    let total: f32 = experiment.variants.iter().map(|v| v.weight).sum();
-    let seed = if experiment.sticky_by_user {
-        sticky_seed(user_id, &experiment.name)
-    } else {
-        per_request_seed(user_id, &experiment.name)
-    };
-    let target = seed_to_unit_f32(seed) * total;
-    let mut acc = 0.0;
-    for variant in &experiment.variants {
-        acc += variant.weight;
-        if target < acc {
-            return variant;
+    /// The variant this request lands on, or `None` when the experiment
+    /// declares no variants.
+    fn pick_variant(&self, scores: &[AgentScoreSummary], seed: PickSeed) -> Option<&Variant> {
+        match self.strategy {
+            Strategy::Bandit => self.bandit_pick(scores, seed),
+            Strategy::Shadow => self.shadow_pick(),
+            Strategy::Split => self.weighted_pick(seed),
         }
     }
-    experiment
-        .variants
-        .last()
-        .expect("validation rejects experiments with no variants")
+
+    /// The draw this experiment routes on: stable per user when sticky,
+    /// fresh on every request otherwise.
+    fn routing_seed(&self, seed: PickSeed) -> u64 {
+        if self.sticky_by_user {
+            seed.sticky(&self.name)
+        } else {
+            seed.per_request(&self.name)
+        }
+    }
+
+    fn shadow_pick(&self) -> Option<&Variant> {
+        // NOTE: validation guarantees `primary` is present and references one
+        // of the variants for shadow strategy; the first variant stands in
+        // for an unvalidated config.
+        let primary = self.primary.as_deref();
+        self.variants
+            .iter()
+            .find(|v| Some(v.agent.as_str()) == primary)
+            .or_else(|| self.variants.first())
+    }
+
+    fn weighted_pick(&self, seed: PickSeed) -> Option<&Variant> {
+        // NOTE: validation guarantees at least one variant with strictly
+        // positive weight, so the cumulative total is finite and `> 0.0` and
+        // the index lookup below cannot fall off the end.
+        let total: f32 = self.variants.iter().map(|v| v.weight).sum();
+        let target = seed_to_unit_f32(self.routing_seed(seed)) * total;
+        let mut acc = 0.0;
+        for variant in &self.variants {
+            acc += variant.weight;
+            if target < acc {
+                return Some(variant);
+            }
+        }
+        self.variants.last()
+    }
 }
 
-fn sticky_seed(user_id: UserId, experiment_name: &str) -> u64 {
-    let mut hasher = Fnv64::new();
-    hasher.write(user_id.0.as_bytes());
-    hasher.write(experiment_name.as_bytes());
-    hasher.finish()
+impl Variant {
+    /// Hash-stable uniform choice among `arms`; `None` only when there
+    /// are none.
+    fn uniform_pick<'a>(arms: &[&'a Self], seed: u64) -> Option<&'a Self> {
+        let len = u64::try_from(arms.len()).ok()?;
+        let idx = usize::try_from(seed.checked_rem(len)?).ok()?;
+        arms.get(idx).copied()
+    }
 }
 
-fn per_request_seed(user_id: UserId, experiment_name: &str) -> u64 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-    let mut hasher = Fnv64::new();
-    hasher.write(user_id.0.as_bytes());
-    hasher.write(experiment_name.as_bytes());
-    hasher.write(&nanos.to_le_bytes());
-    hasher.finish()
+/// What one variant pick is derived from: the requesting user and the
+/// router's draw counter.
+#[derive(Clone, Copy, Debug)]
+struct PickSeed {
+    draw: u64,
+    user_id: UserId,
+}
+
+impl PickSeed {
+    /// Differs on every draw for the same user and experiment.
+    fn per_request(self, experiment_name: &str) -> u64 {
+        let mut hasher = Fnv64::new();
+        hasher.write(self.user_id.0.as_bytes());
+        hasher.write(experiment_name.as_bytes());
+        hasher.write(&self.draw.to_le_bytes());
+        hasher.finish()
+    }
+
+    /// Same user, same experiment → same value, across restarts.
+    fn sticky(self, experiment_name: &str) -> u64 {
+        let mut hasher = Fnv64::new();
+        hasher.write(self.user_id.0.as_bytes());
+        hasher.write(experiment_name.as_bytes());
+        hasher.finish()
+    }
+}
+
+/// Map a u64 hash output to a uniform f32 in [0, 1). The precision and
+/// truncation losses are intrinsic to producing a ratio — bandit/shadow
+/// rollouts only need ~24 bits of randomness anyway.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn seed_to_unit_f32(seed: u64) -> f32 {
+    (seed as f64 / u64::MAX as f64) as f32
 }
 
 /// FNV-1a 64-bit. Tiny, zero-deps, and deterministic across builds — no
@@ -414,6 +430,33 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(router.resolve("alice", user).agent.as_ref(), first);
         }
+    }
+
+    #[test]
+    fn non_sticky_routing_varies_across_requests_for_one_user() {
+        let router = ExperimentRouter::new(vec![experiment(false, &[("v1", 1.0), ("v2", 1.0)])]);
+        let user = UserId::new();
+        let mut v1 = 0;
+        let mut v2 = 0;
+        for _ in 0..200 {
+            match router.resolve("alice", user).agent.as_ref() {
+                "v1" => v1 += 1,
+                "v2" => v2 += 1,
+                _ => unreachable!(),
+            }
+        }
+        assert!(
+            v1 > 0 && v2 > 0,
+            "expected both variants, got v1={v1} v2={v2}"
+        );
+    }
+
+    #[test]
+    fn experiment_without_variants_resolves_to_its_own_name() {
+        let router = ExperimentRouter::new(vec![experiment(true, &[])]);
+        let resolved = router.resolve("alice", UserId::new());
+        assert_eq!(resolved.agent.as_ref(), "alice");
+        assert_eq!(resolved.experiment, Some("alice"));
     }
 
     #[test]

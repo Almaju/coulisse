@@ -40,8 +40,13 @@ const ENDPOINT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SseClientError {
-    #[error("SSE endpoint URL {raw} is not absolute and not joinable against {base}")]
-    BadEndpointUrl { base: String, raw: String },
+    #[error("SSE endpoint URL {raw} is not absolute and not joinable against {base}: {source}")]
+    BadEndpointUrl {
+        base: String,
+        raw: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[error("SSE endpoint {url} returned HTTP {status}")]
     BadStatus { status: u16, url: String },
     #[error("SSE transport closed")]
@@ -77,17 +82,73 @@ pub(crate) enum SseClientError {
     Stream(String),
 }
 
+/// URL of the long-lived `GET` event stream — the `url:` a YAML server
+/// entry declares.
+#[derive(Clone, Debug)]
+pub(crate) struct SseUrl(String);
+
+impl SseUrl {
+    pub(crate) fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Resolve the `data` payload of the `endpoint` event to an absolute URL.
+    /// Servers send either an absolute URL or a relative path against the
+    /// original GET URL.
+    fn resolve_endpoint(&self, raw: &str) -> Result<EndpointUrl, SseClientError> {
+        if raw.starts_with("http://") || raw.starts_with("https://") {
+            return Ok(EndpointUrl(raw.to_string()));
+        }
+        let base_url =
+            reqwest::Url::parse(&self.0).map_err(|source| SseClientError::BadEndpointUrl {
+                base: self.0.clone(),
+                raw: raw.to_string(),
+                source: Box::new(source),
+            })?;
+        base_url
+            .join(raw)
+            .map(|u| EndpointUrl(u.to_string()))
+            .map_err(|source| SseClientError::BadEndpointUrl {
+                base: self.0.clone(),
+                raw: raw.to_string(),
+                source: Box::new(source),
+            })
+    }
+}
+
+impl std::fmt::Display for SseUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Where outgoing JSON-RPC messages are `POST`ed, as announced by the
+/// server's first (`event: endpoint`) SSE event.
+#[derive(Debug)]
+struct EndpointUrl(String);
+
+impl EndpointUrl {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+type EventStream =
+    Box<dyn futures_util::Stream<Item = Result<eventsource_stream::Event, String>> + Send + Unpin>;
+
 /// Builder for an MCP-over-SSE client. Call `.connect()` to perform the
 /// initial GET handshake, then `.into_transport()` to wrap as an rmcp
 /// `Transport` suitable for `().serve(transport).await`.
 pub(crate) struct SseClientTransport {
     auth_header: Option<String>,
-    base_url: String,
+    base_url: SseUrl,
     client: reqwest::Client,
-    post_url: String,
-    sse_stream: Box<
-        dyn futures_util::Stream<Item = Result<eventsource_stream::Event, String>> + Send + Unpin,
-    >,
+    post_url: EndpointUrl,
+    sse_stream: EventStream,
 }
 
 impl SseClientTransport {
@@ -103,17 +164,10 @@ impl SseClientTransport {
         url: &str,
         auth_header: Option<String>,
     ) -> Result<Self, SseClientError> {
-        let client = reqwest::Client::builder()
-            // No global timeout — the GET stays open for the lifetime of
-            // the session. We bound only the initial connect attempt
-            // below.
-            .build()
-            .map_err(|source| SseClientError::Connect {
-                source,
-                url: url.to_string(),
-            })?;
+        let base_url = SseUrl::new(url);
+        let client = Self::http_client(&base_url)?;
         let mut req = client
-            .get(url)
+            .get(base_url.as_str())
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
             .timeout(ENDPOINT_DISCOVERY_TIMEOUT);
@@ -133,17 +187,31 @@ impl SseClientTransport {
         }
         // From here on, no timeout — the stream is supposed to stay open.
         let bytes = response.bytes_stream();
-        let mut events = Box::new(bytes.eventsource().map(|r| r.map_err(|e| e.to_string())));
-        // First event MUST be `event: endpoint` with `data: <post URL>`.
-        // mcp-remote does the same probe and falls back to streamable-HTTP
-        // if missing. Coulisse caller does the inverse: caller tries
-        // streamable-HTTP first, then us; so if we don't see endpoint,
-        // it's a real protocol error.
-        let post_url = loop {
-            let next = events.next().await;
-            match next {
+        let mut events: EventStream =
+            Box::new(bytes.eventsource().map(|r| r.map_err(|e| e.to_string())));
+        let post_url = Self::await_endpoint_event(&mut events, &base_url).await?;
+        Ok(Self {
+            auth_header,
+            base_url,
+            client,
+            post_url,
+            sse_stream: events,
+        })
+    }
+
+    /// First event MUST be `event: endpoint` with `data: <post URL>`.
+    /// mcp-remote does the same probe and falls back to streamable-HTTP
+    /// if missing. Coulisse caller does the inverse: caller tries
+    /// streamable-HTTP first, then us; so if we don't see endpoint,
+    /// it's a real protocol error.
+    async fn await_endpoint_event(
+        events: &mut EventStream,
+        url: &SseUrl,
+    ) -> Result<EndpointUrl, SseClientError> {
+        loop {
+            match events.next().await {
                 Some(Ok(ev)) if ev.event == "endpoint" => {
-                    break resolve_endpoint(url, ev.data.trim())?;
+                    return url.resolve_endpoint(ev.data.trim());
                 }
                 Some(Ok(_)) => {
                     // Some servers send pings or comments before the
@@ -156,35 +224,20 @@ impl SseClientTransport {
                     });
                 }
             }
-        };
-        Ok(Self {
-            auth_header,
-            base_url: url.to_string(),
-            client,
-            post_url,
-            sse_stream: events,
-        })
+        }
     }
-}
 
-/// Resolve the `data` payload of the `endpoint` event to an absolute URL.
-/// Servers send either an absolute URL or a relative path against the
-/// original GET URL.
-fn resolve_endpoint(base: &str, raw: &str) -> Result<String, SseClientError> {
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        return Ok(raw.to_string());
+    /// No global timeout — the GET stays open for the lifetime of the
+    /// session. Only the initial connect attempt is bounded, by the
+    /// per-request timeout `connect` sets.
+    fn http_client(url: &SseUrl) -> Result<reqwest::Client, SseClientError> {
+        reqwest::Client::builder()
+            .build()
+            .map_err(|source| SseClientError::Connect {
+                source,
+                url: url.to_string(),
+            })
     }
-    let base_url = reqwest::Url::parse(base).map_err(|_| SseClientError::BadEndpointUrl {
-        base: base.to_string(),
-        raw: raw.to_string(),
-    })?;
-    base_url
-        .join(raw)
-        .map(|u| u.to_string())
-        .map_err(|_| SseClientError::BadEndpointUrl {
-            base: base.to_string(),
-            raw: raw.to_string(),
-        })
 }
 
 impl Worker for SseClientTransport {
@@ -256,7 +309,7 @@ impl Worker for SseClientTransport {
                     };
                     let result = post_message(
                         &self.client,
-                        &self.post_url,
+                        self.post_url.as_str(),
                         self.auth_header.as_deref(),
                         &req.message,
                     )
@@ -314,12 +367,10 @@ mod tests {
 
     #[test]
     fn absolute_endpoint_url_round_trips() {
-        let resolved = resolve_endpoint(
-            "https://mcp.example.com/v1/sse",
-            "https://mcp.example.com/v1/messages/abc",
-        )
-        .unwrap();
-        assert_eq!(resolved, "https://mcp.example.com/v1/messages/abc");
+        let resolved = SseUrl::new("https://mcp.example.com/v1/sse")
+            .resolve_endpoint("https://mcp.example.com/v1/messages/abc")
+            .unwrap();
+        assert_eq!(resolved.as_str(), "https://mcp.example.com/v1/messages/abc");
     }
 
     /// Some servers (Atlassian) return a relative path against the SSE
@@ -327,13 +378,11 @@ mod tests {
     /// to directly.
     #[test]
     fn relative_endpoint_resolves_against_base() {
-        let resolved = resolve_endpoint(
-            "https://mcp.example.com/v1/sse",
-            "/v1/messages/abc?session=xyz",
-        )
-        .unwrap();
+        let resolved = SseUrl::new("https://mcp.example.com/v1/sse")
+            .resolve_endpoint("/v1/messages/abc?session=xyz")
+            .unwrap();
         assert_eq!(
-            resolved,
+            resolved.as_str(),
             "https://mcp.example.com/v1/messages/abc?session=xyz"
         );
     }
@@ -342,13 +391,17 @@ mod tests {
     /// directory.
     #[test]
     fn path_relative_endpoint_resolves() {
-        let resolved = resolve_endpoint("https://mcp.example.com/v1/sse", "messages/abc").unwrap();
-        assert_eq!(resolved, "https://mcp.example.com/v1/messages/abc");
+        let resolved = SseUrl::new("https://mcp.example.com/v1/sse")
+            .resolve_endpoint("messages/abc")
+            .unwrap();
+        assert_eq!(resolved.as_str(), "https://mcp.example.com/v1/messages/abc");
     }
 
     #[test]
     fn unparseable_base_url_errors() {
-        let err = resolve_endpoint("not a url", "relative").unwrap_err();
+        let err = SseUrl::new("not a url")
+            .resolve_endpoint("relative")
+            .unwrap_err();
         assert!(matches!(err, SseClientError::BadEndpointUrl { .. }));
     }
 }

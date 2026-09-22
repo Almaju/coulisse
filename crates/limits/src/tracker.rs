@@ -2,7 +2,7 @@ use crate::error::WindowKind;
 use crate::{LimitError, RequestLimits};
 use coulisse_core::migrate::{self, SchemaMigrator};
 use coulisse_core::{now_secs, u64_to_i64};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 
 struct Schema;
 
@@ -10,14 +10,6 @@ impl SchemaMigrator for Schema {
     const NAME: &'static str = "limits";
     const SCHEMA: &'static str = include_str!("../migrations/schema.sql");
     const VERSIONS: &'static [&'static str] = &["0.1.0"];
-
-    async fn upgrade_from(
-        &self,
-        _from_version: &str,
-        _conn: &mut SqliteConnection,
-    ) -> sqlx::Result<()> {
-        unreachable!("limits has only one schema version")
-    }
 }
 
 /// Persistent per-user token-usage tracker. Stores the current hour/day/month

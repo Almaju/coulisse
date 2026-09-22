@@ -62,8 +62,7 @@ impl ResponseFormat {
                     .to_string(),
             ),
             Self::JsonSchema { json_schema } => {
-                let schema = serde_json::to_string_pretty(&json_schema.schema)
-                    .unwrap_or_else(|_| json_schema.schema.to_string());
+                let schema = format!("{:#}", json_schema.schema);
                 let purpose = json_schema
                     .description
                     .as_deref()

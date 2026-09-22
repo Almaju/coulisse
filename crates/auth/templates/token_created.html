@@ -4,11 +4,11 @@
     Secret for <span class="mono">{{ label }}</span> — copy it now, it won't be shown again.
   </p>
   <div style="align-items: flex-start; display: flex; gap: 10px">
-    <pre class="code-block" style="border: 1px solid var(--velvet-line-2); flex: 1; user-select: all; white-space: pre-wrap; word-break: break-all">{{ secret }}</pre>
+    <pre class="code-block" style="border: 1px solid var(--velvet-line-2); flex: 1; user-select: all; white-space: pre-wrap; word-break: break-all">{{ secret.expose() }}</pre>
     <button
       type="button"
       class="btn btn-sm"
-      onclick="navigator.clipboard.writeText('{{ secret }}')"
+      onclick="navigator.clipboard.writeText('{{ secret.expose() }}')"
     >Copy</button>
   </div>
   <p style="font-size: 12px; margin: 12px 0 0">

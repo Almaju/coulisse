@@ -5,12 +5,12 @@
 
 use std::path::Path;
 
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 
 /// # Errors
 ///
-/// Returns an error if the underlying operation fails.
-pub fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Returns an error if the config cannot be read, parsed or validated.
+pub fn run(config_path: &Path) -> Result<(), ConfigError> {
     let config = Config::from_path(config_path)?;
     println!(
         "ok — {} ({} agents, {} judges, {} experiments, {} providers)",

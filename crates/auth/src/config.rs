@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -20,7 +22,7 @@ pub struct Config {
     /// Shared secret that guards `POST /mcp/{server}/connect-link`.
     /// Required when any MCP server declares an `oauth:` block.
     #[serde(default)]
-    pub mcp_consumer_secret: Option<String>,
+    pub mcp_consumer_secret: Option<McpConsumerSecret>,
     #[serde(default)]
     pub proxy: Option<ScopeConfig>,
 }
@@ -28,7 +30,7 @@ pub struct Config {
 /// Bearer-token auth for the MCP admin endpoint.
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct McpAdminConfig {
-    pub token: String,
+    pub token: McpAdminToken,
 }
 
 /// One scope's auth method. Exactly one of `basic`, `oidc`, or `tokens`
@@ -88,7 +90,7 @@ pub enum IdentityMode {
 /// dialog; no session state.
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct BasicConfig {
-    pub password: String,
+    pub password: Password,
     #[serde(default = "default_username")]
     pub username: String,
 }
@@ -99,22 +101,193 @@ pub struct BasicConfig {
 /// bindings, not configured here.
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema, Serialize)]
 pub struct OidcConfig {
-    pub client_id: String,
+    pub client_id: ClientId,
     /// Optional for public clients that use PKCE only. Authentik's default
     /// "confidential" client type requires a secret.
     #[serde(default)]
-    pub client_secret: Option<String>,
+    pub client_secret: Option<ClientSecret>,
     /// OIDC issuer URL. For Authentik, typically
     /// `https://authentik.example.com/application/o/<app-slug>/`.
-    pub issuer_url: String,
+    pub issuer_url: IssuerUrl,
     /// Absolute URL the `IdP` will redirect to after login. Must be
     /// whitelisted in the `IdP`'s client config and match a route served by
     /// Coulisse inside the protected scope.
-    pub redirect_url: String,
+    pub redirect_url: RedirectUrl,
     /// Additional `OAuth2` scopes beyond the implicit `openid`. Defaults to
     /// `profile` and `email`.
     #[serde(default = "default_oidc_scopes")]
     pub scopes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct ClientId(String);
+
+impl ClientId {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Deserialize, schemars::JsonSchema, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct ClientSecret(String);
+
+impl ClientSecret {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ClientSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClientSecret([redacted])")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct IssuerUrl(String);
+
+impl IssuerUrl {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for IssuerUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Deserialize, schemars::JsonSchema, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct McpAdminToken(String);
+
+impl McpAdminToken {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl fmt::Debug for McpAdminToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("McpAdminToken([redacted])")
+    }
+}
+
+#[derive(Clone, Deserialize, schemars::JsonSchema, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct McpConsumerSecret(String);
+
+impl McpConsumerSecret {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl fmt::Debug for McpConsumerSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("McpConsumerSecret([redacted])")
+    }
+}
+
+#[derive(Clone, Deserialize, schemars::JsonSchema, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct Password(String);
+
+impl Password {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Password {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Password([redacted])")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema, PartialEq, Eq, Serialize)]
+#[schemars(inline)]
+#[serde(transparent)]
+pub struct RedirectUrl(String);
+
+impl RedirectUrl {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RedirectUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 impl Config {
@@ -136,7 +309,7 @@ impl Config {
             }
         }
         if let Some(mcp_admin) = &self.mcp_admin
-            && mcp_admin.token.trim().is_empty()
+            && mcp_admin.token.is_blank()
         {
             return Err(ConfigError::BlankMcpAdminToken);
         }
@@ -144,7 +317,7 @@ impl Config {
             scope.validate("proxy")?;
         }
         if let Some(secret) = &self.mcp_consumer_secret
-            && secret.trim().is_empty()
+            && secret.is_blank()
         {
             return Err(ConfigError::BlankMcpConsumerSecret);
         }
@@ -163,19 +336,19 @@ impl ScopeConfig {
             _ => return Err(ConfigError::ScopeMultipleAuthMethods(scope)),
         }
         if let Some(oidc) = &self.oidc {
-            if oidc.client_id.is_empty() {
+            if oidc.client_id.as_str().is_empty() {
                 return Err(ConfigError::BlankOidcField {
                     field: "client_id",
                     scope,
                 });
             }
-            if oidc.issuer_url.is_empty() {
+            if oidc.issuer_url.as_str().is_empty() {
                 return Err(ConfigError::BlankOidcField {
                     field: "issuer_url",
                     scope,
                 });
             }
-            if oidc.redirect_url.is_empty() {
+            if oidc.redirect_url.as_str().is_empty() {
                 return Err(ConfigError::BlankOidcField {
                     field: "redirect_url",
                     scope,
@@ -183,7 +356,7 @@ impl ScopeConfig {
             }
         }
         if let Some(basic) = &self.basic {
-            if basic.password.is_empty() {
+            if basic.password.expose().is_empty() {
                 return Err(ConfigError::BlankBasicField {
                     field: "password",
                     scope,
@@ -249,7 +422,7 @@ mod tests {
     fn basic_scope(identity: IdentityMode) -> ScopeConfig {
         ScopeConfig {
             basic: Some(BasicConfig {
-                password: "pw".to_string(),
+                password: Password::new("pw"),
                 username: "gateway".to_string(),
             }),
             identity,

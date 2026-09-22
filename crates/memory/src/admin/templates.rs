@@ -2,6 +2,7 @@ use askama::Template;
 
 use super::MemoryRow;
 use super::views::{AgentConversationRow, ConversationRow, MessageRow};
+use crate::UserId;
 
 #[derive(Template)]
 #[template(path = "agent_recent_conversations.html")]
@@ -20,5 +21,5 @@ pub(super) struct ConversationsPage {
 pub(super) struct ConversationPage {
     pub memories: Vec<MemoryRow>,
     pub messages: Vec<MessageRow>,
-    pub user_id: String,
+    pub user_id: UserId,
 }

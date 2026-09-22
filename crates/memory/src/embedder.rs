@@ -143,6 +143,23 @@ impl HashEmbedder {
     }
 }
 
+// rabot: allow(primitive-soup) symmetric: swapping a and b yields the same result
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut na = 0.0f32;
+    let mut nb = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    if denom == 0.0 { 0.0 } else { dot / denom }
+}
+
 fn to_f32(vec: Vec<f64>) -> Vec<f32> {
     // WHY: embeddings are bounded magnitudes; the f64 → f32 narrowing is
     // intrinsic to storing them packed in SQLite.

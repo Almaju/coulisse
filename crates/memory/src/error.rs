@@ -37,8 +37,19 @@ pub enum MemoryError {
     Embed(#[from] EmbedError),
     #[error("no messages in conversation")]
     EmptyConversation,
+    #[error("stored data corrupted: invalid {column}: {source}")]
+    InvalidId {
+        column: &'static str,
+        source: uuid::Error,
+    },
     #[error("stored data corrupted: {0}")]
     RowDecode(String),
+}
+
+impl MemoryError {
+    pub(crate) fn invalid_id(column: &'static str) -> impl FnOnce(uuid::Error) -> Self {
+        move |source| Self::InvalidId { column, source }
+    }
 }
 
 #[derive(Debug, Error)]

@@ -193,12 +193,12 @@ impl Provider {
         tools: Vec<Box<dyn ToolDyn>>,
     ) -> Result<Completion, CallError> {
         match self {
-            Provider::Anthropic(c) => send_with(c, conversation, max_turns, model, tools).await,
-            Provider::Cohere(c) => send_with(c, conversation, max_turns, model, tools).await,
-            Provider::Deepseek(c) => send_with(c, conversation, max_turns, model, tools).await,
-            Provider::Gemini(c) => send_with(c, conversation, max_turns, model, tools).await,
-            Provider::Groq(c) => send_with(c, conversation, max_turns, model, tools).await,
-            Provider::Openai(c) => send_with(c, conversation, max_turns, model, tools).await,
+            Provider::Anthropic(c) => conversation.send_with(c, max_turns, model, tools).await,
+            Provider::Cohere(c) => conversation.send_with(c, max_turns, model, tools).await,
+            Provider::Deepseek(c) => conversation.send_with(c, max_turns, model, tools).await,
+            Provider::Gemini(c) => conversation.send_with(c, max_turns, model, tools).await,
+            Provider::Groq(c) => conversation.send_with(c, max_turns, model, tools).await,
+            Provider::Openai(c) => conversation.send_with(c, max_turns, model, tools).await,
         }
     }
 
@@ -220,132 +220,149 @@ impl Provider {
     ) -> Result<CompletionStream, CallError> {
         match self {
             Provider::Anthropic(c) => {
-                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+                conversation
+                    .stream_with(c, max_turns, model, tools, subagent_names)
+                    .await
             }
             Provider::Cohere(c) => {
-                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+                conversation
+                    .stream_with(c, max_turns, model, tools, subagent_names)
+                    .await
             }
             Provider::Deepseek(c) => {
-                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+                conversation
+                    .stream_with(c, max_turns, model, tools, subagent_names)
+                    .await
             }
             Provider::Gemini(c) => {
-                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+                conversation
+                    .stream_with(c, max_turns, model, tools, subagent_names)
+                    .await
             }
             Provider::Groq(c) => {
-                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+                conversation
+                    .stream_with(c, max_turns, model, tools, subagent_names)
+                    .await
             }
             Provider::Openai(c) => {
-                stream_with(c, conversation, max_turns, model, tools, subagent_names).await
+                conversation
+                    .stream_with(c, max_turns, model, tools, subagent_names)
+                    .await
             }
         }
     }
 }
 
-async fn send_with<C>(
-    client: &C,
-    conversation: Conversation,
-    max_turns: usize,
-    model: &str,
-    tools: Vec<Box<dyn ToolDyn>>,
-) -> Result<Completion, CallError>
-where
-    C: CompletionClient,
-    C::CompletionModel: 'static,
-{
-    let mut builder = client.agent(model);
-    if !conversation.preamble.is_empty() {
-        builder = builder.preamble(&conversation.preamble);
+impl Conversation {
+    /// Run this conversation to completion on `client`'s model `model`.
+    async fn send_with<C>(
+        self,
+        client: &C,
+        max_turns: usize,
+        model: &str,
+        tools: Vec<Box<dyn ToolDyn>>,
+    ) -> Result<Completion, CallError>
+    where
+        C: CompletionClient,
+        C::CompletionModel: 'static,
+    {
+        let mut builder = client.agent(model);
+        if !self.preamble.is_empty() {
+            builder = builder.preamble(&self.preamble);
+        }
+        let agent = if tools.is_empty() {
+            builder.build()
+        } else {
+            builder.tools(tools).build()
+        };
+        let response = PromptRequest::from_agent(&agent, self.prompt)
+            .with_history(self.history)
+            .max_turns(max_turns)
+            .extended_details()
+            .await?;
+        Ok(Completion {
+            text: response.output,
+            usage: response.usage.into(),
+        })
     }
-    let agent = if tools.is_empty() {
-        builder.build()
-    } else {
-        builder.tools(tools).build()
-    };
-    let response = PromptRequest::from_agent(&agent, conversation.prompt)
-        .with_history(conversation.history)
-        .max_turns(max_turns)
-        .extended_details()
-        .await?;
-    Ok(Completion {
-        text: response.output,
-        usage: response.usage.into(),
-    })
-}
 
-async fn stream_with<C>(
-    client: &C,
-    conversation: Conversation,
-    max_turns: usize,
-    model: &str,
-    tools: Vec<Box<dyn ToolDyn>>,
-    subagent_names: Arc<HashSet<String>>,
-) -> Result<CompletionStream, CallError>
-where
-    C: CompletionClient,
-    C::CompletionModel: 'static,
-    <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
-{
-    let mut builder = client.agent(model);
-    if !conversation.preamble.is_empty() {
-        builder = builder.preamble(&conversation.preamble);
-    }
-    let agent = if tools.is_empty() {
-        builder.build()
-    } else {
-        builder.tools(tools).build()
-    };
-    let inner = agent
-        .stream_prompt(conversation.prompt)
-        .with_history(conversation.history)
-        .multi_turn(max_turns)
-        .await;
-    let mapped = inner.filter_map(move |item| {
-        let subagent_names = Arc::clone(&subagent_names);
-        async move {
-            match item {
-                Err(e) => Some(Err(CallError::Streaming(e.to_string()))),
-                Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
-                    usage: fr.usage().into(),
-                })),
-                Ok(MultiTurnStreamItem::StreamAssistantItem(
-                    StreamedAssistantContent::ToolCall {
+    /// Stream this conversation on `client`'s model `model`, tagging
+    /// tool calls whose name is in `subagent_names` as `Subagent`.
+    async fn stream_with<C>(
+        self,
+        client: &C,
+        max_turns: usize,
+        model: &str,
+        tools: Vec<Box<dyn ToolDyn>>,
+        subagent_names: Arc<HashSet<String>>,
+    ) -> Result<CompletionStream, CallError>
+    where
+        C: CompletionClient,
+        C::CompletionModel: 'static,
+        <C::CompletionModel as CompletionModel>::StreamingResponse: GetTokenUsage,
+    {
+        let mut builder = client.agent(model);
+        if !self.preamble.is_empty() {
+            builder = builder.preamble(&self.preamble);
+        }
+        let agent = if tools.is_empty() {
+            builder.build()
+        } else {
+            builder.tools(tools).build()
+        };
+        let inner = agent
+            .stream_prompt(self.prompt)
+            .with_history(self.history)
+            .multi_turn(max_turns)
+            .await;
+        let mapped = inner.filter_map(move |item| {
+            let subagent_names = Arc::clone(&subagent_names);
+            async move {
+                match item {
+                    Err(e) => Some(Err(CallError::Streaming(e.to_string()))),
+                    Ok(MultiTurnStreamItem::FinalResponse(fr)) => Some(Ok(StreamEvent::Done {
+                        usage: fr.usage().into(),
+                    })),
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(
+                        StreamedAssistantContent::ToolCall {
+                            internal_call_id,
+                            tool_call,
+                        },
+                    )) => {
+                        let tool_name = tool_call.function.name.clone();
+                        let kind = if subagent_names.contains(&tool_name) {
+                            ToolCallKind::Subagent
+                        } else {
+                            ToolCallKind::Mcp
+                        };
+                        let args = tool_call.function.arguments.to_string();
+                        Some(Ok(StreamEvent::ToolCall {
+                            args,
+                            call_id: internal_call_id,
+                            kind,
+                            tool_name,
+                        }))
+                    }
+                    Ok(MultiTurnStreamItem::StreamAssistantItem(
+                        StreamedAssistantContent::Text(t),
+                    )) => Some(Ok(StreamEvent::Delta(t.text))),
+                    Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
                         internal_call_id,
-                        tool_call,
-                    },
-                )) => {
-                    let tool_name = tool_call.function.name.clone();
-                    let kind = if subagent_names.contains(&tool_name) {
-                        ToolCallKind::Subagent
-                    } else {
-                        ToolCallKind::Mcp
-                    };
-                    let args = tool_call.function.arguments.to_string();
-                    Some(Ok(StreamEvent::ToolCall {
-                        args,
-                        call_id: internal_call_id,
-                        kind,
-                        tool_name,
-                    }))
+                        tool_result,
+                    })) => {
+                        let result = flatten_tool_result(&tool_result);
+                        Some(Ok(StreamEvent::ToolResult {
+                            call_id: internal_call_id,
+                            error: None,
+                            result: Some(result),
+                        }))
+                    }
+                    Ok(_) => None,
                 }
-                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    Some(Ok(StreamEvent::Delta(t.text)))
-                }
-                Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
-                    internal_call_id,
-                    tool_result,
-                })) => {
-                    let result = flatten_tool_result(&tool_result);
-                    Some(Ok(StreamEvent::ToolResult {
-                        call_id: internal_call_id,
-                        error: None,
-                        result: Some(result),
-                    }))
-                }
-                Ok(_) => None,
             }
-        }
-    });
-    Ok(Box::pin(mapped))
+        });
+        Ok(Box::pin(mapped))
+    }
 }
 
 /// Collapse rig's `ToolResult.content` (a `OneOrMany<ToolResultContent>`) into

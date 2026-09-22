@@ -4,7 +4,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::Request;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum_oidc::error::MiddlewareError;
@@ -17,7 +17,7 @@ use tower::ServiceBuilder;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
-use crate::config::{Config, OidcConfig, ScopeConfig};
+use crate::config::{Config, OidcConfig, Password, RedirectUrl, ScopeConfig};
 use crate::token::{TokenId, TokenStore};
 
 /// Runtime auth state, built once from YAML at startup. Each scope (`proxy`
@@ -53,38 +53,75 @@ enum Scheme {
 
 #[derive(Clone, Debug)]
 struct Credentials {
-    password: String,
+    password: Password,
     username: String,
 }
 
 impl Credentials {
-    fn new(username: String, password: String) -> Self {
-        Self { password, username }
+    /// Gate a request on its `Authorization: Basic …` header. On a match,
+    /// lift the username into request extensions as the principal; any
+    /// failure is a 401 with the Basic challenge so browsers prompt.
+    async fn authenticate(&self, mut request: Request, next: Next) -> Response {
+        let verified = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or(BasicAuthError::MissingHeader)
+            .and_then(|h| self.verify_header(h));
+        match verified {
+            Ok(()) => {
+                request
+                    .extensions_mut()
+                    .insert(AuthenticatedPrincipal(self.username.clone()));
+                next.run(request).await
+            }
+            Err(_rejected) => unauthorized(r#"Basic realm="Coulisse", charset="UTF-8""#),
+        }
     }
 
-    /// Check a raw `Authorization` header value. Returns `true` only if the
-    /// scheme is `Basic` and the base64-decoded `user:pass` pair matches.
-    fn verify_header(&self, header_value: &str) -> bool {
-        let Some(encoded) = header_value
+    /// Check a raw `Authorization` header value: the scheme must be `Basic`
+    /// and the base64-decoded `user:pass` pair must match.
+    fn verify_header(&self, header_value: &str) -> Result<(), BasicAuthError> {
+        let encoded = header_value
             .strip_prefix("Basic ")
             .or_else(|| header_value.strip_prefix("basic "))
-        else {
-            return false;
-        };
-        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
-            return false;
-        };
-        let Ok(pair) = std::str::from_utf8(&decoded) else {
-            return false;
-        };
-        let Some((user, pass)) = pair.split_once(':') else {
-            return false;
-        };
+            .ok_or(BasicAuthError::NotBasicScheme)?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(BasicAuthError::InvalidBase64)?;
+        let pair = std::str::from_utf8(&decoded).map_err(BasicAuthError::NotUtf8)?;
+        let (user, pass) = pair
+            .split_once(':')
+            .ok_or(BasicAuthError::MissingSeparator)?;
         // SAFETY: bitwise `&` (not `&&`) keeps both branches constant-time —
         // short-circuiting would leak via timing which credential failed.
-        constant_time_eq(user.as_bytes(), self.username.as_bytes())
-            & constant_time_eq(pass.as_bytes(), self.password.as_bytes())
+        let matches = constant_time_eq(user.as_bytes(), self.username.as_bytes())
+            & constant_time_eq(pass.as_bytes(), self.password.expose().as_bytes());
+        if matches {
+            Ok(())
+        } else {
+            Err(BasicAuthError::WrongCredentials)
+        }
     }
+}
+
+/// Why a Basic `Authorization` header was rejected. Username and password
+/// mismatches share one variant on purpose: naming which one failed would
+/// hand an attacker half the credential.
+#[derive(Debug, Error)]
+enum BasicAuthError {
+    #[error("credentials are not valid base64: {0}")]
+    InvalidBase64(#[source] base64::DecodeError),
+    #[error("no Authorization header")]
+    MissingHeader,
+    #[error("decoded credentials have no `:` separator")]
+    MissingSeparator,
+    #[error("Authorization scheme is not Basic")]
+    NotBasicScheme,
+    #[error("decoded credentials are not UTF-8: {0}")]
+    NotUtf8(#[source] std::str::Utf8Error),
+    #[error("username or password does not match")]
+    WrongCredentials,
 }
 
 #[derive(Clone)]
@@ -98,19 +135,23 @@ impl OidcRuntime {
     /// list unconditionally — it's required by the protocol and omitting
     /// it from YAML shouldn't silently break login.
     async fn discover(config: &OidcConfig) -> Result<Self, BuildError> {
-        let base = Uri::try_from(&config.redirect_url).map_err(|source| BuildError::BaseUrl {
-            source,
-            value: config.redirect_url.clone(),
-        })?;
+        let base =
+            Uri::try_from(config.redirect_url.as_str()).map_err(|source| BuildError::BaseUrl {
+                source,
+                value: config.redirect_url.clone(),
+            })?;
         let mut scopes = vec!["openid".to_string()];
         scopes.extend(config.scopes.iter().cloned());
         scopes.sort();
         scopes.dedup();
         let client = OidcClient::<EmptyAdditionalClaims>::discover_new(
             base,
-            config.issuer_url.clone(),
-            config.client_id.clone(),
-            config.client_secret.clone(),
+            config.issuer_url.to_string(),
+            config.client_id.to_string(),
+            config
+                .client_secret
+                .as_ref()
+                .map(|secret| secret.expose().to_string()),
             scopes,
         )
         .await
@@ -161,7 +202,7 @@ impl Auth {
     pub fn wrap_admin(&self, router: Router) -> Router {
         match &self.admin {
             None => router,
-            Some(scheme) => apply(router, scheme),
+            Some(scheme) => scheme.apply(router),
         }
     }
 
@@ -170,7 +211,7 @@ impl Auth {
     pub fn wrap_proxy(&self, router: Router) -> Router {
         match &self.proxy {
             None => router,
-            Some(scheme) => apply(router, scheme),
+            Some(scheme) => scheme.apply(router),
         }
     }
 
@@ -190,10 +231,10 @@ impl Scheme {
         token_store: Option<Arc<TokenStore>>,
     ) -> Result<Self, BuildError> {
         if let Some(basic) = scope.basic {
-            return Ok(Scheme::Basic(Credentials::new(
-                basic.username,
-                basic.password,
-            )));
+            return Ok(Scheme::Basic(Credentials {
+                password: basic.password,
+                username: basic.username,
+            }));
         }
         if let Some(oidc) = scope.oidc {
             let runtime = OidcRuntime::discover(&oidc).await?;
@@ -210,82 +251,85 @@ impl Scheme {
         // caller skipped `Config::validate`.
         Err(BuildError::ScopeWithoutAuth)
     }
-}
 
-fn apply(router: Router, scheme: &Scheme) -> Router {
-    match scheme {
-        Scheme::ApiKey(store) => {
-            let store = Arc::clone(store);
-            router.layer(from_fn(move |req: Request, next: Next| {
-                let store = Arc::clone(&store);
-                async move { api_key_check(store, req, next).await }
-            }))
-        }
-        Scheme::Basic(creds) => {
-            let creds = creds.clone();
-            router.layer(from_fn(move |req: Request, next: Next| {
+    /// Wrap `router` in this scheme's middleware stack.
+    fn apply(&self, router: Router) -> Router {
+        match self {
+            Scheme::ApiKey(store) => {
+                let store = Arc::clone(store);
+                router.layer(from_fn(move |req: Request, next: Next| {
+                    let store = Arc::clone(&store);
+                    async move { store.authenticate(req, next).await }
+                }))
+            }
+            Scheme::Basic(creds) => {
                 let creds = creds.clone();
-                async move { basic_check(creds, req, next).await }
-            }))
-        }
-        Scheme::Oidc(runtime) => {
-            // WHY: layer order is session → auth → login. `.layer()` calls
-            // are applied outermost-last, so session must wrap everything for
-            // the OIDC layers to find it in request extensions.
-            // `HandleErrorLayer` converts the OIDC middlewares'
-            // `MiddlewareError` into axum-compatible `Infallible` responses.
-            let session = SessionManagerLayer::new(MemoryStore::default())
-                .with_same_site(SameSite::Lax)
-                .with_expiry(Expiry::OnInactivity(Duration::hours(8)));
-            let oidc_login = ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(handle_oidc_error))
-                .layer(OidcLoginLayer::<EmptyAdditionalClaims>::new());
-            let oidc_auth = ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(handle_oidc_error))
-                .layer(OidcAuthLayer::<EmptyAdditionalClaims>::new(
-                    runtime.client.clone(),
-                ));
-            // WHY: `oidc_principal` is the innermost layer (first `.layer()`
-            // call), so it runs after `oidc_auth` has populated the claims —
-            // it reads the `sub` and hands the handler a credential-bound
-            // principal.
-            router
-                .layer(from_fn(oidc_principal))
-                .layer(oidc_login)
-                .layer(oidc_auth)
-                .layer(session)
+                router.layer(from_fn(move |req: Request, next: Next| {
+                    let creds = creds.clone();
+                    async move { creds.authenticate(req, next).await }
+                }))
+            }
+            Scheme::Oidc(runtime) => {
+                // WHY: layer order is session → auth → login. `.layer()` calls
+                // are applied outermost-last, so session must wrap everything for
+                // the OIDC layers to find it in request extensions.
+                // `HandleErrorLayer` converts the OIDC middlewares'
+                // `MiddlewareError` into axum-compatible `Infallible` responses.
+                let session = SessionManagerLayer::new(MemoryStore::default())
+                    .with_same_site(SameSite::Lax)
+                    .with_expiry(Expiry::OnInactivity(Duration::hours(8)));
+                let oidc_login = ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(handle_oidc_error))
+                    .layer(OidcLoginLayer::<EmptyAdditionalClaims>::new());
+                let oidc_auth = ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(handle_oidc_error))
+                    .layer(OidcAuthLayer::<EmptyAdditionalClaims>::new(
+                        runtime.client.clone(),
+                    ));
+                // WHY: `oidc_principal` is the innermost layer (first `.layer()`
+                // call), so it runs after `oidc_auth` has populated the claims —
+                // it reads the `sub` and hands the handler a credential-bound
+                // principal.
+                router
+                    .layer(from_fn(oidc_principal))
+                    .layer(oidc_login)
+                    .layer(oidc_auth)
+                    .layer(session)
+            }
         }
     }
 }
 
-/// Verify the `Authorization: Bearer sk-coulisse-…` header against the token
-/// store. On a hit, lift the bound principal and token id into request
-/// extensions so the handler binds identity to the credential and enforces
-/// the token's budget. A miss is 401; a store error is 500.
-async fn api_key_check(store: Arc<TokenStore>, mut request: Request, next: Next) -> Response {
-    let presented = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(bearer_secret);
-    let Some(secret) = presented else {
-        return unauthorized(r#"Bearer realm="Coulisse""#);
-    };
-    match store.verify(secret).await {
-        Ok(Some(verified)) => {
-            request
-                .extensions_mut()
-                .insert(AuthenticatedPrincipal(verified.principal));
-            request
-                .extensions_mut()
-                .insert(AuthenticatedToken(verified.id));
-            next.run(request).await
-        }
-        Ok(None) => unauthorized(r#"Bearer realm="Coulisse", error="invalid_token""#),
-        Err(_) => {
-            let mut response = Response::new(Body::from("token verification failed"));
-            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            response
+impl TokenStore {
+    /// Verify the `Authorization: Bearer sk-coulisse-…` header against the
+    /// store. On a hit, lift the bound principal and token id into request
+    /// extensions so the handler binds identity to the credential and
+    /// enforces the token's budget. A miss is 401; a store error is 500.
+    async fn authenticate(&self, mut request: Request, next: Next) -> Response {
+        let presented = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(bearer_secret);
+        let Some(secret) = presented else {
+            return unauthorized(r#"Bearer realm="Coulisse""#);
+        };
+        match self.verify(secret).await {
+            Ok(Some(verified)) => {
+                request
+                    .extensions_mut()
+                    .insert(AuthenticatedPrincipal(verified.principal));
+                request
+                    .extensions_mut()
+                    .insert(AuthenticatedToken(verified.id));
+                next.run(request).await
+            }
+            Ok(None) => unauthorized(r#"Bearer realm="Coulisse", error="invalid_token""#),
+            Err(_) => {
+                let mut response = Response::new(Body::from("token verification failed"));
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                response
+            }
         }
     }
 }
@@ -298,22 +342,6 @@ fn bearer_secret(header_value: &str) -> Option<&str> {
         .or_else(|| header_value.strip_prefix("bearer "))
         .map(str::trim)
         .filter(|s| !s.is_empty())
-}
-
-async fn basic_check(creds: Credentials, mut request: Request, next: Next) -> Response {
-    let ok = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|h| creds.verify_header(h));
-    if ok {
-        request
-            .extensions_mut()
-            .insert(AuthenticatedPrincipal(creds.username.clone()));
-        next.run(request).await
-    } else {
-        unauthorized(r#"Basic realm="Coulisse", charset="UTF-8""#)
-    }
 }
 
 /// Lift the OIDC subject the auth layer cached into request extensions onto
@@ -345,11 +373,12 @@ fn unauthorized(challenge: &'static str) -> Response {
     *response.status_mut() = StatusCode::UNAUTHORIZED;
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        challenge.parse().expect("static header value"),
+        HeaderValue::from_static(challenge),
     );
     response.into_response()
 }
 
+// rabot: allow(primitive-soup) symmetric: swapping a and b yields the same result
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -366,7 +395,7 @@ pub enum BuildError {
     #[error("oidc redirect_url is not a valid URI ({value:?}): {source}")]
     BaseUrl {
         source: http::uri::InvalidUri,
-        value: String,
+        value: RedirectUrl,
     },
     #[error("failed to discover OIDC issuer: {0}")]
     Discovery(axum_oidc::error::Error),
@@ -386,62 +415,89 @@ mod tests {
         format!("Basic {encoded}")
     }
 
+    fn admin_creds() -> Credentials {
+        Credentials {
+            password: Password::new("s3cret"),
+            username: "admin".to_string(),
+        }
+    }
+
     #[test]
     fn matching_credentials_accepted() {
-        let creds = Credentials::new("admin".into(), "s3cret".into());
-        assert!(creds.verify_header(&header_for("admin", "s3cret")));
+        assert!(
+            admin_creds()
+                .verify_header(&header_for("admin", "s3cret"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn wrong_password_rejected() {
-        let creds = Credentials::new("admin".into(), "s3cret".into());
-        assert!(!creds.verify_header(&header_for("admin", "wrong")));
+        assert!(matches!(
+            admin_creds().verify_header(&header_for("admin", "wrong")),
+            Err(BasicAuthError::WrongCredentials)
+        ));
     }
 
     #[test]
     fn wrong_username_rejected() {
-        let creds = Credentials::new("admin".into(), "s3cret".into());
-        assert!(!creds.verify_header(&header_for("root", "s3cret")));
+        assert!(matches!(
+            admin_creds().verify_header(&header_for("root", "s3cret")),
+            Err(BasicAuthError::WrongCredentials)
+        ));
     }
 
     #[test]
     fn non_basic_scheme_rejected() {
-        let creds = Credentials::new("admin".into(), "s3cret".into());
-        assert!(!creds.verify_header("Bearer abc"));
+        assert!(matches!(
+            admin_creds().verify_header("Bearer abc"),
+            Err(BasicAuthError::NotBasicScheme)
+        ));
     }
 
     #[test]
     fn malformed_base64_rejected() {
-        let creds = Credentials::new("admin".into(), "s3cret".into());
-        assert!(!creds.verify_header("Basic !!!not-base64!!!"));
+        assert!(matches!(
+            admin_creds().verify_header("Basic !!!not-base64!!!"),
+            Err(BasicAuthError::InvalidBase64(_))
+        ));
     }
 
     #[test]
     fn missing_colon_rejected() {
-        let creds = Credentials::new("admin".into(), "s3cret".into());
         let encoded = base64::engine::general_purpose::STANDARD.encode("no-colon-here");
-        assert!(!creds.verify_header(&format!("Basic {encoded}")));
+        assert!(matches!(
+            admin_creds().verify_header(&format!("Basic {encoded}")),
+            Err(BasicAuthError::MissingSeparator)
+        ));
     }
 
     #[test]
     fn lowercase_basic_scheme_accepted() {
         // NOTE: RFC 7235 makes the scheme case-insensitive; some clients lowercase it.
-        let creds = Credentials::new("admin".into(), "s3cret".into());
         let encoded = base64::engine::general_purpose::STANDARD.encode("admin:s3cret");
-        assert!(creds.verify_header(&format!("basic {encoded}")));
+        assert!(
+            admin_creds()
+                .verify_header(&format!("basic {encoded}"))
+                .is_ok()
+        );
     }
 
     use crate::config::TokensConfig;
-    use crate::token::{Budget, TokenStore};
+    use crate::token::{Budget, NewToken, TokenSecret, TokenStore};
     use axum::Extension;
     use axum::routing::get;
     use tower::ServiceExt;
 
-    async fn token_app(principal: &str) -> (Router, String, std::sync::Arc<TokenStore>) {
+    async fn token_app(principal: &str) -> (Router, TokenSecret, std::sync::Arc<TokenStore>) {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         let store = std::sync::Arc::new(TokenStore::open(pool).await.unwrap());
         let secret = store
-            .mint("test", principal, Budget::Unlimited)
+            .mint(NewToken {
+                budget: Budget::Unlimited,
+                label: "test".to_string(),
+                principal: principal.to_string(),
+            })
             .await
             .unwrap()
             .secret;
@@ -496,7 +552,7 @@ mod tests {
     async fn api_key_accepts_valid_and_binds_principal() {
         let (app, secret, _store) = token_app("alice").await;
         let resp = app
-            .oneshot(get_models(Some(&format!("Bearer {secret}"))))
+            .oneshot(get_models(Some(&format!("Bearer {}", secret.expose()))))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -510,7 +566,7 @@ mod tests {
         let id = store.list().await.unwrap()[0].id;
         assert!(store.revoke(id).await.unwrap());
         let resp = app
-            .oneshot(get_models(Some(&format!("Bearer {secret}"))))
+            .oneshot(get_models(Some(&format!("Bearer {}", secret.expose()))))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

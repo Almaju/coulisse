@@ -24,19 +24,20 @@ jobs:
         with:
           tool: cargo-machete
 
-      - name: Install cargo-sort-derives
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-sort-derives
-
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked
 
-      - name: cargo sort-derives --check
-        run: cargo sort-derives --check
+      # rabot fmt --check (the sorting rules) and rabot check --strict
+      # (every other rule, warnings included). The action installs the
+      # pinned release and runs both. Keep `version` in step with the
+      # action ref and the tag in `just install` when bumping.
+      - name: rabot
+        uses: almaju/rabot@v0.1.4
+        with:
+          version: v0.1.4
 
       - name: cargo machete
         run: cargo machete --with-metadata

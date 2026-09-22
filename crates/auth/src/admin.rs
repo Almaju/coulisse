@@ -16,19 +16,102 @@ use coulisse_core::{EitherFormOrJson, ResponseFormat, redirect_to};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::token::{Budget, BudgetParseError, StoreError, TokenId, TokenRecord, TokenStore};
+use crate::token::{
+    Budget, BudgetKind, BudgetParseError, NewToken, StoreError, TokenId, TokenRecord, TokenSecret,
+    TokenStore,
+};
 
-/// Mount the token admin routes against the shared token store.
-pub fn router(store: Arc<TokenStore>) -> Router {
-    Router::new()
-        .route("/tokens", get(list).post(create))
-        .route("/tokens/{id}", axum::routing::delete(revoke))
-        .with_state(store)
+/// Router state for the token admin pages: the shared token store.
+#[derive(Clone)]
+pub struct TokenAdmin {
+    store: Arc<TokenStore>,
 }
 
-async fn list(State(store): State<Arc<TokenStore>>) -> Result<Response, AdminError> {
-    let tokens = views(store.list().await?);
-    Ok(Html(TokensPage { tokens }.render()?).into_response())
+impl TokenAdmin {
+    #[must_use]
+    pub fn new(store: Arc<TokenStore>) -> Self {
+        Self { store }
+    }
+
+    /// Mount the token admin routes against the shared token store.
+    pub fn router(self) -> Router {
+        Router::new()
+            .route("/tokens", get(Self::list).post(Self::create))
+            .route("/tokens/{id}", axum::routing::delete(Self::revoke))
+            .with_state(self)
+    }
+
+    async fn create(
+        State(admin): State<Self>,
+        fmt: ResponseFormat,
+        EitherFormOrJson(form): EitherFormOrJson<CreateForm>,
+    ) -> Result<Response, AdminError> {
+        if form.label.trim().is_empty() || form.principal.trim().is_empty() {
+            return Err(AdminError::MissingField);
+        }
+        let amount = form
+            .budget_usd
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::parse::<f64>)
+            .transpose()
+            .map_err(AdminError::BudgetAmount)?;
+        let budget = Budget::from_parts(form.budget_kind, amount)?;
+        let minted = admin
+            .store
+            .mint(NewToken {
+                budget,
+                label: form.label.trim().to_string(),
+                principal: form.principal.trim().to_string(),
+            })
+            .await?;
+
+        if matches!(fmt, ResponseFormat::Json) {
+            return Ok((
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "id": minted.id,
+                    "secret": minted.secret,
+                })),
+            )
+                .into_response());
+        }
+        // The secret can never be shown again — render the reveal fragment
+        // rather than redirecting to a detail page that couldn't display it.
+        Ok(Html(
+            SecretReveal {
+                label: form.label.trim().to_string(),
+                secret: minted.secret,
+            }
+            .render()?,
+        )
+        .into_response())
+    }
+
+    async fn list(State(admin): State<Self>) -> Result<Response, AdminError> {
+        let tokens = admin
+            .store
+            .list()
+            .await?
+            .into_iter()
+            .map(TokenView::from)
+            .collect();
+        Ok(Html(TokensPage { tokens }.render()?).into_response())
+    }
+
+    async fn revoke(
+        State(admin): State<Self>,
+        fmt: ResponseFormat,
+        Path(id): Path<String>,
+    ) -> Result<Response, AdminError> {
+        let token_id = id.parse::<TokenId>().map_err(AdminError::BadId)?;
+        let revoked = admin.store.revoke(token_id).await?;
+        if matches!(fmt, ResponseFormat::Json) {
+            return Ok(Json(serde_json::json!({ "revoked": revoked })).into_response());
+        }
+        Ok(redirect_to("/admin/tokens"))
+    }
 }
 
 /// Form/JSON body for minting a token. `budget_usd` rides as a string so an
@@ -36,74 +119,18 @@ async fn list(State(store): State<Arc<TokenStore>>) -> Result<Response, AdminErr
 /// f64 parsing; the handler trims and parses it.
 #[derive(Debug, Deserialize)]
 struct CreateForm {
-    #[serde(default = "default_kind")]
-    budget_kind: String,
+    #[serde(default)]
+    budget_kind: BudgetKind,
     #[serde(default)]
     budget_usd: Option<String>,
     label: String,
     principal: String,
 }
 
-async fn create(
-    State(store): State<Arc<TokenStore>>,
-    fmt: ResponseFormat,
-    EitherFormOrJson(form): EitherFormOrJson<CreateForm>,
-) -> Result<Response, AdminError> {
-    if form.label.trim().is_empty() || form.principal.trim().is_empty() {
-        return Err(AdminError::MissingField);
-    }
-    let amount = form
-        .budget_usd
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::parse::<f64>)
-        .transpose()
-        .map_err(|_| AdminError::Budget(BudgetParseError::NonPositiveLimit))?;
-    let budget = Budget::from_parts(&form.budget_kind, amount)?;
-    let minted = store
-        .mint(form.label.trim(), form.principal.trim(), budget)
-        .await?;
-
-    if matches!(fmt, ResponseFormat::Json) {
-        return Ok((
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "id": minted.id,
-                "secret": minted.secret,
-            })),
-        )
-            .into_response());
-    }
-    // The secret can never be shown again — render the reveal fragment
-    // rather than redirecting to a detail page that couldn't display it.
-    Ok(Html(
-        SecretReveal {
-            label: form.label.trim().to_string(),
-            secret: minted.secret,
-        }
-        .render()?,
-    )
-    .into_response())
-}
-
-async fn revoke(
-    State(store): State<Arc<TokenStore>>,
-    fmt: ResponseFormat,
-    Path(id): Path<String>,
-) -> Result<Response, AdminError> {
-    let token_id = TokenId::parse(&id).map_err(|_| AdminError::BadId)?;
-    let revoked = store.revoke(token_id).await?;
-    if matches!(fmt, ResponseFormat::Json) {
-        return Ok(Json(serde_json::json!({ "revoked": revoked })).into_response());
-    }
-    Ok(redirect_to("/admin/tokens"))
-}
-
 /// Display-ready projection of a [`TokenRecord`].
 struct TokenView {
     budget: String,
-    id: String,
+    id: TokenId,
     label: String,
     period_spend: String,
     principal: String,
@@ -111,23 +138,21 @@ struct TokenView {
     spend: String,
 }
 
-fn views(records: Vec<TokenRecord>) -> Vec<TokenView> {
-    records
-        .into_iter()
-        .map(|r| TokenView {
-            budget: r.budget.describe(),
-            id: r.id.to_string(),
-            label: r.label.clone(),
-            period_spend: format!("${:.2}", r.period_spend_usd()),
-            principal: r.principal.clone(),
-            revoked: r.is_revoked(),
-            spend: format!("${:.2}", r.spend_usd()),
-        })
-        .collect()
-}
-
-fn default_kind() -> String {
-    "unlimited".to_string()
+impl From<TokenRecord> for TokenView {
+    fn from(record: TokenRecord) -> Self {
+        let period_spend = format!("${:.2}", record.period_spend_usd());
+        let revoked = record.is_revoked();
+        let spend = format!("${:.2}", record.spend_usd());
+        Self {
+            budget: record.budget.describe(),
+            id: record.id,
+            label: record.label,
+            period_spend,
+            principal: record.principal,
+            revoked,
+            spend,
+        }
+    }
 }
 
 #[derive(Template)]
@@ -140,15 +165,17 @@ struct TokensPage {
 #[template(path = "token_created.html")]
 struct SecretReveal {
     label: String,
-    secret: String,
+    secret: TokenSecret,
 }
 
 #[derive(Debug, Error)]
 enum AdminError {
-    #[error("token id is not a valid uuid")]
-    BadId,
+    #[error("token id is not a valid uuid: {0}")]
+    BadId(#[source] uuid::Error),
     #[error(transparent)]
     Budget(#[from] BudgetParseError),
+    #[error("budget amount is not a number: {0}")]
+    BudgetAmount(#[source] std::num::ParseFloatError),
     #[error("label and principal are required")]
     MissingField,
     #[error("failed to render token page: {0}")]
@@ -160,7 +187,9 @@ enum AdminError {
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let status = match &self {
-            Self::BadId | Self::Budget(_) | Self::MissingField => StatusCode::BAD_REQUEST,
+            Self::BadId(_) | Self::Budget(_) | Self::BudgetAmount(_) | Self::MissingField => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Render(_) | Self::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()

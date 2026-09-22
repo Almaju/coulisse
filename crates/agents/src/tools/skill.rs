@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use coulisse_core::SkillCatalog;
@@ -94,7 +95,7 @@ impl ToolDyn for SkillFileTool {
                 let parsed: Value = serde_json::from_str(&args).map_err(ToolError::JsonError)?;
                 let skill = required_str(&parsed, "skill")?;
                 let path = required_str(&parsed, "path")?;
-                match catalog.read_file(&skill, &path) {
+                match catalog.read_file(&skill, Path::new(&path)) {
                     Ok(contents) => {
                         tracing::Span::current().record("result", contents.as_str());
                         Ok(contents)

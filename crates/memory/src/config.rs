@@ -1,8 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
-use crate::TokenCount;
+use crate::{ConfigError, TokenCount};
 
 /// User-facing YAML shape for the `memory:` block. One pillar:
 ///
@@ -128,7 +131,7 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             backend: BackendConfig::default(),
-            context_budget: default_context_budget(),
+            context_budget: TokenCount::DEFAULT_CONTEXT_BUDGET,
             embedder: EmbedderConfig::default(),
             extractor: None,
             memory_budget_fraction: default_memory_budget_fraction(),
@@ -154,6 +157,53 @@ impl Default for BackendConfig {
             path: default_sqlite_path(),
         }
     }
+}
+
+impl BackendConfig {
+    /// Open the `SQLite` pool this backend describes. Public so cli can
+    /// open one pool and hand clones to every persistent crate (memory,
+    /// judge, telemetry, limits) instead of borrowing memory's. Each
+    /// crate runs its own `CREATE TABLE IF NOT EXISTS` against the shared
+    /// pool, so table ownership stays clear even though the connection is
+    /// shared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database directory cannot be created or
+    /// the connection fails.
+    pub async fn open_pool(&self) -> Result<SqlitePool, ConfigError> {
+        let options = match self {
+            Self::InMemory => SqliteConnectOptions::from_str("sqlite::memory:")
+                .map_err(ConfigError::from)?
+                .create_if_missing(true),
+            Self::Sqlite { path } => {
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    ensure_dir(parent)?;
+                }
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true)
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal)
+                    .foreign_keys(true)
+            }
+        };
+        let max_connections = if matches!(self, Self::InMemory) { 1 } else { 5 };
+        let pool = SqlitePoolOptions::new()
+            .max_connections(max_connections)
+            .connect_with(options)
+            .await?;
+        Ok(pool)
+    }
+}
+
+fn ensure_dir(path: &Path) -> Result<(), ConfigError> {
+    std::fs::create_dir_all(path).map_err(|source| ConfigError::CreateDir {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Which embedder turns text into vectors. The `hash` provider is a
@@ -244,10 +294,6 @@ pub fn default_voyage_model() -> String {
 #[must_use]
 pub fn default_openai_embedding_model() -> String {
     "text-embedding-3-small".to_string()
-}
-
-fn default_context_budget() -> TokenCount {
-    TokenCount(8_000)
 }
 
 fn default_memory_budget_fraction() -> f32 {

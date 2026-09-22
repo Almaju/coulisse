@@ -39,6 +39,46 @@ pub enum McpOAuthConfig {
 }
 
 impl McpOAuthConfig {
+    /// Final scope list sent in `&scope=...`. Mirrors `mcp-remote`'s priority
+    /// ladder so OAuth providers that don't advertise scopes via any
+    /// spec-compliant mechanism still see a sensible default in the
+    /// authorize URL.
+    ///
+    /// Priority, highest first:
+    ///
+    /// 1. YAML override (`mcp.<server>.oauth.scopes:`) — operator intent wins.
+    /// 2. Server-advertised `scopes_supported` from RFC 9728 protected-resource
+    ///    metadata, AS metadata, or RFC 7591 DCR response (the caller has
+    ///    already folded these into one list).
+    /// 3. OIDC default `openid email profile` — final fallback. Many auth
+    ///    servers (Atlassian's MCP AS in particular) return zero scopes
+    ///    everywhere; an empty `scope=` parameter then results in a token
+    ///    the MCP endpoint refuses. Sending the OIDC default at least gives
+    ///    the AS something it knows how to interpret, and matches what
+    ///    `mcp-remote` does for the same servers.
+    #[must_use]
+    pub fn effective_scopes(&self, server: &str, discovered: &[String]) -> Vec<String> {
+        let yaml = self.scopes();
+        if !yaml.is_empty() {
+            return yaml.to_vec();
+        }
+        if !discovered.is_empty() {
+            return discovered.to_vec();
+        }
+        tracing::warn!(
+            server = %server,
+            "no scopes discovered via PRM/AS/DCR and YAML doesn't pin any; \
+             falling back to OIDC default `openid email profile`. If the MCP \
+             endpoint rejects the token, set mcp.{server}.oauth.scopes: [...] \
+             explicitly per the provider's docs."
+        );
+        vec![
+            "openid".to_string(),
+            "email".to_string(),
+            "profile".to_string(),
+        ]
+    }
+
     /// Scopes the user is asked to grant. Discover mode falls back to the
     /// provider's `scopes_supported` if this list is empty.
     #[must_use]
@@ -158,97 +198,120 @@ pub struct McpServerConfig {
 ///    endpoint whose path doesn't contain `/sse`).
 impl<'de> Deserialize<'de> for McpServerConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Raw {
-            #[serde(default)]
-            args: Vec<String>,
-            #[serde(default)]
-            command: Option<String>,
-            #[serde(default)]
-            env: HashMap<String, String>,
-            /// Kept as raw JSON so the same field can carry a map
-            /// (`oauth: { mode: ... }`) or the boolean `oauth: false`
-            /// opt-out from the URL-auto-discover default.
-            #[serde(default)]
-            oauth: Option<serde_json::Value>,
-            #[serde(default)]
-            transport: Option<String>,
-            #[serde(default)]
-            url: Option<String>,
-        }
-        let raw = Raw::deserialize(deserializer)?;
         use serde::de::Error;
+        let raw = RawServerPayload::deserialize(deserializer)?;
+        let transport = McpTransport::try_from(raw.transport).map_err(D::Error::custom)?;
+        let oauth =
+            McpOAuthConfig::resolve_default(raw.oauth, &transport).map_err(D::Error::custom)?;
+        Ok(Self { oauth, transport })
+    }
+}
+
+/// One `mcp:` server entry exactly as written in YAML, before the
+/// transport is inferred and the `oauth:` default applied.
+#[derive(Deserialize)]
+struct RawServerPayload {
+    /// Kept as raw JSON so the same field can carry a map
+    /// (`oauth: { mode: ... }`) or the boolean `oauth: false`
+    /// opt-out from the URL-auto-discover default.
+    #[serde(default)]
+    oauth: Option<serde_json::Value>,
+    #[serde(flatten)]
+    transport: RawTransportPayload,
+}
+
+#[derive(Deserialize)]
+struct RawTransportPayload {
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// Why a server entry's `url:` / `command:` / `transport:` fields don't
+/// add up to a transport.
+#[derive(Debug, thiserror::Error)]
+enum TransportShapeError {
+    #[error("MCP server config needs either `url:` (remote http/sse) or `command:` (local stdio)")]
+    Empty,
+    #[error("transport `stdio` requires `command:`, not `url:`")]
+    StdioWithUrl,
+    #[error("unknown transport `{0}` (expected one of: http, sse, stdio)")]
+    UnknownTag(String),
+    #[error("specify either `url:` (http/sse) or `command:` (stdio), not both")]
+    UrlAndCommand,
+    #[error("transport `http`/`sse` requires `url:`")]
+    UrlTransportWithoutUrl,
+}
+
+impl TryFrom<RawTransportPayload> for McpTransport {
+    type Error = TransportShapeError;
+
+    fn try_from(raw: RawTransportPayload) -> Result<Self, TransportShapeError> {
         let transport = match (raw.transport.as_deref(), raw.url, raw.command) {
             // Explicit transport tag — useful for an SSE endpoint whose path
             // doesn't carry `/sse`, or just to be explicit.
-            (Some("http"), Some(url), None) => McpTransport::Http { url },
-            (Some("sse"), Some(url), None) => McpTransport::Sse { url },
-            (Some("stdio"), None, Some(command)) => McpTransport::Stdio {
+            (Some("http"), Some(url), None) => Self::Http { url },
+            (Some("sse"), Some(url), None) => Self::Sse { url },
+            (Some("stdio") | None, None, Some(command)) => Self::Stdio {
                 args: raw.args,
                 command,
                 env: raw.env,
             },
             (Some("http" | "sse"), None, _) => {
-                return Err(D::Error::custom("transport `http`/`sse` requires `url:`"));
+                return Err(TransportShapeError::UrlTransportWithoutUrl);
             }
-            (Some("stdio"), Some(_), _) => {
-                return Err(D::Error::custom(
-                    "transport `stdio` requires `command:`, not `url:`",
-                ));
-            }
-            (Some(tag), _, _) => {
-                return Err(D::Error::custom(format!(
-                    "unknown transport `{tag}` (expected one of: http, sse, stdio)"
-                )));
-            }
+            (Some("stdio"), Some(_), _) => return Err(TransportShapeError::StdioWithUrl),
+            (Some(tag), _, _) => return Err(TransportShapeError::UnknownTag(tag.to_string())),
 
             // No explicit transport — infer from the kind-discriminating fields.
             (None, Some(url), None) => {
                 if url_path_includes_sse(&url) {
-                    McpTransport::Sse { url }
+                    Self::Sse { url }
                 } else {
-                    McpTransport::Http { url }
+                    Self::Http { url }
                 }
             }
-            (None, None, Some(command)) => McpTransport::Stdio {
-                args: raw.args,
-                command,
-                env: raw.env,
-            },
-            (None, Some(_), Some(_)) => {
-                return Err(D::Error::custom(
-                    "specify either `url:` (http/sse) or `command:` (stdio), not both",
-                ));
-            }
-            (None, None, None) => {
-                return Err(D::Error::custom(
-                    "MCP server config needs either `url:` (remote http/sse) or `command:` (local stdio)",
-                ));
-            }
+            (None, Some(_), Some(_)) => return Err(TransportShapeError::UrlAndCommand),
+            (None, None, None) => return Err(TransportShapeError::Empty),
         };
-        // Resolve `oauth:` with a zero-config default: URL-based servers get
-        // discover-mode OAuth unless the user explicitly opts out. Same UX
-        // ChatGPT uses — paste a URL, OAuth happens. Localhost is *not*
-        // carved out: running a local OAuth-protected MCP is rare, and on
-        // the off chance someone does, the discover flow fails loudly with
-        // discovery errors rather than silently skipping auth.
-        //
-        // - `oauth: false` — explicit opt-out.
-        // - `oauth: { ... }` — explicit discover/static config.
-        // - URL transport + omitted `oauth:` — defaults to discover.
-        // - Stdio transport + omitted `oauth:` — stays `None`. Stdio MCPs
-        //   don't speak OAuth; the auto-default only applies to URL transports.
+        Ok(transport)
+    }
+}
+
+impl McpOAuthConfig {
+    /// Resolve `oauth:` with a zero-config default: URL-based servers get
+    /// discover-mode OAuth unless the user explicitly opts out. Same UX
+    /// `ChatGPT` uses — paste a URL, OAuth happens. Localhost is *not*
+    /// carved out: running a local OAuth-protected MCP is rare, and on
+    /// the off chance someone does, the discover flow fails loudly with
+    /// discovery errors rather than silently skipping auth.
+    ///
+    /// - `oauth: false` — explicit opt-out.
+    /// - `oauth: { ... }` — explicit discover/static config.
+    /// - URL transport + omitted `oauth:` — defaults to discover.
+    /// - Stdio transport + omitted `oauth:` — stays `None`. Stdio MCPs
+    ///   don't speak OAuth; the auto-default only applies to URL transports.
+    fn resolve_default(
+        raw: Option<serde_json::Value>,
+        transport: &McpTransport,
+    ) -> Result<Option<Self>, serde_json::Error> {
         let transport_is_url = matches!(
-            &transport,
+            transport,
             McpTransport::Http { .. } | McpTransport::Sse { .. }
         );
-        let oauth = match raw.oauth {
-            Some(serde_json::Value::Bool(false)) => None,
-            Some(v) => Some(McpOAuthConfig::deserialize(v).map_err(D::Error::custom)?),
-            None if transport_is_url => Some(McpOAuthConfig::Discover { scopes: Vec::new() }),
-            None => None,
-        };
-        Ok(Self { oauth, transport })
+        match raw {
+            Some(serde_json::Value::Bool(false)) => Ok(None),
+            Some(v) => Self::deserialize(v).map(Some),
+            None if transport_is_url => Ok(Some(Self::Discover { scopes: Vec::new() })),
+            None => Ok(None),
+        }
     }
 }
 

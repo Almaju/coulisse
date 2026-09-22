@@ -1,8 +1,7 @@
-use std::future::Future;
-use std::pin::Pin;
-
+use coulisse_core::BoxFuture;
 use thiserror::Error;
 
+use crate::store::SmokeStoreError;
 use crate::types::RunId;
 
 /// Hands off a freshly-allocated smoke run to whoever owns the agent
@@ -14,19 +13,13 @@ pub trait RunDispatcher: Send + Sync {
     fn dispatch<'a>(
         &'a self,
         test_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<RunId>, DispatchError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<Vec<RunId>, DispatchError>>;
 }
 
 #[derive(Debug, Error)]
 pub enum DispatchError {
     #[error("smoke test '{0}' not found")]
     NotFound(String),
-    #[error("{0}")]
-    Other(String),
-}
-
-impl DispatchError {
-    pub fn other(msg: impl Into<String>) -> Self {
-        Self::Other(msg.into())
-    }
+    #[error("failed to allocate smoke run: {0}")]
+    Store(#[from] SmokeStoreError),
 }

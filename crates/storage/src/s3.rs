@@ -1,10 +1,9 @@
 #[cfg(feature = "s3")]
 mod inner {
-    use std::pin::Pin;
-
     use aws_config::BehaviorVersion;
     use aws_sdk_s3::Client;
     use aws_sdk_s3::config::Region;
+    use coulisse_core::BoxFuture;
 
     use crate::backend::Backend;
     use crate::config::S3Config;
@@ -26,7 +25,7 @@ mod inner {
             let mut loader = aws_config::defaults(BehaviorVersion::latest())
                 .region(Region::new(cfg.region.clone()));
             if let Some(endpoint) = &cfg.endpoint_url {
-                loader = loader.endpoint_url(endpoint.clone());
+                loader = loader.endpoint_url(endpoint.as_str());
             }
             let sdk_config = loader.load().await;
             let mut s3_cfg = aws_sdk_s3::config::Builder::from(&sdk_config);
@@ -44,11 +43,7 @@ mod inner {
     }
 
     impl Backend for S3Backend {
-        fn delete<'a>(
-            &'a self,
-            key: &'a str,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
-        {
+        fn delete<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), StorageError>> {
             Box::pin(async move {
                 self.client
                     .delete_object()
@@ -61,11 +56,7 @@ mod inner {
             })
         }
 
-        fn get<'a>(
-            &'a self,
-            key: &'a str,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, StorageError>> + Send + 'a>>
-        {
+        fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Vec<u8>, StorageError>> {
             Box::pin(async move {
                 let resp = self
                     .client
@@ -95,10 +86,7 @@ mod inner {
             })
         }
 
-        fn list_keys<'a>(
-            &'a self,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, StorageError>> + Send + 'a>>
-        {
+        fn list_keys(&self) -> BoxFuture<'_, Result<Vec<String>, StorageError>> {
             // S3 uses lazy reconciliation via get_content; no boot scan.
             Box::pin(async move { Ok(vec![]) })
         }
@@ -107,8 +95,7 @@ mod inner {
             &'a self,
             key: &'a str,
             data: &'a [u8],
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
-        {
+        ) -> BoxFuture<'a, Result<(), StorageError>> {
             Box::pin(async move {
                 self.client
                     .put_object()

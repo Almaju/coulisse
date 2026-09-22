@@ -1,16 +1,15 @@
 //! Real in-memory `Agents` implementation for tests. Drives handlers
 //! deterministically without talking to a provider.
 
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use async_stream::stream;
-use coulisse_core::{OneShotError, OneShotPrompt, UserId};
+use coulisse_core::{BoxFuture, OneShotError, OneShotPrompt, OneShotRequest, UserId};
 use providers::ProviderKind;
 
 use crate::{
-    AgentConfig, Agents, AgentsError, Completion, CompletionStream, Message, Role, StreamEvent,
-    ToolCallKind, Usage,
+    AgentConfig, Agents, AgentsError, Completion, CompletionStream, Message, PromptRequest, Role,
+    StreamEvent, ToolCallKind, Usage,
 };
 
 /// A `Agents` that replays a scripted reply. Each call to `complete` or
@@ -37,10 +36,32 @@ pub struct ScriptedReply {
 #[derive(Clone)]
 pub struct ScriptedToolCall {
     pub args: String,
-    pub call_id: String,
+    pub call_id: ToolCallId,
     pub kind: ToolCallKind,
     pub result: Option<String>,
     pub tool_name: String,
+}
+
+/// Correlates a scripted `ToolCall` event with its `ToolResult`. Minted by
+/// [`ScriptedReply::with_tool_call`] from the call's position in the reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCallId(String);
+
+impl ToolCallId {
+    fn scripted(index: usize) -> Self {
+        Self(format!("scripted-{index}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ToolCallId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 impl ScriptedReply {
@@ -84,10 +105,9 @@ impl ScriptedReply {
         kind: ToolCallKind,
         result: Option<String>,
     ) -> Self {
-        let call_id = format!("scripted-{}", self.tool_calls.len());
         self.tool_calls.push(ScriptedToolCall {
             args: args.into(),
-            call_id,
+            call_id: ToolCallId::scripted(self.tool_calls.len()),
             kind,
             result,
             tool_name: tool_name.into(),
@@ -120,24 +140,24 @@ impl ScriptedAgents {
     /// Messages received on each `complete`/`complete_streaming` call so far,
     /// in call order. Useful for asserting that the handler assembled the
     /// context correctly.
-    ///
-    /// # Panics
-    ///
-    /// Panics if invariants documented above are violated.
+    #[must_use]
     pub fn calls(&self) -> Vec<Vec<Message>> {
-        self.calls.lock().unwrap().clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Agent names the prompter was asked to run, in call order. Lets
     /// tests verify experiment routing — if the proxy resolved
     /// `model: alice` to variant `alice-v1`, this records `alice-v1`,
     /// not `alice`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if invariants documented above are violated.
+    #[must_use]
     pub fn dispatched_to(&self) -> Vec<String> {
-        self.dispatched_to.lock().unwrap().clone()
+        self.dispatched_to
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn next_reply(&self, agent_name: &str) -> Result<ScriptedReply, AgentsError> {
@@ -146,9 +166,15 @@ impl ScriptedAgents {
         }
         self.dispatched_to
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .push(agent_name.to_string());
-        let mut replies = self.replies.lock().unwrap();
+        self.pop_reply()
+    }
+
+    /// Next scripted reply: replies are consumed in order, and the last one
+    /// is replayed forever so long-running tests never run dry.
+    fn pop_reply(&self) -> Result<ScriptedReply, AgentsError> {
+        let mut replies = self.replies.lock().unwrap_or_else(PoisonError::into_inner);
         match replies.len() {
             0 => Err(AgentsError::Provider(providers::CallError::Streaming(
                 "scripted prompter has no replies left".into(),
@@ -156,6 +182,13 @@ impl ScriptedAgents {
             1 => Ok(replies[0].clone()),
             _ => Ok(replies.remove(0)),
         }
+    }
+
+    fn record_call(&self, messages: Vec<Message>) {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(messages);
     }
 }
 
@@ -170,7 +203,7 @@ impl Agents for ScriptedAgents {
         messages: Vec<Message>,
         _user_id: UserId,
     ) -> Result<Completion, AgentsError> {
-        self.calls.lock().unwrap().push(messages);
+        self.record_call(messages);
         let reply = self.next_reply(agent_name)?;
         Ok(Completion {
             text: reply.full_text(),
@@ -184,7 +217,7 @@ impl Agents for ScriptedAgents {
         messages: Vec<Message>,
         _user_id: UserId,
     ) -> Result<CompletionStream, AgentsError> {
-        self.calls.lock().unwrap().push(messages);
+        self.record_call(messages);
         let reply = self.next_reply(agent_name)?;
         let s = stream! {
             for tc in reply.tool_calls {
@@ -212,13 +245,13 @@ impl Agents for ScriptedAgents {
                 }
                 yield Ok(StreamEvent::ToolCall {
                     args: tc.args,
-                    call_id: tc.call_id.clone(),
+                    call_id: tc.call_id.to_string(),
                     kind: tc.kind,
                     tool_name: tc.tool_name,
                 });
                 if let Some(result) = tc.result {
                     yield Ok(StreamEvent::ToolResult {
-                        call_id: tc.call_id,
+                        call_id: tc.call_id.to_string(),
                         error: None,
                         result: Some(result),
                     });
@@ -232,26 +265,9 @@ impl Agents for ScriptedAgents {
         Ok(Box::pin(s))
     }
 
-    async fn prompt_with(
-        &self,
-        _provider: ProviderKind,
-        _model: &str,
-        _preamble: &str,
-        messages: Vec<Message>,
-    ) -> Result<Completion, AgentsError> {
-        self.calls.lock().unwrap().push(messages);
-        let reply = {
-            let mut replies = self.replies.lock().unwrap();
-            match replies.len() {
-                0 => {
-                    return Err(AgentsError::Provider(providers::CallError::Streaming(
-                        "scripted prompter has no replies left".into(),
-                    )));
-                }
-                1 => replies[0].clone(),
-                _ => replies.remove(0),
-            }
-        };
+    async fn prompt_with(&self, request: PromptRequest<'_>) -> Result<Completion, AgentsError> {
+        self.record_call(request.messages);
+        let reply = self.pop_reply()?;
         Ok(Completion {
             text: reply.full_text(),
             usage: reply.usage,
@@ -262,20 +278,22 @@ impl Agents for ScriptedAgents {
 impl OneShotPrompt for ScriptedAgents {
     fn one_shot<'a>(
         &'a self,
-        _provider: &'a str,
-        _model: &'a str,
-        _preamble: &'a str,
-        user_text: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<String, OneShotError>> + Send + 'a>> {
+        request: OneShotRequest<'a>,
+    ) -> BoxFuture<'a, Result<String, OneShotError>> {
         Box::pin(async move {
             let messages = vec![Message {
-                content: user_text.to_string(),
+                content: request.user_text.to_string(),
                 role: Role::User,
             }];
-            self.prompt_with(ProviderKind::Openai, "scripted", "", messages)
-                .await
-                .map(|c| c.text)
-                .map_err(|e| OneShotError::new(e.to_string()))
+            self.prompt_with(PromptRequest {
+                messages,
+                model: "scripted",
+                preamble: "",
+                provider: ProviderKind::Openai,
+            })
+            .await
+            .map(|c| c.text)
+            .map_err(|e| OneShotError::new(e.to_string()))
         })
     }
 }
